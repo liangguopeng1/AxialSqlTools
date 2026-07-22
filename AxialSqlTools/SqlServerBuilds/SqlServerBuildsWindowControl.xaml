@@ -20,14 +20,14 @@
 
     <Grid Background="{DynamicResource AxialThemeBackgroundBrush}">
         <DockPanel HorizontalAlignment="Left">
-            <TextBlock Margin="0"  FontWeight="Bold">
-                <Run Text="Data Source:" />
+            <TextBlock x:Name="HeaderTextBlock" Margin="0" FontWeight="Bold">
+                <Run x:Name="Run_DataSource" Text="Data Source:" />
                 <Hyperlink Click="HyperlinkDataSource_Click">
                     <Run Text="https://aka.ms/sqlserverbuilds" />
                 </Hyperlink>
                 <Run Text=" | " />
                 <Hyperlink Click="HyperlinkCopyAsTSQL_Click">
-                    <Run Text="Copy as TSQL" />
+                    <Run x:Name="Run_CopyAsTSql" Text="Copy as TSQL" />
                 </Hyperlink>
             </TextBlock>
         </DockPanel>

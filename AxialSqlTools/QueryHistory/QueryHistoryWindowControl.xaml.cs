@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Navigation;
+using AxialSqlTools.Properties;
 
 namespace AxialSqlTools
 {
@@ -13,8 +14,25 @@ namespace AxialSqlTools
         public QueryHistoryWindowControl()
         {
             InitializeComponent();
+            UiLocalization.Apply(this);
+            LocalizeDataGridColumns();
             _themeController = new ToolWindowThemeController(this, ApplyThemeBrushResources);
             DataContext = new QueryHistoryViewModel();
+        }
+
+        private void LocalizeDataGridColumns()
+        {
+            DataGrid_QueryHistory.Columns[0].Header = Strings.Get("QueryHistory_ColId");
+            DataGrid_QueryHistory.Columns[1].Header = Strings.Get("QueryHistory_ColStartTime");
+            DataGrid_QueryHistory.Columns[2].Header = Strings.Get("QueryHistory_ColFinishTime");
+            DataGrid_QueryHistory.Columns[3].Header = Strings.Get("QueryHistory_ColElapsed");
+            DataGrid_QueryHistory.Columns[4].Header = Strings.Get("QueryHistory_ColRows");
+            DataGrid_QueryHistory.Columns[5].Header = Strings.Get("QueryHistory_ColResult");
+            DataGrid_QueryHistory.Columns[6].Header = Strings.Get("QueryHistory_ColServer");
+            DataGrid_QueryHistory.Columns[7].Header = Strings.Get("QueryHistory_ColDatabase");
+            DataGrid_QueryHistory.Columns[8].Header = Strings.Get("QueryHistory_ColLogin");
+            DataGrid_QueryHistory.Columns[9].Header = Strings.Get("QueryHistory_ColWorkstation");
+            DataGrid_QueryHistory.Columns[10].Header = Strings.Get("QueryHistory_ColQueryShort");
         }
 
         private void ApplyThemeBrushResources()

@@ -1,6 +1,7 @@
 ﻿using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Spreadsheet;
+using AxialSqlTools.Properties;
 using Microsoft.SqlServer.Management.UI.Grid;
 using Microsoft.SqlServer.Management.UI.VSIntegration;
 using Microsoft.VisualStudio.Shell;
@@ -125,8 +126,8 @@ namespace AxialSqlTools
             else {
                 VsShellUtilities.ShowMessageBox(
                    this.package,
-                   "No Data Available",
-                   "No result sets are available for export.",
+                   Strings.Get("Msg_GridExport_NoDataTitle"),
+                   Strings.Get("Msg_GridExport_NoData"),
                    OLEMSGICON.OLEMSGICON_WARNING,
                    OLEMSGBUTTON.OLEMSGBUTTON_OK,
                    OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);

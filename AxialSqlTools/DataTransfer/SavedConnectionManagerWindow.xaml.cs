@@ -1,3 +1,4 @@
+using AxialSqlTools.Properties;
 using System;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -12,12 +13,10 @@ namespace AxialSqlTools
         public SavedConnectionManagerWindow()
         {
             InitializeComponent();
-
+            UiLocalization.Apply(this);
             ProviderComboBox.ItemsSource = Enum.GetValues(typeof(SettingsManager.DataTransferProvider));
-
             _connections = new ObservableCollection<SettingsManager.DataTransferSavedConnection>(
                 SettingsManager.GetDataTransferSavedConnections());
-
             ConnectionsListBox.ItemsSource = _connections;
         }
 
@@ -25,7 +24,7 @@ namespace AxialSqlTools
         {
             var newConnection = new SettingsManager.DataTransferSavedConnection
             {
-                Name = "New Connection",
+                Name = Strings.Get("DataTransfer_NewConnectionDefault"),
                 Provider = SettingsManager.DataTransferProvider.PostgreSql,
                 Server = "127.0.0.1",
                 Port = 5432,
@@ -58,7 +57,7 @@ namespace AxialSqlTools
             }
             else
             {
-                MessageBox.Show("Select a connection to save.", "Saved Connections");
+                MessageBox.Show(Strings.Get("Msg_DataTransfer_SelectConnectionToSave"), Strings.Get("Menu_DataTransfer"));
             }
         }
 

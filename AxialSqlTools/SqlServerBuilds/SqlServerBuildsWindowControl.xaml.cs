@@ -1,4 +1,5 @@
-﻿using Microsoft.VisualStudio.Shell;
+﻿using AxialSqlTools.Properties;
+using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
 using System;
 using System.Collections.Generic;
@@ -21,6 +22,8 @@ namespace AxialSqlTools
         public SqlServerBuildsWindowControl()
         {
             this.InitializeComponent();
+            UiLocalization.Apply(this);
+            LocalizeHeader();
             _themeController = new ToolWindowThemeController(this, ApplyThemeBrushResources);
             LoadSqlVersions();
         }
@@ -28,7 +31,14 @@ namespace AxialSqlTools
         private void ApplyThemeBrushResources()
         {
             ToolWindowThemeResources.ApplySharedTheme(this);
+            LocalizeHeader();
             LoadSqlVersions();
+        }
+
+        private void LocalizeHeader()
+        {
+            Run_DataSource.Text = Strings.Get("SqlBuilds_DataSource");
+            Run_CopyAsTSql.Text = Strings.Get("SqlBuilds_CopyAsTSql");
         }
 
         private void LoadSqlVersions()
@@ -250,7 +260,7 @@ namespace AxialSqlTools
 
             // Copy the generated script to the clipboard
             Clipboard.SetDataObject(sb.ToString());
-            MessageBox.Show("TSQL script copied to clipboard!", "Copy as TSQL", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(Strings.Get("Msg_SqlBuilds_Copied"), Strings.Get("Msg_SqlBuilds_CopyTitle"), MessageBoxButton.OK, MessageBoxImage.Information);
         }
     }
 }

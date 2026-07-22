@@ -1,0 +1,505 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <xsd:schema id="root" xmlns="" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:msdata="urn:schemas-microsoft-com:xml-msdata">
+    <xsd:element name="root" msdata:IsDataSet="true">
+      <xsd:complexType>
+        <xsd:choice maxOccurs="unbounded">
+          <xsd:element name="data">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+                <xsd:element name="comment" type="xsd:string" minOccurs="0" msdata:Ordinal="2" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="resheader">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" />
+            </xsd:complexType>
+          </xsd:element>
+        </xsd:choice>
+      </xsd:complexType>
+    </xsd:element>
+  </xsd:schema>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <data name="Settings_WindowTitle" xml:space="preserve"><value>Axial SQL Tools - 设置</value></data>
+  <data name="Settings_ToolWindowCaption" xml:space="preserve"><value>Axial SQL Tools | 设置</value></data>
+  <data name="Settings_Tab_General" xml:space="preserve"><value>常规</value></data>
+  <data name="Settings_Tab_QueryTemplates" xml:space="preserve"><value>查询模板</value></data>
+  <data name="Settings_Tab_CodeSnippets" xml:space="preserve"><value>代码片段</value></data>
+  <data name="Settings_Tab_QueryHistory" xml:space="preserve"><value>查询历史</value></data>
+  <data name="Settings_Tab_CodeFormat" xml:space="preserve"><value>代码格式</value></data>
+  <data name="Settings_Tab_ExcelExport" xml:space="preserve"><value>Excel 导出</value></data>
+  <data name="Settings_Tab_GoogleSheets" xml:space="preserve"><value>Google 表格</value></data>
+  <data name="Settings_Tab_ConnectionColors" xml:space="preserve"><value>连接颜色</value></data>
+  <data name="Settings_Tab_Smtp" xml:space="preserve"><value>SMTP 设置</value></data>
+  <data name="Settings_Tab_Updates" xml:space="preserve"><value>更新</value></data>
+  <data name="Settings_LanguageLabel" xml:space="preserve"><value>界面语言</value></data>
+  <data name="Settings_Language_Chinese" xml:space="preserve"><value>中文</value></data>
+  <data name="Settings_Language_English" xml:space="preserve"><value>English</value></data>
+  <data name="Settings_LanguageHint" xml:space="preserve"><value>保存后，工具窗口、工具栏与菜单将立即刷新。</value></data>
+  <data name="Settings_SaveLanguage" xml:space="preserve"><value>保存语言</value></data>
+  <data name="Settings_LanguageSaved" xml:space="preserve"><value>语言已保存。工具窗口、工具栏与菜单已更新。</value></data>
+  <data name="Settings_Saved" xml:space="preserve"><value>已保存</value></data>
+  <data name="Common_Error" xml:space="preserve"><value>错误</value></data>
+  <data name="Common_Done" xml:space="preserve"><value>完成</value></data>
+  <data name="Menu_Toolbar" xml:space="preserve"><value>Axial SQL Tools</value></data>
+  <data name="Menu_QueryTemplates" xml:space="preserve"><value>查询模板</value></data>
+  <data name="Menu_Tools" xml:space="preserve"><value>工具</value></data>
+  <data name="Menu_FormatQuery" xml:space="preserve"><value>格式化查询</value></data>
+  <data name="Menu_FormatQuery_Tooltip" xml:space="preserve"><value>格式化 SQL（按住 Shift 打开高级选项）</value></data>
+  <data name="Menu_ExportGridToExcel" xml:space="preserve"><value>导出网格到 Excel</value></data>
+  <data name="Menu_ExportGridToEmail" xml:space="preserve"><value>导出网格到邮件</value></data>
+  <data name="Menu_ExportGridAsTempTable" xml:space="preserve"><value>导出网格为临时表</value></data>
+  <data name="Menu_ExportGridToGoogleSheet" xml:space="preserve"><value>导出网格到 Google 表格</value></data>
+  <data name="Menu_ScriptDefinition" xml:space="preserve"><value>脚本定义到新窗口</value></data>
+  <data name="Menu_QuickSearch" xml:space="preserve"><value>快速搜索</value></data>
+  <data name="Menu_SnippetManager" xml:space="preserve"><value>片段管理器</value></data>
+  <data name="Menu_SelectCurrentStatement" xml:space="preserve"><value>选择当前语句</value></data>
+  <data name="Menu_SelectCurrentStatement_Tooltip" xml:space="preserve"><value>选中光标处的 SQL 语句（Shift+F5）</value></data>
+  <data name="Menu_ToggleBlockComment" xml:space="preserve"><value>切换块注释</value></data>
+  <data name="Menu_ToggleBlockComment_Tooltip" xml:space="preserve"><value>用 /* */ 包裹选中 SQL，或移除光标处外侧块注释</value></data>
+  <data name="Menu_QueryHistory" xml:space="preserve"><value>查询历史</value></data>
+  <data name="Menu_StatisticsSummary" xml:space="preserve"><value>统计摘要</value></data>
+  <data name="Menu_StatisticsSummary_Tooltip" xml:space="preserve"><value>打开最近捕获的 SET STATISTICS IO/TIME 输出摘要。</value></data>
+  <data name="Menu_HealthDashboardServer" xml:space="preserve"><value>健康仪表板 - 服务器</value></data>
+  <data name="Menu_SqlServerBuilds" xml:space="preserve"><value>SQL Server 版本</value></data>
+  <data name="Menu_DataTransfer" xml:space="preserve"><value>数据传输</value></data>
+  <data name="Menu_SyncToGitHub" xml:space="preserve"><value>同步到 GitHub</value></data>
+  <data name="Menu_RefreshTemplates" xml:space="preserve"><value>刷新模板</value></data>
+  <data name="Menu_OpenTemplatesFolder" xml:space="preserve"><value>打开模板文件夹</value></data>
+  <data name="Menu_Settings" xml:space="preserve"><value>设置</value></data>
+  <data name="Menu_About" xml:space="preserve"><value>关于</value></data>
+  <data name="Common_Cancel" xml:space="preserve"><value>取消</value></data>
+  <data name="Common_Save" xml:space="preserve"><value>保存</value></data>
+  <data name="Common_Search" xml:space="preserve"><value>搜索</value></data>
+  <data name="Common_Script" xml:space="preserve"><value>脚本</value></data>
+  <data name="Common_Wiki" xml:space="preserve"><value>Wiki</value></data>
+  <data name="Common_FeatureDescriptionIn" xml:space="preserve"><value>功能说明见</value></data>
+  <data name="Common_Browse" xml:space="preserve"><value>浏览...</value></data>
+  <data name="Common_Select" xml:space="preserve"><value>选择</value></data>
+  <data name="Common_Reset" xml:space="preserve"><value>重置</value></data>
+  <data name="Common_Import" xml:space="preserve"><value>导入</value></data>
+  <data name="Common_Edit" xml:space="preserve"><value>编辑</value></data>
+  <data name="Common_Delete" xml:space="preserve"><value>删除</value></data>
+  <data name="Common_Duplicate" xml:space="preserve"><value>复制</value></data>
+  <data name="Common_New" xml:space="preserve"><value>+ 新建</value></data>
+  <data name="Common_CopyData" xml:space="preserve"><value>复制数据</value></data>
+  <data name="Common_Server" xml:space="preserve"><value>服务器</value></data>
+  <data name="Common_Port" xml:space="preserve"><value>端口</value></data>
+  <data name="Common_Database" xml:space="preserve"><value>数据库</value></data>
+  <data name="Common_Username" xml:space="preserve"><value>用户名</value></data>
+  <data name="Common_Password" xml:space="preserve"><value>密码</value></data>
+  <data name="Common_Days" xml:space="preserve"><value>天</value></data>
+  <data name="Common_Send" xml:space="preserve"><value>发送</value></data>
+  <data name="Common_Type" xml:space="preserve"><value>类型</value></data>
+  <data name="Common_Schema" xml:space="preserve"><value>架构</value></data>
+  <data name="Common_Object" xml:space="preserve"><value>对象</value></data>
+  <data name="Common_Location" xml:space="preserve"><value>位置</value></data>
+  <data name="Common_From" xml:space="preserve"><value>起始:</value></data>
+  <data name="Common_To" xml:space="preserve"><value>截止:</value></data>
+  <data name="Common_Refresh" xml:space="preserve"><value>刷新</value></data>
+  <data name="Common_Clear" xml:space="preserve"><value>清除</value></data>
+  <data name="Common_Yes" xml:space="preserve"><value>是</value></data>
+  <data name="Common_No" xml:space="preserve"><value>否</value></data>
+  <data name="Common_Confirm" xml:space="preserve"><value>确认</value></data>
+  <data name="Common_Query" xml:space="preserve"><value>查询:</value></data>
+  <data name="Common_SavedEllipsis" xml:space="preserve"><value>已保存...</value></data>
+  <data name="Common_SelectFolder" xml:space="preserve"><value>选择文件夹...</value></data>
+  <data name="Common_SourceQuery" xml:space="preserve"><value>源查询</value></data>
+  <data name="Common_TargetTable" xml:space="preserve"><value>目标表</value></data>
+  <data name="Common_CopyProgress" xml:space="preserve"><value>（复制进度）</value></data>
+  <data name="Common_SourceDescription" xml:space="preserve"><value>源描述</value></data>
+  <data name="Common_TargetDescription" xml:space="preserve"><value>目标描述</value></data>
+  <data name="Common_ScriptAndCommit" xml:space="preserve"><value>脚本并提交</value></data>
+  <data name="Common_ConfirmBeforePushing" xml:space="preserve"><value>推送前确认</value></data>
+  <data name="Window_AboutCaption" xml:space="preserve"><value>Axial SQL</value></data>
+  <data name="Window_GridToEmailCaption" xml:space="preserve"><value>网格到邮件</value></data>
+  <data name="Window_DataImportCaption" xml:space="preserve"><value>数据导入</value></data>
+  <data name="Window_HealthDashboardServer" xml:space="preserve"><value>健康仪表板 | 服务器</value></data>
+  <data name="Window_HealthDashboardServers" xml:space="preserve"><value>健康仪表板 - 多服务器</value></data>
+  <data name="QuickSearch_HeaderTitle" xml:space="preserve"><value>跨多个数据库搜索对象定义</value></data>
+  <data name="QuickSearch_SelectTarget" xml:space="preserve"><value>从对象资源管理器选择目标</value></data>
+  <data name="QuickSearch_NoConnection" xml:space="preserve"><value>未选择连接</value></data>
+  <data name="QuickSearch_SearchFor" xml:space="preserve"><value>搜索:</value></data>
+  <data name="QuickSearch_AllDatabases" xml:space="preserve"><value>服务器上所有用户数据库</value></data>
+  <data name="QuickSearch_WholeWord" xml:space="preserve"><value>仅匹配整词</value></data>
+  <data name="QuickSearch_Wildcards" xml:space="preserve"><value>使用通配符</value></data>
+  <data name="QuickSearch_ObjectTypes" xml:space="preserve"><value>对象类型:</value></data>
+  <data name="QuickSearch_StoredProcedures" xml:space="preserve"><value>存储过程</value></data>
+  <data name="QuickSearch_Views" xml:space="preserve"><value>视图</value></data>
+  <data name="QuickSearch_Functions" xml:space="preserve"><value>函数</value></data>
+  <data name="QuickSearch_Tables" xml:space="preserve"><value>表</value></data>
+  <data name="QuickSearch_AgentJobs" xml:space="preserve"><value>SQL Agent 作业</value></data>
+  <data name="QuickSearch_ColDatabase" xml:space="preserve"><value>数据库</value></data>
+  <data name="QuickSearch_ColType" xml:space="preserve"><value>类型</value></data>
+  <data name="QuickSearch_ColSchema" xml:space="preserve"><value>架构</value></data>
+  <data name="QuickSearch_ColObject" xml:space="preserve"><value>对象</value></data>
+  <data name="QuickSearch_ColLocation" xml:space="preserve"><value>位置</value></data>
+  <data name="QuickSearch_ColMatchPreview" xml:space="preserve"><value>匹配预览</value></data>
+  <data name="QuickSearch_ColScript" xml:space="preserve"><value>脚本</value></data>
+  <data name="QueryHistory_HeaderTitle" xml:space="preserve"><value>查询历史</value></data>
+  <data name="QueryHistory_From" xml:space="preserve"><value>起始:</value></data>
+  <data name="QueryHistory_To" xml:space="preserve"><value>截止:</value></data>
+  <data name="QueryHistory_Server" xml:space="preserve"><value>服务器:</value></data>
+  <data name="QueryHistory_Database" xml:space="preserve"><value>数据库:</value></data>
+  <data name="QueryHistory_Query" xml:space="preserve"><value>查询:</value></data>
+  <data name="QueryHistory_ResultsFormat" xml:space="preserve"><value>{0} 条结果</value></data>
+  <data name="QueryHistory_ColId" xml:space="preserve"><value>ID</value></data>
+  <data name="QueryHistory_ColStartTime" xml:space="preserve"><value>开始时间</value></data>
+  <data name="QueryHistory_ColFinishTime" xml:space="preserve"><value>结束时间</value></data>
+  <data name="QueryHistory_ColElapsed" xml:space="preserve"><value>耗时</value></data>
+  <data name="QueryHistory_ColRows" xml:space="preserve"><value>行数</value></data>
+  <data name="QueryHistory_ColResult" xml:space="preserve"><value>结果</value></data>
+  <data name="QueryHistory_ColServer" xml:space="preserve"><value>服务器</value></data>
+  <data name="QueryHistory_ColDatabase" xml:space="preserve"><value>数据库</value></data>
+  <data name="QueryHistory_ColLogin" xml:space="preserve"><value>登录名</value></data>
+  <data name="QueryHistory_ColWorkstation" xml:space="preserve"><value>工作站</value></data>
+  <data name="QueryHistory_ColQueryShort" xml:space="preserve"><value>查询（摘要）</value></data>
+  <data name="Snippet_Settings" xml:space="preserve"><value>设置</value></data>
+  <data name="Snippet_EnableSnippets" xml:space="preserve"><value>启用片段</value></data>
+  <data name="Snippet_TriggerKey" xml:space="preserve"><value>触发键:</value></data>
+  <data name="Snippet_CursorMarker" xml:space="preserve"><value>光标标记:</value></data>
+  <data name="Snippet_SaveSettings" xml:space="preserve"><value>保存设置</value></data>
+  <data name="Snippet_ImportSql" xml:space="preserve"><value>导入 .sql</value></data>
+  <data name="Snippet_ColPrefix" xml:space="preserve"><value>前缀</value></data>
+  <data name="Snippet_ColDescription" xml:space="preserve"><value>描述</value></data>
+  <data name="Snippet_ColBodyPreview" xml:space="preserve"><value>正文（预览）</value></data>
+  <data name="Snippet_GroupTitle" xml:space="preserve"><value>片段</value></data>
+  <data name="Snippet_Prefix" xml:space="preserve"><value>前缀:</value></data>
+  <data name="Snippet_Description" xml:space="preserve"><value>描述:</value></data>
+  <data name="Snippet_Body" xml:space="preserve"><value>正文:</value></data>
+  <data name="Snippet_SaveSnippet" xml:space="preserve"><value>保存片段</value></data>
+  <data name="DataTransfer_HeaderTitle" xml:space="preserve"><value>数据传输</value></data>
+  <data name="DataTransfer_EditSavedConnections" xml:space="preserve"><value>编辑已保存连接</value></data>
+  <data name="DataTransfer_TabSqlToSql" xml:space="preserve"><value>SQL Server -&gt; SQL Server</value></data>
+  <data name="DataTransfer_TabSqlToPgsql" xml:space="preserve"><value>SQL Server -&gt; PostgreSQL</value></data>
+  <data name="DataTransfer_TabSqlToMySql" xml:space="preserve"><value>SQL Server -&gt; MySQL</value></data>
+  <data name="DataTransfer_TabPgsqlToSql" xml:space="preserve"><value>PostgreSQL -&gt; SQL Server</value></data>
+  <data name="DataTransfer_TabMySqlToSql" xml:space="preserve"><value>MySQL -&gt; SQL Server</value></data>
+  <data name="DataTransfer_SelectSource" xml:space="preserve"><value>从对象资源管理器选择源</value></data>
+  <data name="DataTransfer_SelectTarget" xml:space="preserve"><value>从对象资源管理器选择目标</value></data>
+  <data name="DataTransfer_BulkCopyOptions" xml:space="preserve"><value>其他 SqlBulkCopy 选项</value></data>
+  <data name="DataTransfer_KeepIdentity" xml:space="preserve"><value>KeepIdentity</value></data>
+  <data name="DataTransfer_CheckConstraints" xml:space="preserve"><value>CheckConstraints</value></data>
+  <data name="DataTransfer_TableLock" xml:space="preserve"><value>TableLock</value></data>
+  <data name="DataTransfer_KeepNulls" xml:space="preserve"><value>KeepNulls</value></data>
+  <data name="DataTransfer_FireTriggers" xml:space="preserve"><value>FireTriggers</value></data>
+  <data name="DataTransfer_AllowEncryptedMods" xml:space="preserve"><value>AllowEncryptedValueModifications</value></data>
+  <data name="DataTransfer_TargetPgsqlConnection" xml:space="preserve"><value>目标 PostgreSQL 连接</value></data>
+  <data name="DataTransfer_TargetMySqlConnection" xml:space="preserve"><value>目标 MySQL 连接</value></data>
+  <data name="DataTransfer_SourcePgsqlConnection" xml:space="preserve"><value>源 PostgreSQL 连接</value></data>
+  <data name="DataTransfer_SourceMySqlConnection" xml:space="preserve"><value>源 MySQL 连接</value></data>
+  <data name="DataTransfer_CreateTableIfNotExists" xml:space="preserve"><value>若表不存在则创建</value></data>
+  <data name="DataTransfer_TruncateTarget" xml:space="preserve"><value>插入前清空目标表</value></data>
+  <data name="DataTransfer_SkipDataCopy" xml:space="preserve"><value>仅创建表结构（跳过数据复制）</value></data>
+  <data name="DataImport_Title" xml:space="preserve"><value>数据导入</value></data>
+  <data name="DataImport_Description" xml:space="preserve"><value>使用此窗口将 Excel 电子表格导入对象资源管理器中当前选中的数据库。</value></data>
+  <data name="DataImport_ExcelFile" xml:space="preserve"><value>Excel 文件</value></data>
+  <data name="DataImport_WorksheetName" xml:space="preserve"><value>工作表名称</value></data>
+  <data name="DataImport_TargetDatabase" xml:space="preserve"><value>目标数据库</value></data>
+  <data name="DataImport_DestinationTable" xml:space="preserve"><value>目标表</value></data>
+  <data name="DataImport_AutoCreateTable" xml:space="preserve"><value>若表不存在则自动创建</value></data>
+  <data name="DataImport_TruncateTable" xml:space="preserve"><value>导入前清空表</value></data>
+  <data name="DataImport_FirstRowHeaders" xml:space="preserve"><value>将首行视为列标题</value></data>
+  <data name="DataImport_ChecklistTitle" xml:space="preserve"><value>操作步骤</value></data>
+  <data name="DataImport_Step1" xml:space="preserve"><value>1. 选择包含数据的 Excel 工作簿。</value></data>
+  <data name="DataImport_Step2" xml:space="preserve"><value>2. 在对象资源管理器中指定接收数据的数据库。</value></data>
+  <data name="DataImport_Step3" xml:space="preserve"><value>3. 填写目标表名并确认可选行为。</value></data>
+  <data name="DataImport_Step4" xml:space="preserve"><value>4. 点击导入执行一键上传。</value></data>
+  <data name="DataImport_StatusInitial" xml:space="preserve"><value>请选择 Excel 文件以开始。</value></data>
+  <data name="Health_ServerHeaderTitle" xml:space="preserve"><value>服务器健康仪表板</value></data>
+  <data name="Health_ServersHeaderTitle" xml:space="preserve"><value>健康仪表板 - 服务器</value></data>
+  <data name="Health_NotUpdatedYet" xml:space="preserve"><value>（尚未更新）</value></data>
+  <data name="Health_BeQuiet" xml:space="preserve"><value>静音</value></data>
+  <data name="Health_TabServerMetrics" xml:space="preserve"><value>服务器指标摘要</value></data>
+  <data name="Health_TabPerformance15m" xml:space="preserve"><value>性能（15 分钟）</value></data>
+  <data name="Health_TabDatabaseBackups" xml:space="preserve"><value>数据库备份</value></data>
+  <data name="Health_TabAgentJobs" xml:space="preserve"><value>Agent 作业</value></data>
+  <data name="Health_Version" xml:space="preserve"><value>版本:</value></data>
+  <data name="Health_NewVersionAvailable" xml:space="preserve"><value>有新版本可用！</value></data>
+  <data name="Health_ServerName" xml:space="preserve"><value>服务器名:</value></data>
+  <data name="Health_ServiceName" xml:space="preserve"><value>服务名:</value></data>
+  <data name="Health_Uptime" xml:space="preserve"><value>运行时间:</value></data>
+  <data name="Health_ResponseTime" xml:space="preserve"><value>响应时间 (ms):</value></data>
+  <data name="Health_CpuPercent" xml:space="preserve"><value>CPU %:</value></data>
+  <data name="Health_ActiveConnections" xml:space="preserve"><value>活动连接:</value></data>
+  <data name="Health_EncryptedConnections" xml:space="preserve"><value>加密连接:</value></data>
+  <data name="Health_UserDatabases" xml:space="preserve"><value>用户数据库:</value></data>
+  <data name="Health_TotalDataFileSize" xml:space="preserve"><value>数据文件总大小 (Gb):</value></data>
+  <data name="Health_TotalLogFileSize" xml:space="preserve"><value>日志文件总大小 (Gb):</value></data>
+  <data name="Health_SeeCurrentActivity" xml:space="preserve"><value>查看当前活动:</value></data>
+  <data name="Health_RunSpWhoIsActive" xml:space="preserve"><value>运行 [dbo].[sp_WhoIsActive]</value></data>
+  <data name="Health_DeploySpWhoIsActive" xml:space="preserve"><value>请先部署 [dbo].[sp_WhoIsActive]</value></data>
+  <data name="Health_Memory" xml:space="preserve"><value>内存:</value></data>
+  <data name="Health_PageLifeExpectancy" xml:space="preserve"><value>页预期寿命:</value></data>
+  <data name="Health_BatchRequestsSec" xml:space="preserve"><value>批请求/秒:</value></data>
+  <data name="Health_SqlCompilationsSec" xml:space="preserve"><value>SQL 编译/秒:</value></data>
+  <data name="Health_BlockedRequests" xml:space="preserve"><value>阻塞请求:</value></data>
+  <data name="Health_LockWaitTime" xml:space="preserve"><value>锁等待时间 (秒):</value></data>
+  <data name="Health_AlwaysOn" xml:space="preserve"><value>AlwaysOn:</value></data>
+  <data name="Health_QueueSizes" xml:space="preserve"><value>队列大小 (Gb):</value></data>
+  <data name="Health_RefreshGraph" xml:space="preserve"><value>刷新图表</value></data>
+  <data name="Health_ForThePast" xml:space="preserve"><value>过去</value></data>
+  <data name="Health_IncludeFull" xml:space="preserve"><value>包含 FULL</value></data>
+  <data name="Health_IncludeDiff" xml:space="preserve"><value>包含 DIFF</value></data>
+  <data name="Health_IncludeLog" xml:space="preserve"><value>包含 LOG</value></data>
+  <data name="Health_LastBackupInfo" xml:space="preserve"><value>最近备份信息</value></data>
+  <data name="Health_UnsuccessfulOnly" xml:space="preserve"><value>仅显示失败执行</value></data>
+  <data name="Stats_HeaderTitle" xml:space="preserve"><value>统计摘要</value></data>
+  <data name="Stats_CopyAs" xml:space="preserve"><value>复制为</value></data>
+  <data name="Stats_ElapsedTime" xml:space="preserve"><value>已用时间</value></data>
+  <data name="Stats_CpuTime" xml:space="preserve"><value>CPU 时间</value></data>
+  <data name="Stats_TotalLogicalReads" xml:space="preserve"><value>逻辑读总数</value></data>
+  <data name="Stats_ColTable" xml:space="preserve"><value>表</value></data>
+  <data name="Stats_ColScans" xml:space="preserve"><value>扫描</value></data>
+  <data name="Stats_ColLogicalReads" xml:space="preserve"><value>逻辑读</value></data>
+  <data name="Stats_CapturedAt" xml:space="preserve"><value>捕获时间</value></data>
+  <data name="Stats_Source" xml:space="preserve"><value>来源</value></data>
+  <data name="Stats_SourceQuery" xml:space="preserve"><value>源查询</value></data>
+  <data name="Stats_CopyCsv" xml:space="preserve"><value>CSV</value></data>
+  <data name="Stats_CopyMarkdown" xml:space="preserve"><value>Markdown</value></data>
+  <data name="Stats_CopyJson" xml:space="preserve"><value>JSON</value></data>
+  <data name="SyncGitHub_HeaderTitle" xml:space="preserve"><value>同步到 GitHub</value></data>
+  <data name="SyncGitHub_Profiles" xml:space="preserve"><value>配置文件</value></data>
+  <data name="SyncGitHub_AddNewProfile" xml:space="preserve"><value>+ 新建配置文件</value></data>
+  <data name="SyncGitHub_TargetRepoInfo" xml:space="preserve"><value>目标仓库信息</value></data>
+  <data name="SyncGitHub_RepoNoneSelected" xml:space="preserve"><value>仓库:（未选择）</value></data>
+  <data name="SyncGitHub_SyncOptionsPlaceholder" xml:space="preserve"><value>同步选项将显示在此处</value></data>
+  <data name="SyncGitHub_DatabasesPlaceholder" xml:space="preserve"><value>数据库列表将显示在此处</value></data>
+  <data name="SyncGitHub_Commit" xml:space="preserve"><value>提交</value></data>
+  <data name="SyncGitHub_CommitMsg" xml:space="preserve"><value>提交消息:</value></data>
+  <data name="SyncGitHub_DefaultCommitMsg" xml:space="preserve"><value>添加或更新脚本对象</value></data>
+  <data name="SyncGitHub_EditProfileTitle" xml:space="preserve"><value>编辑同步配置文件</value></data>
+  <data name="SyncGitHub_RepositoryDetails" xml:space="preserve"><value>仓库详情:</value></data>
+  <data name="SyncGitHub_Owner" xml:space="preserve"><value>所有者:</value></data>
+  <data name="SyncGitHub_RepoName" xml:space="preserve"><value>仓库名:</value></data>
+  <data name="SyncGitHub_Branch" xml:space="preserve"><value>分支:</value></data>
+  <data name="SyncGitHub_Token" xml:space="preserve"><value>令牌:</value></data>
+  <data name="SyncGitHub_SetConnection" xml:space="preserve"><value>设置连接</value></data>
+  <data name="SyncGitHub_ConnectionInfo" xml:space="preserve"><value>连接信息:</value></data>
+  <data name="SyncGitHub_ExportServerParams" xml:space="preserve"><value>导出 SQL Server 配置值</value></data>
+  <data name="SyncGitHub_ExportJobs" xml:space="preserve"><value>导出 SQL Server Agent 参数 - 作业、操作员、警报</value></data>
+  <data name="SyncGitHub_ExportLogins" xml:space="preserve"><value>导出登录名与权限</value></data>
+  <data name="SyncGitHub_Databases" xml:space="preserve"><value>数据库:</value></data>
+  <data name="SyncGitHub_OlaKeywordsHint" xml:space="preserve"><value>可使用 Ola Hallengren 关键字，如 ALL_DATABASES、USER_DATABASES 等。</value></data>
+  <data name="SyncGitHub_SaveProfile" xml:space="preserve"><value>保存配置文件</value></data>
+  <data name="SyncGitHub_DeleteProfile" xml:space="preserve"><value>删除配置文件</value></data>
+  <data name="GridEmail_HeaderTitle" xml:space="preserve"><value>将网格导出为文件并通过邮件发送</value></data>
+  <data name="GridEmail_File" xml:space="preserve"><value>文件:</value></data>
+  <data name="GridEmail_RenameTo" xml:space="preserve"><value>重命名为:</value></data>
+  <data name="GridEmail_CcMyself" xml:space="preserve"><value>抄送自己</value></data>
+  <data name="GridEmail_RecipientHint" xml:space="preserve"><value>收件人邮箱地址，多个地址用分号 (;) 分隔。</value></data>
+  <data name="GridEmail_Subject" xml:space="preserve"><value>主题</value></data>
+  <data name="GridEmail_Body" xml:space="preserve"><value>邮件正文:</value></data>
+  <data name="SqlBuilds_DataSource" xml:space="preserve"><value>数据来源:</value></data>
+  <data name="SqlBuilds_CopyAsTSql" xml:space="preserve"><value>复制为 TSQL</value></data>
+  <data name="About_ProductName" xml:space="preserve"><value>Axial SQL Tools</value></data>
+  <data name="About_Tagline" xml:space="preserve"><value>面向 SQL Server 专业人员的开源 SSMS 生产力工具</value></data>
+  <data name="About_Description1" xml:space="preserve"><value>Axial SQL Tools 是面向 SQL Server Management Studio 的社区扩展，为数据库开发和管理人员提供实用工作流助手、查询工具、数据导出、仪表板和源代码管理便利。</value></data>
+  <data name="About_Description2" xml:space="preserve"><value>项目开源开发，用户可审查代码、报告问题、提出改进、查看发布并贡献修复或文档。欢迎 SQL Server 社区建设性参与。</value></data>
+  <data name="About_ProjectLinks" xml:space="preserve"><value>项目链接</value></data>
+  <data name="About_GitHubRepo" xml:space="preserve"><value>GitHub 仓库</value></data>
+  <data name="About_ReportBug" xml:space="preserve"><value>报告缺陷或请求功能</value></data>
+  <data name="About_Discussions" xml:space="preserve"><value>参与项目讨论</value></data>
+  <data name="About_Documentation" xml:space="preserve"><value>文档与 Wiki</value></data>
+  <data name="About_Releases" xml:space="preserve"><value>发布与变更日志</value></data>
+  <data name="About_LicenseSupport" xml:space="preserve"><value>许可证与支持</value></data>
+  <data name="About_LicenseText" xml:space="preserve"><value>许可证：Apache License 2.0。您可在许可证条款下使用、研究、修改和分发本项目。扩展按原样提供，不作任何担保。</value></data>
+  <data name="About_ReadLicense" xml:space="preserve"><value>在 GitHub 阅读完整许可证</value></data>
+  <data name="About_SupportText" xml:space="preserve"><value>支持由社区提供，尽力而为。报告问题时请在 GitHub 提交 issue，并提供清晰复现步骤、日志、SSMS 版本和扩展版本。</value></data>
+  <data name="About_Contributing" xml:space="preserve"><value>贡献</value></data>
+  <data name="About_ContributingText" xml:space="preserve"><value>贡献可包括缺陷报告、功能建议、拉取请求、文档更新、测试说明和查询库改进。若 Axial SQL Tools 对您有帮助，欢迎反馈或帮助改进项目。</value></data>
+  <data name="About_LogFolderPrefix" xml:space="preserve"><value>诊断日志文件夹: </value></data>
+  <data name="About_Open" xml:space="preserve"><value>打开</value></data>
+  <data name="Settings_TemplatesFolder" xml:space="preserve"><value>模板文件夹:</value></data>
+  <data name="Settings_DownloadQueryLibrary" xml:space="preserve"><value>从 GitHub 下载 TSQL 脚本</value></data>
+  <data name="Settings_UseSnippets" xml:space="preserve"><value>使用代码片段（需重启 SSMS）</value></data>
+  <data name="Settings_SnippetsLocation" xml:space="preserve"><value>片段位置:</value></data>
+  <data name="Settings_ReplaceSnippetsWhen" xml:space="preserve"><value>按下时替换片段:</value></data>
+  <data name="Settings_ReplaceAsterisk" xml:space="preserve"><value>将 SELECT * 替换为列列表</value></data>
+  <data name="Settings_ReplaceAsteriskWhen" xml:space="preserve"><value>按下时替换星号:</value></data>
+  <data name="Settings_StorageType" xml:space="preserve"><value>存储类型:</value></data>
+  <data name="Settings_StorageDisabled" xml:space="preserve"><value>已禁用</value></data>
+  <data name="Settings_StorageDatabase" xml:space="preserve"><value>数据库表</value></data>
+  <data name="Settings_StorageTextFiles" xml:space="preserve"><value>文本文件 (JSONL)</value></data>
+  <data name="Settings_TextFiles" xml:space="preserve"><value>文本文件:</value></data>
+  <data name="Settings_OpenFolder" xml:space="preserve"><value>打开文件夹</value></data>
+  <data name="Settings_ConnectionInfo" xml:space="preserve"><value>连接信息:</value></data>
+  <data name="Settings_NotConfigured" xml:space="preserve"><value>&lt; 未配置 &gt;</value></data>
+  <data name="Settings_UseOeConnection" xml:space="preserve"><value>使用对象资源管理器中的连接</value></data>
+  <data name="Settings_TargetTableName" xml:space="preserve"><value>目标表名:</value></data>
+  <data name="Settings_TargetTableHint" xml:space="preserve"><value>留空则使用默认 [dbo].[QueryHistory] 表。</value></data>
+  <data name="Settings_CreationScript" xml:space="preserve"><value>创建脚本（仅供参考）</value></data>
+  <data name="Settings_PreserveComments" xml:space="preserve"><value>保留注释</value></data>
+  <data name="Settings_RemoveNewlineAfterJoin" xml:space="preserve"><value>JOIN 后移除换行</value></data>
+  <data name="Settings_TabAfterJoinOn" xml:space="preserve"><value>JOIN..ON 后添加制表符</value></data>
+  <data name="Settings_CrossJoinNewLine" xml:space="preserve"><value>CROSS/OUTER JOIN/APPLY 换行</value></data>
+  <data name="Settings_CaseMultiline" xml:space="preserve"><value>CASE 表达式格式化为多行</value></data>
+  <data name="Settings_NewlineBetweenStatements" xml:space="preserve"><value>代码块中语句间添加换行</value></data>
+  <data name="Settings_BreakExecParams" xml:space="preserve"><value>exec 存储过程参数每行一个</value></data>
+  <data name="Settings_UppercaseFunctions" xml:space="preserve"><value>内置函数始终大写</value></data>
+  <data name="Settings_UnindentBeginEnd" xml:space="preserve"><value>Begin..End 块取消缩进</value></data>
+  <data name="Settings_BreakVarDefs" xml:space="preserve"><value>变量定义每行一个</value></data>
+  <data name="Settings_BreakSprocParams" xml:space="preserve"><value>存储过程定义参数每行一个</value></data>
+  <data name="Settings_BreakSelectTop" xml:space="preserve"><value>TOP 后字段换行并取消缩进</value></data>
+  <data name="Settings_SourceQuery" xml:space="preserve"><value>源查询</value></data>
+  <data name="Settings_FormattedQuery" xml:space="preserve"><value>格式化查询</value></data>
+  <data name="Settings_SaveGoogleSheets" xml:space="preserve"><value>授权 Google 表格</value></data>
+  <data name="Settings_PickColor" xml:space="preserve"><value>选择颜色...</value></data>
+  <data name="Settings_AddRule" xml:space="preserve"><value>+ 添加</value></data>
+  <data name="Settings_EditSelected" xml:space="preserve"><value>编辑选中项</value></data>
+  <data name="Settings_DeleteSelected" xml:space="preserve"><value>删除选中项</value></data>
+  <data name="Settings_AddNewRule" xml:space="preserve"><value>添加新规则</value></data>
+  <data name="Settings_ConfiguredRules" xml:space="preserve"><value>已配置规则</value></data>
+  <data name="Settings_ServerContains" xml:space="preserve"><value>服务器名包含:</value></data>
+  <data name="Settings_DatabaseContains" xml:space="preserve"><value>数据库名包含:</value></data>
+  <data name="Settings_StatusBarColor" xml:space="preserve"><value>状态栏与选项卡颜色:</value></data>
+  <data name="Msg_QuickSearch_SelectOeNode" xml:space="preserve"><value>请先在对象资源管理器中选择服务器或数据库节点。</value></data>
+  <data name="Msg_QuickSearch_SelectConnection" xml:space="preserve"><value>请先从对象资源管理器选择连接。</value></data>
+  <data name="Msg_QuickSearch_EnterText" xml:space="preserve"><value>请输入搜索文本。</value></data>
+  <data name="Msg_QuickSearch_SelectObjectType" xml:space="preserve"><value>请至少选择一种对象类型。</value></data>
+  <data name="Msg_QuickSearch_SearchFailed" xml:space="preserve"><value>搜索失败: {0}</value></data>
+  <data name="Msg_QuickSearch_ScriptFailed" xml:space="preserve"><value>脚本生成失败: {0}</value></data>
+  <data name="Msg_QuickSearch_Wip" xml:space="preserve"><value>TODO - 开发中</value></data>
+  <data name="Msg_QuickSearch_ScriptObjectTitle" xml:space="preserve"><value>脚本对象</value></data>
+  <data name="Msg_QueryHistory_LoadError" xml:space="preserve"><value>加载数据出错: {0}</value></data>
+  <data name="Msg_Snippet_PrefixRequired" xml:space="preserve"><value>前缀为必填项。</value></data>
+  <data name="Msg_Snippet_DeleteConfirm" xml:space="preserve"><value>删除片段 "{0}"?</value></data>
+  <data name="Msg_Snippet_ImportCompleted" xml:space="preserve"><value>导入完成。</value></data>
+  <data name="Msg_Snippet_SettingsSaved" xml:space="preserve"><value>设置已保存。</value></data>
+  <data name="Msg_DataTransfer_NoSavedConnections" xml:space="preserve"><value>未找到已保存连接。请使用“编辑已保存连接”添加。</value></data>
+  <data name="Msg_DataTransfer_Error" xml:space="preserve"><value>发生错误: {0}</value></data>
+  <data name="Msg_DataTransfer_Cancelled" xml:space="preserve"><value>数据传输已取消。</value></data>
+  <data name="Msg_DataTransfer_SelectSavedConnection" xml:space="preserve"><value>请选择已保存连接。</value></data>
+  <data name="Msg_DataTransfer_SelectConnectionToSave" xml:space="preserve"><value>请选择要保存的连接。</value></data>
+  <data name="Msg_DataImport_SelectDatabase" xml:space="preserve"><value>请先在对象资源管理器中选择数据库。</value></data>
+  <data name="Msg_DataImport_ImportFailed" xml:space="preserve"><value>导入失败: {0}</value></data>
+  <data name="Msg_DataImport_SelectWorkbook" xml:space="preserve"><value>请先选择 Excel 工作簿。</value></data>
+  <data name="Msg_DataImport_SelectTarget" xml:space="preserve"><value>请从对象资源管理器选择目标数据库。</value></data>
+  <data name="Msg_DataImport_ProvideTable" xml:space="preserve"><value>请提供目标表名。</value></data>
+  <data name="Msg_DataImport_Success" xml:space="preserve"><value>导入已成功完成。</value></data>
+  <data name="Msg_GridEmail_Sent" xml:space="preserve"><value>邮件已发送！</value></data>
+  <data name="Msg_GridEmail_Queued" xml:space="preserve"><value>邮件已通过 Database Mail 排队！</value></data>
+  <data name="Msg_GridEmail_Error" xml:space="preserve"><value>发生错误</value></data>
+  <data name="Msg_GridEmail_InvalidRecipient" xml:space="preserve"><value>无法解析收件人邮箱地址。</value></data>
+  <data name="Msg_GridEmail_SubjectRequired" xml:space="preserve"><value>请填写邮件主题。</value></data>
+  <data name="Msg_GridEmail_InvalidMailConfig" xml:space="preserve"><value>邮件配置无效</value></data>
+  <data name="Msg_SyncGitHub_SelectProfileToEdit" xml:space="preserve"><value>请选择要编辑的配置文件。</value></data>
+  <data name="Msg_SyncGitHub_RequiredFields" xml:space="preserve"><value>配置文件名、所有者、仓库名、分支和令牌为必填项。</value></data>
+  <data name="Msg_SyncGitHub_ValidateFailed" xml:space="preserve"><value>验证 GitHub 详情失败：
+{0}</value></data>
+  <data name="Msg_SyncGitHub_NoProfileSelected" xml:space="preserve"><value>未选择配置文件。</value></data>
+  <data name="Msg_SyncGitHub_ConfirmDelete" xml:space="preserve"><value>删除配置文件 '{0}'?</value></data>
+  <data name="Msg_SyncGitHub_ConfirmDeleteTitle" xml:space="preserve"><value>确认删除</value></data>
+  <data name="Msg_SyncGitHub_SelectRepo" xml:space="preserve"><value>请先选择 GitHub 仓库。</value></data>
+  <data name="Msg_SyncGitHub_NoRepoTitle" xml:space="preserve"><value>未选择仓库</value></data>
+  <data name="Msg_SyncGitHub_ConfirmCommit" xml:space="preserve"><value>确认提交</value></data>
+  <data name="Msg_SqlBuilds_Copied" xml:space="preserve"><value>TSQL 脚本已复制到剪贴板！</value></data>
+  <data name="Msg_SqlBuilds_CopyTitle" xml:space="preserve"><value>复制为 TSQL</value></data>
+  <data name="Msg_Settings_GoogleClientRequired" xml:space="preserve"><value>授权 Google 表格前需填写 Client ID 和 Client Secret。</value></data>
+  <data name="Msg_Settings_GoogleSheetsTitle" xml:space="preserve"><value>Google 表格</value></data>
+  <data name="Msg_Settings_AuthFailed" xml:space="preserve"><value>授权失败: {0}</value></data>
+  <data name="Msg_Settings_ConnectionColorsFill" xml:space="preserve"><value>请至少填写服务器名或数据库名。</value></data>
+  <data name="Msg_Settings_ConnectionColorsTitle" xml:space="preserve"><value>连接颜色</value></data>
+  <data name="Msg_Settings_QueryLibraryDownloaded" xml:space="preserve"><value>Axial SQL Tool 查询库已下载</value></data>
+  <data name="Msg_Common_Completed" xml:space="preserve"><value>完成</value></data>
+  <data name="Msg_Templates_Refreshed" xml:space="preserve"><value>模板列表已更新！</value></data>
+  <data name="Msg_GridExport_NoDataTitle" xml:space="preserve"><value>无可用数据</value></data>
+  <data name="Msg_GridExport_NoData" xml:space="preserve"><value>没有可导出的结果集。</value></data>
+  <data name="Msg_GridExport_GoogleConfigRequired" xml:space="preserve"><value>需要 Google Sheets 的 Client ID 和 Client Secret。请先打开设置窗口并配置 Google Sheets 部分后再导出。</value></data>
+  <data name="Msg_GridExport_GoogleConfigTitle" xml:space="preserve"><value>缺少 Google Sheets 配置</value></data>
+  <data name="Msg_GridExport_GoogleAuthRequired" xml:space="preserve"><value>Google Sheets 尚未授权。请先在设置窗口中完成授权后再导出。</value></data>
+  <data name="Msg_GridExport_AuthRequiredTitle" xml:space="preserve"><value>需要授权</value></data>
+  <data name="Msg_GridExport_GoogleComplete" xml:space="preserve"><value>数据已导出到 Google Sheets。</value></data>
+  <data name="Msg_GridExport_CompleteTitle" xml:space="preserve"><value>导出完成</value></data>
+  <data name="Msg_GridExport_Failed" xml:space="preserve"><value>导出失败: {0}</value></data>
+  <data name="Msg_GridExport_FailedTitle" xml:space="preserve"><value>导出失败</value></data>
+  <data name="Msg_FormatQuery_ParseErrorTitle" xml:space="preserve"><value>解析代码时出错</value></data>
+  <data name="Msg_ScriptObject_NothingSelected" xml:space="preserve"><value>未选择任何内容</value></data>
+  <data name="Msg_ScriptObject_ErrorTitle" xml:space="preserve"><value>获取所选对象时出错</value></data>
+  <data name="Msg_ScriptObject_SelectPrompt" xml:space="preserve"><value>请选择要生成脚本的对象。</value></data>
+  <data name="Msg_ScriptObject_SelectRequired" xml:space="preserve"><value>请选择一个要生成脚本的对象。</value></data>
+  <data name="Msg_SelectStatement_ErrorTitle" xml:space="preserve"><value>选择当前语句时出错</value></data>
+  <data name="Msg_ToggleComment_ErrorTitle" xml:space="preserve"><value>切换块注释时出错</value></data>
+  <data name="Msg_CommandProcessor_FileNotFound" xml:space="preserve"><value>文件 {0} 不存在！</value></data>
+  <data name="Msg_ExcelExport_FileNotFound" xml:space="preserve"><value>找不到导出的文件。</value></data>
+  <data name="Msg_ExcelExport_OpenInExcelTitle" xml:space="preserve"><value>在 Excel 中打开</value></data>
+  <data name="Msg_ExcelExport_OpenFailed" xml:space="preserve"><value>无法在 Excel 中打开导出的文件。
+
+{0}</value></data>
+  <data name="Msg_DataTransfer_MySqlLocalInfileDisabled" xml:space="preserve"><value>MySQL local_infile 已禁用。请在服务器上启用 local_infile（并确保 AllowLoadLocalInfile 为 true）以使用批量复制。</value></data>
+  <data name="Msg_Update_Available" xml:space="preserve"><value>Axial SQL Tools v{0} 有可用更新。  </value></data>
+  <data name="Msg_Update_UpdateOnClose" xml:space="preserve"><value>关闭时更新</value></data>
+  <data name="Msg_Update_ReleaseNotes" xml:space="preserve"><value>发行说明</value></data>
+  <data name="Msg_GridCopy_AllAsPopup" xml:space="preserve"><value>全部复制为 ...</value></data>
+  <data name="Msg_GridCopy_SelectedAsPopup" xml:space="preserve"><value>复制所选为 ...</value></data>
+  <data name="Msg_GridCopy_ValuesAsInClause" xml:space="preserve"><value>值作为 IN (...) - 按住 Shift 生成紧凑列表</value></data>
+  <data name="Msg_GridCopy_SelectedColumnNames" xml:space="preserve"><value>复制所选列名</value></data>
+  <data name="Msg_GridCopy_AllColumnNames" xml:space="preserve"><value>复制全部列名</value></data>
+  <data name="Msg_GridCopy_StatusCopiedColumnNames" xml:space="preserve"><value>已复制列名</value></data>
+  <data name="Msg_GridCopy_StatusNoColumnNames" xml:space="preserve"><value>没有可复制的列名</value></data>
+  <data name="Msg_GridCopy_StatusNoData" xml:space="preserve"><value>没有可复制的数据</value></data>
+  <data name="Msg_GridCopy_StatusNoCellsSelected" xml:space="preserve"><value>未选择要复制的单元格</value></data>
+  <data name="Msg_GridCopy_StatusCopied" xml:space="preserve"><value>已复制</value></data>
+  <data name="Msg_GridCopy_StatusNoColumnSelected" xml:space="preserve"><value>未选择要复制的列</value></data>
+  <data name="Common_Close" xml:space="preserve"><value>关闭</value></data>
+  <data name="Common_Name" xml:space="preserve"><value>名称</value></data>
+  <data name="Common_OK" xml:space="preserve"><value>确定</value></data>
+  <data name="Common_Provider" xml:space="preserve"><value>提供程序</value></data>
+  <data name="DataTransfer_AddNew" xml:space="preserve"><value>新建</value></data>
+  <data name="DataTransfer_ConnectionDetails" xml:space="preserve"><value>连接详情</value></data>
+  <data name="DataTransfer_NewConnectionDefault" xml:space="preserve"><value>新连接</value></data>
+  <data name="DataTransfer_SavedConnectionsTitle" xml:space="preserve"><value>已保存连接</value></data>
+  <data name="DataTransfer_SavedPathHint" xml:space="preserve"><value>保存位置：%APPDATA%\AxialSqlTools\data-transfer-connections.json</value></data>
+  <data name="DataTransfer_SelectSavedConnectionTitle" xml:space="preserve"><value>选择已保存连接</value></data>
+  <data name="ExcelExport_OpenInExcel" xml:space="preserve"><value>在 Excel 中打开</value></data>
+  <data name="ExcelExport_SavedFileLabel" xml:space="preserve"><value>已保存文件：</value></data>
+  <data name="ExcelExport_SuccessMessage" xml:space="preserve"><value>数据已成功导出。</value></data>
+  <data name="FormatOpts_CheckAll" xml:space="preserve"><value>全选</value></data>
+  <data name="FormatOpts_SelectOptions" xml:space="preserve"><value>选择格式化选项</value></data>
+  <data name="FormatOpts_Title" xml:space="preserve"><value>查询格式选项</value></data>
+  <data name="FormatOpts_UncheckAll" xml:space="preserve"><value>全不选</value></data>
+  <data name="Msg_GridEmail_ErrorDetail" xml:space="preserve"><value>错误信息：{0}
+内部异常：{1}</value></data>
+  <data name="Msg_Settings_DownloadFailed" xml:space="preserve"><value>发生错误：'{0}'</value></data>
+  <data name="Msg_Settings_LoadError" xml:space="preserve"><value>错误信息：{0}
+内部异常：{1}</value></data>
+  <data name="ScriptObject_DialogTitle" xml:space="preserve"><value>选择对象</value></data>
+  <data name="Settings_AuthorizationStatus" xml:space="preserve"><value>授权状态:</value></data>
+  <data name="Settings_Authorized" xml:space="preserve"><value>已授权</value></data>
+  <data name="Settings_CheckForUpdates" xml:space="preserve"><value>检查更新</value></data>
+  <data name="Settings_CheckUpdatesOnStartup" xml:space="preserve"><value>启动时检查 Axial SQL Tools 更新</value></data>
+  <data name="Settings_ClientId" xml:space="preserve"><value>客户端 ID:</value></data>
+  <data name="Settings_ClientSecret" xml:space="preserve"><value>客户端密钥:</value></data>
+  <data name="Settings_Color" xml:space="preserve"><value>颜色</value></data>
+  <data name="Settings_ConnectionColorsDesc" xml:space="preserve"><value>根据服务器和/或数据库名称给查询窗口状态栏和文档选项卡着色。如果两个字段都填写，则必须同时匹配。留空字段可匹配任意值。</value></data>
+  <data name="Settings_ConnectionColorsExamples" xml:space="preserve"><value>示例：Server='PROD' 匹配 SQL-PROD-01。Database='master' 匹配任何连接到 master 的连接。Server='PROD' + Database='Sales' 仅匹配 PROD 服务器上的 Sales。第一条匹配的规则生效。</value></data>
+  <data name="Settings_DefaultDirectory" xml:space="preserve"><value>默认目录:</value></data>
+  <data name="Settings_DefaultFilename" xml:space="preserve"><value>默认文件名:</value></data>
+  <data name="Settings_DefaultSpreadsheetTitle" xml:space="preserve"><value>默认电子表格标题:</value></data>
+  <data name="Settings_EnableSsl" xml:space="preserve"><value>启用 SSL/TLS</value></data>
+  <data name="Settings_ExcelAddAutoFilter" xml:space="preserve"><value>在标题行添加筛选下拉（AutoFilter）</value></data>
+  <data name="Settings_ExcelBlankDesktop" xml:space="preserve"><value>留空 → 桌面</value></data>
+  <data name="Settings_ExcelBlankFilename" xml:space="preserve"><value>留空 → DataExport__{yyyyMMdd__HHmmss}.xlsx；使用 {...} 作为日期通配符</value></data>
+  <data name="Settings_ExcelBoolsAsNumbers" xml:space="preserve"><value>将布尔值导出为数字（TRUE/FALSE -&gt; 1/0）</value></data>
+  <data name="Settings_ExcelIncludeSourceQuery" xml:space="preserve"><value>在单独工作表中包含所附查询窗口的内容（按住 Shift 则相反）</value></data>
+  <data name="Settings_GoogleAuthPrefix" xml:space="preserve"><value>授权 AxialSqlTools 使用来自 </value></data>
+  <data name="Settings_GoogleAuthSuffix" xml:space="preserve"><value> 的 OAuth 客户端 ID 创建 Google 表格。</value></data>
+  <data name="Settings_GoogleCloudConsole" xml:space="preserve"><value>Google Cloud Console</value></data>
+  <data name="Settings_NotAuthorized" xml:space="preserve"><value>未授权</value></data>
+  <data name="Settings_SenderEmail" xml:space="preserve"><value>发件人邮箱地址:</value></data>
+  <data name="Settings_SmtpPassword" xml:space="preserve"><value>SMTP 密码:</value></data>
+  <data name="Settings_SmtpPort" xml:space="preserve"><value>SMTP 端口:</value></data>
+  <data name="Settings_SmtpServer" xml:space="preserve"><value>SMTP 服务器:</value></data>
+  <data name="Settings_SmtpUserName" xml:space="preserve"><value>SMTP 用户名:</value></data>
+  <data name="Settings_UpdateStatus" xml:space="preserve"><value>更新状态</value></data>
+  <data name="Settings_UsefulTsqlScripts" xml:space="preserve"><value>实用 TSQL 脚本</value></data>
+</root>

@@ -1,3 +1,4 @@
+using AxialSqlTools.Properties;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
 using System;
@@ -68,8 +69,8 @@ namespace AxialSqlTools
             {
                 VsShellUtilities.ShowMessageBox(
                    this.package,
-                   "No Data Available",
-                   "No result sets are available for export.",
+                   Strings.Get("Msg_GridExport_NoDataTitle"),
+                   Strings.Get("Msg_GridExport_NoData"),
                    OLEMSGICON.OLEMSGICON_WARNING,
                    OLEMSGBUTTON.OLEMSGBUTTON_OK,
                    OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);
@@ -81,8 +82,8 @@ namespace AxialSqlTools
             {
                 VsShellUtilities.ShowMessageBox(
                     this.package,
-                    "Google Sheets client ID and client secret are required. Open the Settings window and configure the Google Sheets section before exporting.",
-                    "Missing Google Sheets configuration",
+                    Strings.Get("Msg_GridExport_GoogleConfigRequired"),
+                    Strings.Get("Msg_GridExport_GoogleConfigTitle"),
                     OLEMSGICON.OLEMSGICON_INFO,
                     OLEMSGBUTTON.OLEMSGBUTTON_OK,
                     OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);
@@ -93,8 +94,8 @@ namespace AxialSqlTools
             {
                 VsShellUtilities.ShowMessageBox(
                     this.package,
-                    "Google Sheets is not authorized yet. Use the Settings window to authorize access before exporting.",
-                    "Authorization Required",
+                    Strings.Get("Msg_GridExport_GoogleAuthRequired"),
+                    Strings.Get("Msg_GridExport_AuthRequiredTitle"),
                     OLEMSGICON.OLEMSGICON_INFO,
                     OLEMSGBUTTON.OLEMSGBUTTON_OK,
                     OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);
@@ -109,8 +110,8 @@ namespace AxialSqlTools
                 {
                     VsShellUtilities.ShowMessageBox(
                         this.package,
-                        "The data has been exported to Google Sheets.",
-                        "Export Complete",
+                        Strings.Get("Msg_GridExport_GoogleComplete"),
+                        Strings.Get("Msg_GridExport_CompleteTitle"),
                         OLEMSGICON.OLEMSGICON_INFO,
                         OLEMSGBUTTON.OLEMSGBUTTON_OK,
                         OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);
@@ -129,8 +130,8 @@ namespace AxialSqlTools
             {
                 VsShellUtilities.ShowMessageBox(
                     this.package,
-                    $"Export failed: {ex.Message}",
-                    "Export Failed",
+                    string.Format(Strings.Get("Msg_GridExport_Failed"), ex.Message),
+                    Strings.Get("Msg_GridExport_FailedTitle"),
                     OLEMSGICON.OLEMSGICON_CRITICAL,
                     OLEMSGBUTTON.OLEMSGBUTTON_OK,
                     OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);

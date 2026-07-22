@@ -12,7 +12,7 @@ namespace AxialSqlTools
         public GoogleSheetsExportSuccessDialog(string spreadsheetUrl, string spreadsheetTitle)
         {
             InitializeComponent();
-
+            UiLocalization.Apply(this);
             this.spreadsheetUrl = spreadsheetUrl ?? string.Empty;
             SpreadsheetLinkText.Text = string.IsNullOrWhiteSpace(spreadsheetTitle) ? spreadsheetUrl : spreadsheetTitle;
 

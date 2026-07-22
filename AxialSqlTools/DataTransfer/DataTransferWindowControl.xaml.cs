@@ -1,5 +1,6 @@
-﻿namespace AxialSqlTools
+namespace AxialSqlTools
 {
+    using AxialSqlTools.Properties;
     using Microsoft.VisualStudio.Shell;
     using MySqlConnector;
     using Npgsql;
@@ -72,6 +73,8 @@
         public DataTransferWindowControl()
         {
             this.InitializeComponent();
+            UiLocalization.Apply(this);
+            LocalizeWikiDescription();
             _themeController = new ToolWindowThemeController(this, ApplyThemeBrushResources);
 
             Button_CopyData.IsEnabled = false;
@@ -116,6 +119,19 @@
         private void ApplyThemeBrushResources()
         {
             ToolWindowThemeResources.ApplySharedTheme(this);
+        }
+
+        private void LocalizeWikiDescription()
+        {
+            WikiDescriptionTextBlock.Inlines.Clear();
+            WikiDescriptionTextBlock.Inlines.Add(new Run(Strings.Get("Common_FeatureDescriptionIn")));
+            WikiDescriptionTextBlock.Inlines.Add(new Run(" "));
+            var wikiLink = new Hyperlink(new Run(Strings.Get("Common_Wiki")))
+            {
+                NavigateUri = new Uri("https://github.com/liangguopeng1/AxialSqlTools/wiki/BULK-Data-Transfer")
+            };
+            wikiLink.RequestNavigate += WikiLink_RequestNavigate;
+            WikiDescriptionTextBlock.Inlines.Add(wikiLink);
         }
 
         private void WikiLink_RequestNavigate(object sender, RequestNavigateEventArgs e)
@@ -174,7 +190,7 @@
             var filtered = connections.FindAll(conn => conn.Provider == provider);
             if (filtered.Count == 0)
             {
-                MessageBox.Show("No saved connections found. Use \"Edit Saved Connections\" to add one.", "Data Transfer");
+                MessageBox.Show(Strings.Get("Msg_DataTransfer_NoSavedConnections"), Strings.Get("Menu_DataTransfer"));
                 return null;
             }
 
@@ -352,7 +368,7 @@
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show($"Something went wrong: {ex.Message}", "DataTransferWindow");
+                    MessageBox.Show(string.Format(Strings.Get("Msg_DataTransfer_Error"), ex.Message), Strings.Get("Menu_DataTransfer"));
                 }
 
                 Button_CopyData.Visibility = System.Windows.Visibility.Visible;
@@ -723,11 +739,11 @@
             }
             catch (OperationCanceledException)
             {
-                MessageBox.Show("Data transfer has been cancelled.", "DataTransferWindow");
+                MessageBox.Show(Strings.Get("Msg_DataTransfer_Cancelled"), Strings.Get("Menu_DataTransfer"));
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Something went wrong: {ex.Message}", "DataTransferWindow");
+                MessageBox.Show(string.Format(Strings.Get("Msg_DataTransfer_Error"), ex.Message), Strings.Get("Menu_DataTransfer"));
             }
             finally
             {
@@ -843,8 +859,8 @@
                                                 !string.Equals(localInfileValue, "1", StringComparison.OrdinalIgnoreCase))
                                             {
                                                 MessageBox.Show(
-                                                    "MySQL local infile is disabled. Enable local_infile on the server (and ensure AllowLoadLocalInfile is true) to use bulk copy.",
-                                                    "DataTransferWindow");
+                                                    Strings.Get("Msg_DataTransfer_MySqlLocalInfileDisabled"),
+                                                    Strings.Get("Menu_DataTransfer"));
                                                 return;
                                             }
                                         }
@@ -884,11 +900,11 @@
             }
             catch (OperationCanceledException)
             {
-                MessageBox.Show("Data transfer has been cancelled.", "DataTransferWindow");
+                MessageBox.Show(Strings.Get("Msg_DataTransfer_Cancelled"), Strings.Get("Menu_DataTransfer"));
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Something went wrong: {ex.Message}", "DataTransferWindow");
+                MessageBox.Show(string.Format(Strings.Get("Msg_DataTransfer_Error"), ex.Message), Strings.Get("Menu_DataTransfer"));
             }
             finally
             {
@@ -1027,11 +1043,11 @@
             }
             catch (OperationCanceledException)
             {
-                MessageBox.Show("Data transfer has been cancelled.", "DataTransferWindow");
+                MessageBox.Show(Strings.Get("Msg_DataTransfer_Cancelled"), Strings.Get("Menu_DataTransfer"));
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Something went wrong: {ex.Message}", "DataTransferWindow");
+                MessageBox.Show(string.Format(Strings.Get("Msg_DataTransfer_Error"), ex.Message), Strings.Get("Menu_DataTransfer"));
             }
             finally
             {
@@ -1170,11 +1186,11 @@
             }
             catch (OperationCanceledException)
             {
-                MessageBox.Show("Data transfer has been cancelled.", "DataTransferWindow");
+                MessageBox.Show(Strings.Get("Msg_DataTransfer_Cancelled"), Strings.Get("Menu_DataTransfer"));
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Something went wrong: {ex.Message}", "DataTransferWindow");
+                MessageBox.Show(string.Format(Strings.Get("Msg_DataTransfer_Error"), ex.Message), Strings.Get("Menu_DataTransfer"));
             }
             finally
             {

@@ -5,6 +5,7 @@ using System.IO;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using EnvDTE;
+using AxialSqlTools.Properties;
 using Microsoft.SqlServer.TransactSql.ScriptDom;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
@@ -83,7 +84,7 @@ namespace AxialSqlTools
                 VsShellUtilities.ShowMessageBox(
                     this.package,
                     ex.Message,
-                    "Error selecting current statement",
+                    Strings.Get("Msg_SelectStatement_ErrorTitle"),
                     OLEMSGICON.OLEMSGICON_WARNING,
                     OLEMSGBUTTON.OLEMSGBUTTON_OK,
                     OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);

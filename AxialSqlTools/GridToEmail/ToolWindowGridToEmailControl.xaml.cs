@@ -1,5 +1,6 @@
-﻿namespace AxialSqlTools
+namespace AxialSqlTools
 {
+    using AxialSqlTools.Properties;
     using Microsoft.VisualStudio.Shell;
     using System;
     using System.Collections.Generic;
@@ -142,12 +143,27 @@
         public ToolWindowGridToEmailControl()
         {
             this.InitializeComponent();
+            UiLocalization.Apply(this);
+            LocalizeWikiDescription();
             _themeController = new ToolWindowThemeController(this, ApplyThemeBrushResources);
         }
 
         private void ApplyThemeBrushResources()
         {
             ToolWindowThemeResources.ApplySharedTheme(this);
+        }
+
+        private void LocalizeWikiDescription()
+        {
+            WikiDescriptionTextBlock.Inlines.Clear();
+            WikiDescriptionTextBlock.Inlines.Add(new Run(Strings.Get("Common_FeatureDescriptionIn")));
+            WikiDescriptionTextBlock.Inlines.Add(new Run(" "));
+            var wikiLink = new Hyperlink(new Run(Strings.Get("Common_Wiki")))
+            {
+                NavigateUri = new Uri("https://github.com/liangguopeng1/AxialSqlTools/wiki/Export-Grid-to-Email")
+            };
+            wikiLink.RequestNavigate += buttonWikiPage_Click;
+            WikiDescriptionTextBlock.Inlines.Add(wikiLink);
         }
 
         public void PrepareFormParameters()
@@ -201,7 +217,7 @@
             double fileSizeInKilobytes = fileInfo.Length / 1024.0;
             string formattedSize = fileSizeInKilobytes.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + "KB";
 
-            FullFileNameTitleLabel.Content = string.Format(System.Globalization.CultureInfo.CurrentUICulture, "File ({0}):", formattedSize);
+            FullFileNameTitleLabel.Content = string.Format(System.Globalization.CultureInfo.CurrentUICulture, "{0} ({1})", Strings.Get("GridEmail_File").TrimEnd(':'), formattedSize);
 
             EmailServerOptions.Items.Clear();
 
@@ -357,7 +373,7 @@
 
                 smtp.Send(emailMessage);
 
-                MessageBox.Show($"Email has been sent!", "Done");
+                MessageBox.Show(Strings.Get("Msg_GridEmail_Sent"), Strings.Common_Done);
 
                 try
                 {
@@ -373,8 +389,8 @@
             }
             catch (Exception ex)
             {
-                string msg = $"Error message: {ex.Message} \nInnerException: {ex.InnerException}";
-                MessageBox.Show(msg, "Something went wrong");
+                string msg = string.Format(Strings.Get("Msg_GridEmail_ErrorDetail"), ex.Message, ex.InnerException);
+                MessageBox.Show(msg, Strings.Common_Error);
             }
 
             return false;
@@ -443,7 +459,7 @@
 
                     }
 
-                    MessageBox.Show("Email has been queued via Database Mail!", "Done");
+                    MessageBox.Show(Strings.Get("Msg_GridEmail_Queued"), Strings.Common_Done);
 
                     return true;
                 }
@@ -451,8 +467,8 @@
             }
             catch (Exception ex)
             {
-                string msg = $"Error message: {ex.Message} \nInnerException: {ex.InnerException}";
-                MessageBox.Show(msg, "Something went wrong");
+                string msg = string.Format(Strings.Get("Msg_GridEmail_ErrorDetail"), ex.Message, ex.InnerException);
+                MessageBox.Show(msg, Strings.Common_Error);
             }
 
             return false;
@@ -468,13 +484,13 @@
 
             if (!allValid)
             {
-                MessageBox.Show("Can't parse the recipient's email address.", "Invalid Email");
+                MessageBox.Show(Strings.Get("Msg_GridEmail_InvalidRecipient"), Strings.Common_Error);
                 return;
             }
 
             if (string.IsNullOrEmpty(EmailSubject.Text))
             {
-                MessageBox.Show("Please provide the email subject.", "Subject Required");
+                MessageBox.Show(Strings.Get("Msg_GridEmail_SubjectRequired"), Strings.Common_Error);
                 return;
             }
 
@@ -524,7 +540,7 @@
                 success = SendEmailViaDatabaseMail(connectionInfo, mailConfig, allEmailsConcatenated, ccEmail, EmailSubject.Text, EmailBodyContent, exportedFilename);
             
             else {
-                MessageBox.Show("Invalid mail config", "Error");
+                MessageBox.Show(Strings.Get("Msg_GridEmail_InvalidMailConfig"), Strings.Common_Error);
             }
 
             if (success)

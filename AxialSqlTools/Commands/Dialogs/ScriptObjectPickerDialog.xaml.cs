@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
+using AxialSqlTools.Properties;
 
 namespace AxialSqlTools
 {
@@ -11,8 +12,8 @@ namespace AxialSqlTools
         public ScriptObjectPickerDialog(IEnumerable<ScriptObjectSelectionItem> matches)
         {
             InitializeComponent();
-
-            HeaderTextBlock.Text = "Select the object to script.";
+            UiLocalization.Apply(this);
+            HeaderTextBlock.Text = Strings.Get("Msg_ScriptObject_SelectPrompt");
             ObjectsListBox.ItemsSource = matches.ToList();
         }
 
@@ -25,7 +26,7 @@ namespace AxialSqlTools
             }
             else
             {
-                MessageBox.Show("Select an object to script.", "Script Object");
+                MessageBox.Show(Strings.Get("Msg_ScriptObject_SelectRequired"), Strings.Get("Msg_QuickSearch_ScriptObjectTitle"));
             }
         }
 

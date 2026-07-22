@@ -5,6 +5,7 @@ using Microsoft.VisualStudio.Shell.Interop;
 using System.Collections.Generic;
 using System;
 using System.Diagnostics;
+using AxialSqlTools.Properties;
 
 namespace AxialSqlTools
 {
@@ -63,13 +64,13 @@ namespace AxialSqlTools
 
                 IEnumerable<IVsInfoBarTextSpan> textSpans = new[]
                 {
-                    new InfoBarTextSpan($"Axial SQL Tools v{latestVersion} update available.  ")
+                    new InfoBarTextSpan(string.Format(Strings.Get("Msg_Update_Available"), latestVersion))
                 };
 
                 IEnumerable<IVsInfoBarActionItem> actionItems = new IVsInfoBarActionItem[]
                 {
-                    new InfoBarButton("Update on Close", ActionUpdateOnClose),
-                    new InfoBarHyperlink("Release Notes", ActionReleaseNotes)
+                    new InfoBarButton(Strings.Get("Msg_Update_UpdateOnClose"), ActionUpdateOnClose),
+                    new InfoBarHyperlink(Strings.Get("Msg_Update_ReleaseNotes"), ActionReleaseNotes)
                 };
 
                 var model = new InfoBarModel(

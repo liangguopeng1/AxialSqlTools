@@ -1,8 +1,9 @@
-﻿using ICSharpCode.AvalonEdit.Highlighting;
+using ICSharpCode.AvalonEdit.Highlighting;
 using ICSharpCode.AvalonEdit.Highlighting.Xshd;
 using Microsoft.SqlServer.Management.UI.VSIntegration;
 using Microsoft.SqlServer.Management.UI.VSIntegration.Editors;
 using Microsoft.VisualStudio.Shell;
+using AxialSqlTools.Properties;
 using System;
 using System.Collections.Generic;
 using System.Data;
@@ -15,6 +16,7 @@ using System.Threading.Tasks;
 using System.Web.UI.Design;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Navigation;
 using static AxialSqlTools.ScriptFactoryAccess;
@@ -34,6 +36,9 @@ namespace AxialSqlTools
         public QuickSearchWindowControl()
         {
             this.InitializeComponent();
+            UiLocalization.Apply(this);
+            LocalizeDataGridColumns();
+            LocalizeWikiDescription();
             themeController = new ToolWindowThemeController(this, ApplyThemeBrushResources);
 
             CheckBox_WholeWord.IsChecked = true;
@@ -56,6 +61,30 @@ namespace AxialSqlTools
             ToolWindowThemeResources.ApplySharedTheme(this);
         }
 
+        private void LocalizeDataGridColumns()
+        {
+            DataGrid_SearchResults.Columns[0].Header = Strings.Get("QuickSearch_ColDatabase");
+            DataGrid_SearchResults.Columns[1].Header = Strings.Get("QuickSearch_ColType");
+            DataGrid_SearchResults.Columns[2].Header = Strings.Get("QuickSearch_ColSchema");
+            DataGrid_SearchResults.Columns[3].Header = Strings.Get("QuickSearch_ColObject");
+            DataGrid_SearchResults.Columns[4].Header = Strings.Get("QuickSearch_ColLocation");
+            DataGrid_SearchResults.Columns[5].Header = Strings.Get("QuickSearch_ColMatchPreview");
+            DataGrid_SearchResults.Columns[6].Header = Strings.Get("QuickSearch_ColScript");
+        }
+
+        private void LocalizeWikiDescription()
+        {
+            WikiDescriptionTextBlock.Inlines.Clear();
+            WikiDescriptionTextBlock.Inlines.Add(new Run(Strings.Get("Common_FeatureDescriptionIn")));
+            WikiDescriptionTextBlock.Inlines.Add(new Run(" "));
+            var wikiLink = new Hyperlink(new Run(Strings.Get("Common_Wiki")))
+            {
+                NavigateUri = new Uri("https://github.com/liangguopeng1/AxialSqlTools/wiki/Quick-Search")
+            };
+            wikiLink.RequestNavigate += WikiLink_RequestNavigate;
+            WikiDescriptionTextBlock.Inlines.Add(wikiLink);
+        }
+
         private void WikiLink_RequestNavigate(object sender, RequestNavigateEventArgs e)
         {
             ToolWindowNavigation.HandleRequestNavigate(e);
@@ -66,7 +95,7 @@ namespace AxialSqlTools
             var ci = ScriptFactoryAccess.GetCurrentConnectionInfoFromObjectExplorer();
             if (ci == null)
             {
-                MessageBox.Show("Please select a server or database node in Object Explorer first.", "Quick Search");
+                MessageBox.Show(Strings.Get("Msg_QuickSearch_SelectOeNode"), Strings.Get("Menu_QuickSearch"));
                 return;
             }
 
@@ -92,20 +121,20 @@ namespace AxialSqlTools
 
             if (string.IsNullOrWhiteSpace(selectedConnectionString))
             {
-                MessageBox.Show("Select a connection from Object Explorer first.", "Quick Search");
+                MessageBox.Show(Strings.Get("Msg_QuickSearch_SelectConnection"), Strings.Get("Menu_QuickSearch"));
                 return;
             }
 
             string searchText = TextBox_SearchText.Text?.Trim();
             if (string.IsNullOrEmpty(searchText))
             {
-                MessageBox.Show("Enter text to search.", "Quick Search");
+                MessageBox.Show(Strings.Get("Msg_QuickSearch_EnterText"), Strings.Get("Menu_QuickSearch"));
                 return;
             }
 
             if (!AnyTypeSelected())
             {
-                MessageBox.Show("Select at least one object type.", "Quick Search");
+                MessageBox.Show(Strings.Get("Msg_QuickSearch_SelectObjectType"), Strings.Get("Menu_QuickSearch"));
                 return;
             }
 
@@ -113,7 +142,7 @@ namespace AxialSqlTools
 
             try
             {
-                Button_Search.Content = "Cancel";
+                Button_Search.Content = Strings.Get("Common_Cancel");
                 DataGrid_SearchResults.ItemsSource = null;
                 SqlEditor.Text = string.Empty;
                 TextBlock_ResultCount.Text = "Searching...";
@@ -149,7 +178,7 @@ namespace AxialSqlTools
                 }
                 else
                 {
-                    MessageBox.Show($"Search failed: {ex.Message}", "Quick Search");
+                    MessageBox.Show(string.Format(Strings.Get("Msg_QuickSearch_SearchFailed"), ex.Message), Strings.Get("Menu_QuickSearch"));
                     TextBlock_ResultCount.Text = "Search failed";
                 }           
             }
@@ -157,7 +186,7 @@ namespace AxialSqlTools
             {
                 searchCancellationTokenSource?.Dispose();
                 searchCancellationTokenSource = null;
-                Button_Search.Content = "Search";
+                Button_Search.Content = Strings.Get("Common_Search");
             }
         }
 
@@ -519,7 +548,7 @@ WHERE js.[command] LIKE @pattern ESCAPE '!'
 
                 if (matchLocation == "JobStep")
                 {
-                    MessageBox.Show($"TODO - WIP", "WIP");
+                    MessageBox.Show(Strings.Get("Msg_QuickSearch_Wip"), Strings.Get("Menu_QuickSearch"));
                     return;
                 }
 
@@ -537,7 +566,7 @@ WHERE js.[command] LIKE @pattern ESCAPE '!'
             }
             catch(Exception ex)
             {
-                MessageBox.Show($"Scripting failed: {ex.Message}", "Script Object");
+                MessageBox.Show(string.Format(Strings.Get("Msg_QuickSearch_ScriptFailed"), ex.Message), Strings.Get("Msg_QuickSearch_ScriptObjectTitle"));
             }           
 
         }

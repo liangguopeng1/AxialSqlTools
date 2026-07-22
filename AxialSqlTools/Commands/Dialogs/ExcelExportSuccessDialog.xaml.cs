@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
+using AxialSqlTools.Properties;
 
 namespace AxialSqlTools
 {
@@ -13,9 +14,8 @@ namespace AxialSqlTools
         public ExcelExportSuccessDialog(string filePath)
         {
             InitializeComponent();
-
+            UiLocalization.Apply(this);
             _themeController = new ToolWindowThemeController(this, ApplyThemeBrushResources);
-
             this.filePath = filePath ?? string.Empty;
             FilePathText.Text = this.filePath;
         }
@@ -29,7 +29,7 @@ namespace AxialSqlTools
         {
             if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
             {
-                MessageBox.Show(this, "The exported file could not be found.", "Open in Excel", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(this, Strings.Get("Msg_ExcelExport_FileNotFound"), Strings.Get("Msg_ExcelExport_OpenInExcelTitle"), MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
@@ -46,7 +46,7 @@ namespace AxialSqlTools
             }
             catch (Exception ex)
             {
-                MessageBox.Show(this, "Unable to open the exported file in Excel.\n\n" + ex.Message, "Open in Excel", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(this, string.Format(Strings.Get("Msg_ExcelExport_OpenFailed"), ex.Message), Strings.Get("Msg_ExcelExport_OpenInExcelTitle"), MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

@@ -1,4 +1,4 @@
-﻿namespace AxialSqlTools
+namespace AxialSqlTools
 {
     using Microsoft.SqlServer.Management.Smo.RegSvrEnum;
     using Microsoft.SqlServer.Management.UI.VSIntegration;
@@ -28,6 +28,8 @@
     using DocumentFormat.OpenXml.Spreadsheet;
     using static AxialSqlTools.HealthDashboard_ServerControl;
     using MarkerType = OxyPlot.MarkerType;
+    using AxialSqlTools.Properties;
+    using System.Windows.Documents;
 
     /// <summary>
     /// Interaction logic for HealthDashboard_ServerControl.
@@ -193,6 +195,9 @@
         public HealthDashboard_ServerControl()
         {
             this.InitializeComponent();
+            UiLocalization.Apply(this);
+            LocalizeWikiDescription();
+            LocalizeHyperlinks();
             _themeController = new ToolWindowThemeController(this, ApplyThemeBrushResources);
 
             BackupTimelinePeriodNumberTextBox.Text = "1";
@@ -223,6 +228,40 @@
             _plotErrorColor = ToOxyColor(VsThemeBrushResolver.GetBrushColor(_statusErrorBrush, System.Windows.Media.Color.FromRgb(0xA1, 0x26, 0x0D)));
             _plotNeutralColor = ToOxyColor(VsThemeBrushResolver.GetBrushColor(GetThemeBrush("AxialThemeDiffModifiedBackgroundBrush", Brushes.Gray), System.Windows.Media.Color.FromRgb(0x80, 0x80, 0x80)));
             _plotSecondaryColor = ToOxyColor(VsThemeBrushResolver.GetBrushColor(GetThemeBrush("AxialThemeLinkBrush", Brushes.DodgerBlue), System.Windows.Media.Colors.DodgerBlue));
+        }
+
+        private void LocalizeWikiDescription()
+        {
+            WikiDescriptionTextBlock.Inlines.Clear();
+            WikiDescriptionTextBlock.Inlines.Add(new System.Windows.Documents.Run(Strings.Get("Common_FeatureDescriptionIn")));
+            WikiDescriptionTextBlock.Inlines.Add(new System.Windows.Documents.Run(" "));
+            var wikiLink = new System.Windows.Documents.Hyperlink(new System.Windows.Documents.Run(Strings.Get("Common_Wiki")))
+            {
+                NavigateUri = new Uri("https://github.com/liangguopeng1/AxialSqlTools/wiki/Server-Health-Dashboard")
+            };
+            wikiLink.RequestNavigate += WikiLink_RequestNavigate;
+            WikiDescriptionTextBlock.Inlines.Add(wikiLink);
+        }
+
+        private void LocalizeHyperlinks()
+        {
+            SetHyperlinkText(UserDatabasesLinkTextBlock, Strings.Get("Health_UserDatabases"));
+            SetHyperlinkText(TotalLogFileSizeLinkTextBlock, Strings.Get("Health_TotalLogFileSize"));
+            SetHyperlinkText(BlockedRequestsLinkTextBlock, Strings.Get("Health_BlockedRequests"));
+            SetHyperlinkText(AlwaysOnLinkTextBlock, Strings.Get("Health_AlwaysOn"));
+            SetHyperlinkText(LastBackupInfoLinkTextBlock, Strings.Get("Health_LastBackupInfo"));
+            SetHyperlinkText(LinkRunSpWhoIsActive, Strings.Get("Health_RunSpWhoIsActive"));
+            SetHyperlinkText(LinkDeploySpWhoIsActive, Strings.Get("Health_DeploySpWhoIsActive"));
+            HyperlinkOpenNewVersionLink.Text = Strings.Get("Health_NewVersionAvailable");
+        }
+
+        private static void SetHyperlinkText(TextBlock textBlock, string text)
+        {
+            if (textBlock?.Inlines.FirstInline is System.Windows.Documents.Hyperlink hyperlink
+                && hyperlink.Inlines.FirstInline is System.Windows.Documents.Run run)
+            {
+                run.Text = text;
+            }
         }
 
         public void StartMonitoring()
@@ -797,7 +836,7 @@
         {
             MessageBox.Show(
                 string.Format(System.Globalization.CultureInfo.CurrentUICulture, "Invoked '{0}'", this.ToString()),
-                "HealthDashboard_Server");
+                Strings.Get("Menu_HealthDashboardServer"));
 
         }
 
@@ -865,7 +904,7 @@
             }
             catch (Exception ex)
             {
-                MessageBox.Show(ex.Message, "An error occurred");
+                MessageBox.Show(ex.Message, Strings.Get("Common_Error"));
                 error = true;
             }
 

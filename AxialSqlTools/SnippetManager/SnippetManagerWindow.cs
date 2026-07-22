@@ -1,3 +1,4 @@
+using AxialSqlTools.Properties;
 using System;
 using System.Runtime.InteropServices;
 using Microsoft.VisualStudio.Shell;
@@ -9,7 +10,7 @@ namespace AxialSqlTools
     {
         public SnippetManagerWindow() : base(null)
         {
-            this.Caption = "Snippet Manager";
+            this.Caption = Strings.Get("Menu_SnippetManager");
             this.Content = new SnippetManagerWindowControl();
         }
     }

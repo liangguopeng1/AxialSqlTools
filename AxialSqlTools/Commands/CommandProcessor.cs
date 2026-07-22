@@ -15,6 +15,7 @@ using Microsoft.SqlServer.Management.UI.VSIntegration.ObjectExplorer;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
 using AxialSqlTools;
+using AxialSqlTools.Properties;
 using System.Windows.Input;
 
 namespace Aurora
@@ -62,8 +63,8 @@ namespace Aurora
                 {
                     VsShellUtilities.ShowMessageBox(
                         this.package,
-                        "File " + FullFileName + " doesn't exist!",
-                        "Error",
+                        string.Format(Strings.Get("Msg_CommandProcessor_FileNotFound"), FullFileName),
+                        Strings.Get("Common_Error"),
                         OLEMSGICON.OLEMSGICON_WARNING,
                         OLEMSGBUTTON.OLEMSGBUTTON_OK,
                         OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);
@@ -74,7 +75,7 @@ namespace Aurora
                 VsShellUtilities.ShowMessageBox(
                     this.package,
                     ex.Message,
-                    "Error",
+                    Strings.Get("Common_Error"),
                     OLEMSGICON.OLEMSGICON_CRITICAL,
                     OLEMSGBUTTON.OLEMSGBUTTON_OK,
                     OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);

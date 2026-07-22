@@ -18,6 +18,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Interop;
+using AxialSqlTools.Properties;
 using static AxialSqlTools.ScriptFactoryAccess;
 using Task = System.Threading.Tasks.Task;
 
@@ -116,7 +117,7 @@ namespace AxialSqlTools
 
                     if (string.IsNullOrEmpty(selectedObjectName))
                     {
-                        throw new Exception("Nothing has been selected");
+                        throw new Exception(Strings.Get("Msg_ScriptObject_NothingSelected"));
                     }
 
                     string fullScriptResult = ScriptObjectDefinition.GetText(package, selectedObjectName);
@@ -138,7 +139,7 @@ namespace AxialSqlTools
                     VsShellUtilities.ShowMessageBox(
                         this.package,
                         ex.Message,
-                        "Error getting selected object",
+                        Strings.Get("Msg_ScriptObject_ErrorTitle"),
                         OLEMSGICON.OLEMSGICON_WARNING,
                         OLEMSGBUTTON.OLEMSGBUTTON_OK,
                         OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);

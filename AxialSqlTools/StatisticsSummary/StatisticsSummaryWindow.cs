@@ -1,3 +1,4 @@
+using AxialSqlTools.Properties;
 using System;
 using System.Runtime.InteropServices;
 using Microsoft.VisualStudio;
@@ -13,7 +14,7 @@ namespace AxialSqlTools
 
         public StatisticsSummaryWindow() : base(null)
         {
-            Caption = "Statistics Summary";
+            Caption = Strings.Get("Menu_StatisticsSummary");
             Content = new StatisticsSummaryWindowControl();
         }
 

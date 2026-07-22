@@ -10,6 +10,7 @@ namespace AxialSqlTools
         public FormatOptionsDialog(TSqlCodeFormatSettings initial = null)
         {
             InitializeComponent();
+            UiLocalization.Apply(this);
             Settings = initial ?? new TSqlCodeFormatSettings();
             ApplySettingsToUi();
         }

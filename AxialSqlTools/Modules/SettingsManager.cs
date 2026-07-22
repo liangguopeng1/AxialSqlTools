@@ -563,7 +563,7 @@ ORDER BY sd.[name];
 
             if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
             {
-                folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "AxialSqlToolsTemplates");
+                folder = UserConfigPaths.TemplatesDirectory;
 
                 SaveTemplatesFolder(folder);
 
@@ -833,10 +833,7 @@ ORDER BY sd.[name];
 
         public static string GetQueryHistoryTextFileFolder()
         {
-            return Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "AxialSQL",
-                "QueryHistory");
+            return UserConfigPaths.QueryHistoryDirectory;
         }
 
         public static List<DataTransferSavedConnection> GetDataTransferSavedConnections()

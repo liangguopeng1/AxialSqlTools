@@ -7,7 +7,8 @@ namespace AxialSqlTools
 {
     public static class SavedConnectionStore
     {
-        private static readonly string PathToFile =
+        private static readonly string PathToFile = UserConfigPaths.DataTransferConnectionsFile;
+        private static readonly string LegacyPathToFile =
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "AxialSQL", "data-transfer-connections.json");
 
@@ -15,12 +16,17 @@ namespace AxialSqlTools
         {
             try
             {
-                if (!File.Exists(PathToFile))
+                var path = PathToFile;
+                if (!File.Exists(path) && File.Exists(LegacyPathToFile))
+                {
+                    path = LegacyPathToFile;
+                }
+                if (!File.Exists(path))
                 {
                     return new List<SettingsManager.DataTransferSavedConnection>();
                 }
 
-                var json = File.ReadAllText(PathToFile);
+                var json = File.ReadAllText(path);
                 return JsonConvert.DeserializeObject<List<SettingsManager.DataTransferSavedConnection>>(json)
                        ?? new List<SettingsManager.DataTransferSavedConnection>();
             }

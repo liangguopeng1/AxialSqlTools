@@ -38,12 +38,14 @@
                        VerticalAlignment="Center"
                        FontWeight="Bold"
                        FontSize="18"
+                       Tag="loc:Stats_HeaderTitle"
                        Text="Statistics Summary" />
-            <TextBlock Margin="10"
+            <TextBlock x:Name="WikiDescriptionTextBlock"
+                       Margin="10"
                        VerticalAlignment="Center">
                 <Run Text="Feature description in" />
                 <Run Text=" " />
-                <Hyperlink NavigateUri="https://github.com/Axial-SQL/AxialSqlTools/wiki/Statistics-Summary"
+                <Hyperlink NavigateUri="https://github.com/liangguopeng1/AxialSqlTools/wiki/Statistics-Summary"
                            RequestNavigate="WikiLink_RequestNavigate">
                     <Run Text="Wiki" />
                 </Hyperlink>
@@ -75,6 +77,7 @@
                         Padding="10,3"
                         VerticalAlignment="Center"
                         Content="Cancel"
+                        Tag="loc:Common_Cancel"
                         Click="CancelLoading_Click"
                         Visibility="{Binding IsLoading, Converter={StaticResource BooleanToVisibilityConverter}}" />
             </Grid>
@@ -85,7 +88,7 @@
                          IsIndeterminate="True"
                          Visibility="{Binding IsLoading, Converter={StaticResource BooleanToVisibilityConverter}}" />
 
-            <ItemsControl Grid.Row="2" ItemsSource="{Binding Results}">
+            <ItemsControl x:Name="ResultsItemsControl" Grid.Row="2" ItemsSource="{Binding Results}">
                 <ItemsControl.ItemsPanel>
                     <ItemsPanelTemplate>
                         <primitives:UniformGrid Rows="2" Columns="1" />
@@ -135,17 +138,21 @@
                                             Padding="10,3"
                                             VerticalAlignment="Center"
                                             Content="Copy as"
+                                            Tag="loc:Stats_CopyAs"
                                             IsEnabled="{Binding HasTableData}"
                                             Click="CopyAsButton_Click">
                                         <Button.ContextMenu>
                                             <ContextMenu>
                                                 <MenuItem Header="CSV"
+                                                          Tag="loc:Stats_CopyCsv"
                                                           Click="CopyAsCsvMenuItem_Click"
                                                           CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
                                                 <MenuItem Header="Markdown"
+                                                          Tag="loc:Stats_CopyMarkdown"
                                                           Click="CopyAsMarkdownMenuItem_Click"
                                                           CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
                                                 <MenuItem Header="JSON"
+                                                          Tag="loc:Stats_CopyJson"
                                                           Click="CopyAsJsonMenuItem_Click"
                                                           CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
                                             </ContextMenu>
@@ -162,21 +169,21 @@
 
                                     <Border Grid.Column="0" Margin="0,0,8,0" Padding="8" BorderBrush="{DynamicResource AxialThemeBorderBrush}" BorderThickness="1">
                                         <StackPanel>
-                                            <TextBlock FontWeight="Bold" Text="Elapsed time" />
+                                            <TextBlock FontWeight="Bold" Tag="loc:Stats_ElapsedTime" Text="Elapsed time" />
                                             <TextBlock Margin="0,4,0,0" FontSize="16" Text="{Binding TotalElapsedText}" />
                                         </StackPanel>
                                     </Border>
 
                                     <Border Grid.Column="1" Margin="0,0,8,0" Padding="8" BorderBrush="{DynamicResource AxialThemeBorderBrush}" BorderThickness="1">
                                         <StackPanel>
-                                            <TextBlock FontWeight="Bold" Text="CPU time" />
+                                            <TextBlock FontWeight="Bold" Tag="loc:Stats_CpuTime" Text="CPU time" />
                                             <TextBlock Margin="0,4,0,0" FontSize="16" Text="{Binding TotalCpuText}" />
                                         </StackPanel>
                                     </Border>
 
                                     <Border Grid.Column="2" Padding="8" BorderBrush="{DynamicResource AxialThemeBorderBrush}" BorderThickness="1">
                                         <StackPanel>
-                                            <TextBlock FontWeight="Bold" Text="Total logical reads" />
+                                            <TextBlock FontWeight="Bold" Tag="loc:Stats_TotalLogicalReads" Text="Total logical reads" />
                                             <TextBlock Margin="0,4,0,0" FontSize="16" Text="{Binding TotalReadsText}" />
                                         </StackPanel>
                                     </Border>
@@ -234,10 +241,10 @@
                                         <RowDefinition Height="Auto" />
                                     </Grid.RowDefinitions>
 
-                                    <TextBlock Grid.Row="0" Grid.Column="0" FontWeight="Bold" Text="Captured at" />
+                                    <TextBlock Grid.Row="0" Grid.Column="0" FontWeight="Bold" Tag="loc:Stats_CapturedAt" Text="Captured at" />
                                     <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding CapturedAtText}" />
 
-                                    <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,4,0,0" FontWeight="Bold" Text="Source" />
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,4,0,0" FontWeight="Bold" Tag="loc:Stats_Source" Text="Source" />
                                     <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,4,0,0" Text="{Binding SourceText}" />
 
                                     <Expander Grid.Row="2"
@@ -245,6 +252,7 @@
                                               Grid.ColumnSpan="2"
                                               Margin="0,8,0,0"
                                               Header="Source query"
+                                              Tag="loc:Stats_SourceQuery"
                                               IsExpanded="False">
                                         <TextBox Margin="0,8,0,0"
                                                  Height="96"

@@ -6,6 +6,7 @@ using Microsoft.SqlServer.Management.UI.Grid;
 using Microsoft.SqlServer.Management.UI.VSIntegration;
 using Microsoft.VisualStudio.CommandBars;
 using Microsoft.VisualStudio.Shell;
+using AxialSqlTools.Properties;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -47,7 +48,7 @@ namespace AxialSqlTools
 
             var copyAllPopup = (CommandBarPopup)GridCommandBar.Controls.Add(MsoControlType.msoControlPopup, Type.Missing, Type.Missing, Type.Missing, true);
             copyAllPopup.Visible = true;
-            copyAllPopup.Caption = "Copy All As ...";
+            copyAllPopup.Caption = Strings.Get("Msg_GridCopy_AllAsPopup");
 
             var btnControlAllInsert = (CommandBarButton)copyAllPopup.Controls.Add(MsoControlType.msoControlButton, Type.Missing, Type.Missing, Type.Missing, true);
             btnControlAllInsert.Visible = true;
@@ -76,12 +77,12 @@ namespace AxialSqlTools
 
             var btnControlAllInClauseList = (CommandBarButton)copyAllPopup.Controls.Add(MsoControlType.msoControlButton, Type.Missing, Type.Missing, Type.Missing, true);
             btnControlAllInClauseList.Visible = true;
-            btnControlAllInClauseList.Caption = "Values as IN (...) - hold Shift for compact list";
+            btnControlAllInClauseList.Caption = Strings.Get("Msg_GridCopy_ValuesAsInClause");
             btnControlAllInClauseList.Click += OnClick_CopyAllAsInClauseList;
 
             var copySelectedPopup = (CommandBarPopup)GridCommandBar.Controls.Add(MsoControlType.msoControlPopup, Type.Missing, Type.Missing, Type.Missing, true);
             copySelectedPopup.Visible = true;
-            copySelectedPopup.Caption = "Copy Selected As ...";
+            copySelectedPopup.Caption = Strings.Get("Msg_GridCopy_SelectedAsPopup");
 
             var btnControlSelectedInsert = (CommandBarButton)copySelectedPopup.Controls.Add(MsoControlType.msoControlButton, Type.Missing, Type.Missing, Type.Missing, true);
             btnControlSelectedInsert.Visible = true;
@@ -110,17 +111,17 @@ namespace AxialSqlTools
 
             var btnControlSelectedInClauseList = (CommandBarButton)copySelectedPopup.Controls.Add(MsoControlType.msoControlButton, Type.Missing, Type.Missing, Type.Missing, true);
             btnControlSelectedInClauseList.Visible = true;
-            btnControlSelectedInClauseList.Caption = "Values as IN (...) - hold Shift for compact list";
+            btnControlSelectedInClauseList.Caption = Strings.Get("Msg_GridCopy_ValuesAsInClause");
             btnControlSelectedInClauseList.Click += OnClick_CopySelectedAsInClauseList;
 
             var btnControlCCN = (CommandBarButton)GridCommandBar.Controls.Add(MsoControlType.msoControlButton, Type.Missing, Type.Missing, Type.Missing, true);
             btnControlCCN.Visible = true;
-            btnControlCCN.Caption = "Copy Selected Column Names";
+            btnControlCCN.Caption = Strings.Get("Msg_GridCopy_SelectedColumnNames");
             btnControlCCN.Click += OnClick_CopySelectedColumnNames;
 
             var btnControlCCNA = (CommandBarButton)GridCommandBar.Controls.Add(MsoControlType.msoControlButton, Type.Missing, Type.Missing, Type.Missing, true);
             btnControlCCNA.Visible = true;
-            btnControlCCNA.Caption = "Copy All Column Names";
+            btnControlCCNA.Caption = Strings.Get("Msg_GridCopy_AllColumnNames");
             btnControlCCNA.Click += OnClick_CopyAllColumnNames ;
 
         }
@@ -194,11 +195,11 @@ namespace AxialSqlTools
 
                     SetClipboardText(columnNamesStr);
 
-                    ServiceCache.ExtensibilityModel.StatusBar.Text = "Copied Column Names";
+                    ServiceCache.ExtensibilityModel.StatusBar.Text = Strings.Get("Msg_GridCopy_StatusCopiedColumnNames");
                 }
                 else
                 {
-                    ServiceCache.ExtensibilityModel.StatusBar.Text = "No Column Names to Copy";
+                    ServiceCache.ExtensibilityModel.StatusBar.Text = Strings.Get("Msg_GridCopy_StatusNoColumnNames");
                 }
 
             }
@@ -249,8 +250,8 @@ namespace AxialSqlTools
                 if (datatable.Columns.Count == 0 || datatable.Rows.Count == 0)
                 {
                     ServiceCache.ExtensibilityModel.StatusBar.Text = scope == CopyScope.All
-                        ? "No data to copy"
-                        : "No cells selected to copy";
+                        ? Strings.Get("Msg_GridCopy_StatusNoData")
+                        : Strings.Get("Msg_GridCopy_StatusNoCellsSelected");
                     return;
                 }
 
@@ -278,7 +279,7 @@ namespace AxialSqlTools
                 if (!string.IsNullOrWhiteSpace(resultText))
                 {
                     SetClipboardText(resultText);
-                    ServiceCache.ExtensibilityModel.StatusBar.Text = "Copied";
+                    ServiceCache.ExtensibilityModel.StatusBar.Text = Strings.Get("Msg_GridCopy_StatusCopied");
                 }
             }
         }
@@ -293,7 +294,7 @@ namespace AxialSqlTools
                 var gridResultSelected = gridResultControl.GridSelectedAsQuerySql().ToList();
                 if (gridResultSelected.Count <= 1)
                 {
-                    ServiceCache.ExtensibilityModel.StatusBar.Text = "No cells selected to copy";
+                    ServiceCache.ExtensibilityModel.StatusBar.Text = Strings.Get("Msg_GridCopy_StatusNoCellsSelected");
                     return;
                 }
 
@@ -307,7 +308,7 @@ namespace AxialSqlTools
 
                 if (!contentRows.Any())
                 {
-                    ServiceCache.ExtensibilityModel.StatusBar.Text = "No data to copy";
+                    ServiceCache.ExtensibilityModel.StatusBar.Text = Strings.Get("Msg_GridCopy_StatusNoData");
                     return;
                 }
             }
@@ -316,7 +317,7 @@ namespace AxialSqlTools
             var resultText = $"INSERT INTO [table] ({columnHeaders}) VALUES\r\n" + valuesText;
 
             SetClipboardText(resultText);
-            ServiceCache.ExtensibilityModel.StatusBar.Text = "Copied";
+            ServiceCache.ExtensibilityModel.StatusBar.Text = Strings.Get("Msg_GridCopy_StatusCopied");
         }
 
         private static void CopyInClauseList(CopyScope scope, ResultGridControlAdaptor gridResultControl)
@@ -324,7 +325,7 @@ namespace AxialSqlTools
             var columnIndex = gridResultControl.GetCurrentColumnIndex();
             if (!columnIndex.HasValue)
             {
-                ServiceCache.ExtensibilityModel.StatusBar.Text = "No column selected to copy";
+                ServiceCache.ExtensibilityModel.StatusBar.Text = Strings.Get("Msg_GridCopy_StatusNoColumnSelected");
                 return;
             }
 
@@ -335,7 +336,7 @@ namespace AxialSqlTools
             {
                 if (gridResultControl.RowCount == 0)
                 {
-                    ServiceCache.ExtensibilityModel.StatusBar.Text = "No data to copy";
+                    ServiceCache.ExtensibilityModel.StatusBar.Text = Strings.Get("Msg_GridCopy_StatusNoData");
                     return;
                 }
 
@@ -349,7 +350,7 @@ namespace AxialSqlTools
                 var selectedRows = gridResultControl.GetSelectedRowIndexesForColumn(column).ToList();
                 if (selectedRows.Count == 0)
                 {
-                    ServiceCache.ExtensibilityModel.StatusBar.Text = "No cells selected to copy";
+                    ServiceCache.ExtensibilityModel.StatusBar.Text = Strings.Get("Msg_GridCopy_StatusNoCellsSelected");
                     return;
                 }
 
@@ -364,7 +365,7 @@ namespace AxialSqlTools
                 ? BuildCompactInClause(values)
                 : $"({string.Join(",\r\n", values)})";
             SetClipboardText(resultText);
-            ServiceCache.ExtensibilityModel.StatusBar.Text = "Copied";
+            ServiceCache.ExtensibilityModel.StatusBar.Text = Strings.Get("Msg_GridCopy_StatusCopied");
         }
 
         private static string BuildCompactInClause(IReadOnlyList<object> values)

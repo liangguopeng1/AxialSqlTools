@@ -4,9 +4,9 @@
         <Identity Id="AxialSqlTools" Version="4.12" Language="en-US" Publisher="Alex Bochkov" />
         <DisplayName>Axial SQL Tools</DisplayName>
         <Description xml:space="preserve">Axial SQL Tools | SQL Server Management Studio 22 Productivity Addin</Description>
-        <MoreInfo>https://github.com/Axial-SQL/AxialSqlTools</MoreInfo>
+        <MoreInfo>https://github.com/liangguopeng1/AxialSqlTools</MoreInfo>
         <License>LICENSE</License>
-        <GettingStartedGuide>https://github.com/Axial-SQL/AxialSqlTools/wiki</GettingStartedGuide>
+        <GettingStartedGuide>https://github.com/liangguopeng1/AxialSqlTools/wiki</GettingStartedGuide>
         <Icon>Resources\vsix-logo.png</Icon>
         <PreviewImage>Resources\vsix-logo.png</PreviewImage>
     </Metadata>

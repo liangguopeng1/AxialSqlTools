@@ -5,6 +5,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         mc:Ignorable="d"
         Title="Export Complete"
+        Tag="loc:Msg_GridExport_CompleteTitle"
         SizeToContent="Height"
         Width="560"
         MinHeight="240"
@@ -21,7 +22,6 @@
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>
     </Window.Resources>
-
     <Grid Background="{DynamicResource AxialThemeBackgroundBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -29,20 +29,16 @@
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
-
         <Border Grid.Row="0" Background="{DynamicResource AxialThemeHeaderBackgroundBrush}" Padding="10,8">
-            <TextBlock FontSize="14" FontWeight="SemiBold" Text="The data has been successfully exported." TextWrapping="Wrap" />
+            <TextBlock FontSize="14" FontWeight="SemiBold" Text="The data has been successfully exported." Tag="loc:ExcelExport_SuccessMessage" TextWrapping="Wrap" />
         </Border>
-
         <Grid Grid.Row="1" Margin="16,12,16,0">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
-
-            <TextBlock Grid.Row="0" Text="Saved file:" FontWeight="SemiBold" />
-
+            <TextBlock Grid.Row="0" Text="Saved file:" Tag="loc:ExcelExport_SavedFileLabel" FontWeight="SemiBold" />
             <Border Grid.Row="1" Margin="0,6,0,0" Padding="10"
                     BorderBrush="{DynamicResource AxialThemeSubtleBorderBrush}"
                     BorderThickness="1"
@@ -56,10 +52,9 @@
                          VerticalScrollBarVisibility="Auto"
                          MinHeight="58" />
             </Border>
-
             <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
-                <Button Width="110" Margin="0,0,8,0" Click="OpenInExcelButton_Click" IsDefault="True" Style="{DynamicResource AxialPrimaryButtonStyle}">Open in Excel</Button>
-                <Button Width="75" Click="OkButton_Click" IsCancel="True">OK</Button>
+                <Button Width="110" Margin="0,0,8,0" Click="OpenInExcelButton_Click" IsDefault="True" Style="{DynamicResource AxialPrimaryButtonStyle}" Content="Open in Excel" Tag="loc:ExcelExport_OpenInExcel"/>
+                <Button Width="75" Click="OkButton_Click" IsCancel="True" Content="OK" Tag="loc:Common_OK"/>
             </StackPanel>
         </Grid>
     </Grid>

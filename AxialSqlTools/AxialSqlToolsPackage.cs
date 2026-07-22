@@ -118,11 +118,7 @@ namespace AxialSqlTools
         private void InitializeLogging()
         {
 
-            var logDirectory = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                        "AxialSQL",
-                        "AxialSQLToolsLog"
-                );
+            var logDirectory = UserConfigPaths.LogsDirectory;
             Directory.CreateDirectory(logDirectory);
 
             // If using the NLog.config approach:
@@ -307,6 +303,9 @@ namespace AxialSqlTools
 
             PackageInstance = this;
 
+            UiCultureService.ApplyFromSettings();
+            UserConfigPaths.EnsureRootExists();
+
             InitializeLogging();
 
             try
@@ -385,6 +384,8 @@ namespace AxialSqlTools
 
                 //---------------------------------------------------------------------------
                 RefreshTemplatesList();
+
+                MenuTextLocalizer.Apply(application);
 
             }
             catch (Exception ex)

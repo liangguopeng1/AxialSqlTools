@@ -3,6 +3,7 @@
     using System;
     using System.Runtime.InteropServices;
     using System.Threading;
+    using AxialSqlTools.Properties;
     using Microsoft.VisualStudio;
     using Microsoft.VisualStudio.Shell;
     using Microsoft.VisualStudio.Shell.Interop;
@@ -27,7 +28,7 @@
         /// </summary>
         public HealthDashboard_Server() : base(null)
         {
-            this.Caption = "Health Dashboard | Server";
+            this.Caption = Strings.Get("Window_HealthDashboardServer");
 
             // This is the user control hosted by the tool window; Note that, even if this class implements IDisposable,
             // we are not calling Dispose on this object. This is because ToolWindowPane calls Dispose on

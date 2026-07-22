@@ -20,8 +20,8 @@ namespace AxialSqlTools
     {
         private const string ProductName = "AxialSqlTools";
         private const string DisplayName = "Axial SQL Tools";
-        private const string ReleasesApiUrl = "https://api.github.com/repos/Axial-SQL/AxialSqlTools/releases/latest";
-        private const string ReleasePageUrl = "https://github.com/Axial-SQL/AxialSqlTools/releases/latest";
+        private const string ReleasesApiUrl = "https://api.github.com/repos/liangguopeng1/AxialSqlTools/releases/latest";
+        private const string ReleasePageUrl = "https://github.com/liangguopeng1/AxialSqlTools/releases/latest";
         private const string StagedVsixFilePattern = "AxialSqlTools-*.vsix";
         private const string StagedZipFilePattern = "AxialSqlTools-*.zip";
         private const string ExpectedVsixName = "AxialSqlTools.vsix";

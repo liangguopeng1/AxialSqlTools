@@ -1,5 +1,6 @@
 ﻿namespace AxialSqlTools
 {
+    using AxialSqlTools.Properties;
     using System;
     using System.Diagnostics;
     using System.Diagnostics.CodeAnalysis;
@@ -23,6 +24,9 @@
         public AboutWindowControl()
         {
             this.InitializeComponent();
+            UiLocalization.Apply(this);
+            LocalizeAboutHyperlinks();
+            Run_LogFolderPrefix.Text = Strings.Get("About_LogFolderPrefix");
 
             _themeController = new ToolWindowThemeController(this, ApplyThemeBrushResources);
 
@@ -31,13 +35,19 @@
 
             TextBlock_CurrentVersion.Text = $"SSMS extension version {currentVersionString}";
 
-            _logFolder = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                        "AxialSQL",
-                        "AxialSQLToolsLog"
-                );
+            _logFolder = UserConfigPaths.LogsDirectory;
 
             HyperlinkText_LogFolder.Text = _logFolder;
+        }
+
+        private void LocalizeAboutHyperlinks()
+        {
+            Run_About_GitHubRepo.Text = Strings.Get("About_GitHubRepo");
+            Run_About_ReportBug.Text = Strings.Get("About_ReportBug");
+            Run_About_Discussions.Text = Strings.Get("About_Discussions");
+            Run_About_Documentation.Text = Strings.Get("About_Documentation");
+            Run_About_Releases.Text = Strings.Get("About_Releases");
+            Run_About_ReadLicense.Text = Strings.Get("About_ReadLicense");
         }
 
         private void ApplyThemeBrushResources()

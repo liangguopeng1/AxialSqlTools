@@ -15,10 +15,11 @@
         </Grid.RowDefinitions>
 
         <StackPanel>
-            <TextBlock Text="Data Import" FontSize="20" FontWeight="SemiBold" />
+            <TextBlock Text="Data Import" Tag="loc:DataImport_Title" FontSize="20" FontWeight="SemiBold" />
             <TextBlock Margin="0,6,0,0"
                        TextWrapping="Wrap"
                        Foreground="Gray"
+                       Tag="loc:DataImport_Description"
                        Text="Use this window to import Excel spreadsheets into the database currently selected in Object Explorer." />
         </StackPanel>
 
@@ -36,22 +37,22 @@
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
 
-                <TextBlock Text="Excel file" VerticalAlignment="Center" />
+                <TextBlock Text="Excel file" Tag="loc:DataImport_ExcelFile" VerticalAlignment="Center" />
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="8,0,0,0">
                     <TextBox x:Name="TextBox_ExcelPath" Width="320" MinWidth="220" IsReadOnly="True" />
-                    <Button x:Name="Button_Browse" Content="Browse..." Margin="8,0,0,0" Padding="12,4" Click="ButtonBrowse_OnClick" />
+                    <Button x:Name="Button_Browse" Content="Browse..." Tag="loc:Common_Browse" Margin="8,0,0,0" Padding="12,4" Click="ButtonBrowse_OnClick" />
                 </StackPanel>
 
-                <TextBlock Text="Worksheet name" Grid.Row="1" VerticalAlignment="Center" Margin="0,10,0,0" />
+                <TextBlock Text="Worksheet name" Tag="loc:DataImport_WorksheetName" Grid.Row="1" VerticalAlignment="Center" Margin="0,10,0,0" />
                 <TextBox x:Name="TextBox_Worksheet" Grid.Row="1" Grid.Column="1" Margin="8,10,0,0" ToolTip="Optional override when the workbook contains multiple sheets." />
 
-                <TextBlock Text="Target database" Grid.Row="2" VerticalAlignment="Center" Margin="0,10,0,0" />
+                <TextBlock Text="Target database" Tag="loc:DataImport_TargetDatabase" Grid.Row="2" VerticalAlignment="Center" Margin="0,10,0,0" />
                 <StackPanel Grid.Row="2" Grid.Column="1" Margin="8,10,0,0" Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBox x:Name="TextBox_Target" Width="320" IsReadOnly="True" />
-                    <Button x:Name="Button_SelectTarget" Content="Select" Margin="8,0,0,0" Padding="16,4" Click="ButtonSelectTarget_OnClick" />
+                    <Button x:Name="Button_SelectTarget" Content="Select" Tag="loc:Common_Select" Margin="8,0,0,0" Padding="16,4" Click="ButtonSelectTarget_OnClick" />
                 </StackPanel>
 
-                <TextBlock Text="Destination table" Grid.Row="3" VerticalAlignment="Center" Margin="0,10,0,0" />
+                <TextBlock Text="Destination table" Tag="loc:DataImport_DestinationTable" Grid.Row="3" VerticalAlignment="Center" Margin="0,10,0,0" />
                 <TextBox x:Name="TextBox_TargetTable"
                          Grid.Row="3"
                          Grid.Column="1"
@@ -59,22 +60,22 @@
                          TextChanged="TextBox_TargetTable_OnTextChanged" />
 
                 <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Vertical" Margin="8,12,0,0">
-                    <CheckBox x:Name="CheckBox_CreateTable" Content="Automatically create the table if it does not exist" IsChecked="True" />
-                    <CheckBox x:Name="CheckBox_Truncate" Content="Truncate the table before importing" />
-                    <CheckBox x:Name="CheckBox_FirstRowHeaders" Content="Treat first row as column headers" IsChecked="True" />
+                    <CheckBox x:Name="CheckBox_CreateTable" Content="Automatically create the table if it does not exist" Tag="loc:DataImport_AutoCreateTable" IsChecked="True" />
+                    <CheckBox x:Name="CheckBox_Truncate" Content="Truncate the table before importing" Tag="loc:DataImport_TruncateTable" />
+                    <CheckBox x:Name="CheckBox_FirstRowHeaders" Content="Treat first row as column headers" Tag="loc:DataImport_FirstRowHeaders" IsChecked="True" />
                 </StackPanel>
             </Grid>
         </Border>
 
         <Border Grid.Row="2" Margin="0,16,0,0" Padding="12" BorderBrush="#FFE8E8E8" BorderThickness="1" CornerRadius="6">
             <StackPanel>
-                <TextBlock Text="Process checklist" FontWeight="SemiBold" />
+                <TextBlock Text="Process checklist" Tag="loc:DataImport_ChecklistTitle" FontWeight="SemiBold" />
                 <ItemsControl Margin="0,8,0,0">
                     <ItemsControl.Items>
-                        <TextBlock Text="1. Choose the Excel workbook that contains the data." />
-                        <TextBlock Text="2. Point to the Object Explorer database that will receive the data." />
-                        <TextBlock Text="3. Provide the destination table name and confirm optional behaviors." />
-                        <TextBlock Text="4. Click Import to perform the one-click upload." />
+                        <TextBlock Text="1. Choose the Excel workbook that contains the data." Tag="loc:DataImport_Step1" />
+                        <TextBlock Text="2. Point to the Object Explorer database that will receive the data." Tag="loc:DataImport_Step2" />
+                        <TextBlock Text="3. Provide the destination table name and confirm optional behaviors." Tag="loc:DataImport_Step3" />
+                        <TextBlock Text="4. Click Import to perform the one-click upload." Tag="loc:DataImport_Step4" />
                     </ItemsControl.Items>
                 </ItemsControl>
             </StackPanel>
@@ -83,8 +84,8 @@
         <DockPanel Grid.Row="3" Margin="0,16,0,0">
             <TextBlock x:Name="TextBlock_Status" VerticalAlignment="Center" Foreground="Gray" Text="Choose an Excel file to get started." />
             <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
-                <Button x:Name="Button_Clear" Content="Reset" Margin="0,0,8,0" Padding="16,4" Click="ButtonClear_OnClick" />
-                <Button x:Name="Button_Import" Content="Import" Padding="24,6" IsEnabled="False" Click="ButtonImport_OnClick" />
+                <Button x:Name="Button_Clear" Content="Reset" Tag="loc:Common_Reset" Margin="0,0,8,0" Padding="16,4" Click="ButtonClear_OnClick" />
+                <Button x:Name="Button_Import" Content="Import" Tag="loc:Common_Import" Padding="24,6" IsEnabled="False" Click="ButtonImport_OnClick" />
             </StackPanel>
         </DockPanel>
     </Grid>

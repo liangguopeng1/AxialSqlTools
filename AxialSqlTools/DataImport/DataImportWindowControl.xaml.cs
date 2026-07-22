@@ -1,5 +1,6 @@
 ﻿namespace AxialSqlTools
 {
+    using AxialSqlTools.Properties;
     using Microsoft.VisualStudio.Shell;
     using Microsoft.Win32;
     using System;
@@ -24,7 +25,8 @@
         public DataImportWindowControl()
         {
             InitializeComponent();
-            UpdateStatus("Choose an Excel file to get started.");
+            UiLocalization.Apply(this);
+            UpdateStatus(Strings.Get("DataImport_StatusInitial"));
         }
 
         private void ButtonBrowse_OnClick(object sender, RoutedEventArgs e)
@@ -57,7 +59,7 @@
             var connectionInfo = ScriptFactoryAccess.GetCurrentConnectionInfoFromObjectExplorer();
             if (connectionInfo == null)
             {
-                MessageBox.Show("Please select a database in Object Explorer first.", "Data Import", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show(Strings.Get("Msg_DataImport_SelectDatabase"), Strings.Get("Window_DataImportCaption"), MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 
@@ -91,7 +93,7 @@
             catch (Exception ex)
             {
                 await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-                MessageBox.Show($"Import failed: {ex.Message}", "Data Import", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(string.Format(Strings.Get("Msg_DataImport_ImportFailed"), ex.Message), Strings.Get("Window_DataImportCaption"), MessageBoxButton.OK, MessageBoxImage.Error);
                 UpdateStatus("Import failed. Review the error and try again.");
             }
             finally
@@ -105,19 +107,19 @@
         {
             if (string.IsNullOrWhiteSpace(selectedExcelPath))
             {
-                MessageBox.Show("Select an Excel workbook first.", "Data Import", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(Strings.Get("Msg_DataImport_SelectWorkbook"), Strings.Get("Window_DataImportCaption"), MessageBoxButton.OK, MessageBoxImage.Warning);
                 return false;
             }
 
             if (targetConnection == null)
             {
-                MessageBox.Show("Select a target database from Object Explorer.", "Data Import", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(Strings.Get("Msg_DataImport_SelectTarget"), Strings.Get("Window_DataImportCaption"), MessageBoxButton.OK, MessageBoxImage.Warning);
                 return false;
             }
 
             if (string.IsNullOrWhiteSpace(TextBox_TargetTable.Text))
             {
-                MessageBox.Show("Provide a destination table name.", "Data Import", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(Strings.Get("Msg_DataImport_ProvideTable"), Strings.Get("Window_DataImportCaption"), MessageBoxButton.OK, MessageBoxImage.Warning);
                 return false;
             }
 
@@ -136,7 +138,7 @@
             CheckBox_Truncate.IsChecked = false;
             CheckBox_FirstRowHeaders.IsChecked = true;
 
-            UpdateStatus("Choose an Excel file to get started.");
+            UpdateStatus(Strings.Get("DataImport_StatusInitial"));
             UpdateImportButtonState();
         }
 
@@ -189,8 +191,8 @@
             await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
             UpdateStatus($"Imported {worksheetData.Table.Rows.Count:#,0} rows into {destinationTable} on {connectionInfo.DisplayName}.");
             MessageBox.Show(
-                $"Successfully imported {worksheetData.Table.Rows.Count:#,0} rows from {Path.GetFileName(selectedExcelPath)} into {connectionInfo.DisplayName} ({destinationTable}).",
-                "Data Import",
+                Strings.Get("Msg_DataImport_Success"),
+                Strings.Get("Window_DataImportCaption"),
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
         }

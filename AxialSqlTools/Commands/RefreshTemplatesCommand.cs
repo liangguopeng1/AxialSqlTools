@@ -1,8 +1,8 @@
 ﻿using System;
 using System.ComponentModel.Design;
-using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
+using AxialSqlTools.Properties;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
 using Task = System.Threading.Tasks.Task;
@@ -92,8 +92,8 @@ namespace AxialSqlTools
             this.package.RefreshTemplatesList();
 
             ThreadHelper.ThrowIfNotOnUIThread();
-            string message = string.Format(CultureInfo.CurrentCulture, "The list of templates has been updated!", this.GetType().FullName);
-            string title = "Completed";
+            string message = Strings.Get("Msg_Templates_Refreshed");
+            string title = Strings.Get("Msg_Common_Completed");
 
             // Show a message box to prove we were here
             VsShellUtilities.ShowMessageBox(

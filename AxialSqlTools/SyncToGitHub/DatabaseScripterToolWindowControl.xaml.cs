@@ -1,4 +1,5 @@
-﻿using Microsoft.Data.SqlClient;
+using AxialSqlTools.Properties;
+using Microsoft.Data.SqlClient;
 using Microsoft.SqlServer.Dac;
 using Microsoft.SqlServer.Management.Common;
 using Microsoft.SqlServer.Management.Sdk.Sfc;
@@ -17,6 +18,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Navigation;
 using static AxialSqlTools.DatabaseScripterToolWindowControl;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement.TreeView;
@@ -201,10 +203,10 @@ WHERE NOT EXISTS (SELECT 1 FROM @ExcludeNames AS e WHERE e.database_name = i.dat
             if (profile == null || profile.Repo == null)
             {
                 RepoUrlHyperlink.Inlines.Clear();
-                RepoUrlHyperlink.Inlines.Add("Repo: (none selected)");
+                RepoUrlHyperlink.Inlines.Add(Strings.Get("SyncGitHub_RepoNoneSelected"));
                 RepoUrlHyperlink.NavigateUri = null;
 
-                RepoSyncOptionsTextBlock.Text = "Sync options will appear here";
+                RepoSyncOptionsTextBlock.Text = Strings.Get("SyncGitHub_SyncOptionsPlaceholder");
                 return;
             }
 
@@ -268,7 +270,7 @@ WHERE NOT EXISTS (SELECT 1 FROM @ExcludeNames AS e WHERE e.database_name = i.dat
             var selectedProfile = (GitHubSyncProfile)ProfilesComboBox.SelectedItem;
             if (selectedProfile == null)
             {
-                MessageBox.Show("Please select a profile to edit.", "No Profile Selected", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(Strings.Get("Msg_SyncGitHub_SelectProfileToEdit"), Strings.Get("Menu_SyncToGitHub"), MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
@@ -317,8 +319,8 @@ WHERE NOT EXISTS (SELECT 1 FROM @ExcludeNames AS e WHERE e.database_name = i.dat
                 string.IsNullOrEmpty(branch) ||
                 string.IsNullOrEmpty(token))
             {
-                MessageBox.Show("Profile Name, Owner, Repo Name, Branch, and Token are required.",
-                                "Validation Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(Strings.Get("Msg_SyncGitHub_RequiredFields"),
+                                Strings.Get("Menu_SyncToGitHub"), MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
@@ -338,8 +340,8 @@ WHERE NOT EXISTS (SELECT 1 FROM @ExcludeNames AS e WHERE e.database_name = i.dat
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Failed to validate GitHub details:\n{ex.Message}",
-                                "GitHub Validation Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(string.Format(Strings.Get("Msg_SyncGitHub_ValidateFailed"), ex.Message),
+                                Strings.Get("Menu_SyncToGitHub"), MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
 
@@ -379,11 +381,12 @@ WHERE NOT EXISTS (SELECT 1 FROM @ExcludeNames AS e WHERE e.database_name = i.dat
         {
             if (_currentProfile == null)
             {
-                MessageBox.Show("No profile selected.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(Strings.Get("Msg_SyncGitHub_NoProfileSelected"), Strings.Common_Error, MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
 
-            var confirm = MessageBox.Show($"Delete profile '{_currentProfile.ProfileName}'?", "Confirm Delete",
+            var confirm = MessageBox.Show(string.Format(Strings.Get("Msg_SyncGitHub_ConfirmDelete"), _currentProfile.ProfileName),
+                                          Strings.Get("Msg_SyncGitHub_ConfirmDeleteTitle"),
                                           MessageBoxButton.YesNo, MessageBoxImage.Warning);
 
             if (confirm == MessageBoxResult.Yes)
@@ -417,6 +420,9 @@ WHERE NOT EXISTS (SELECT 1 FROM @ExcludeNames AS e WHERE e.database_name = i.dat
         public DatabaseScripterToolWindowControl()
         {
             InitializeComponent();
+            UiLocalization.Apply(this);
+            LocalizeWikiDescription();
+            MessageTextBox.Text = Strings.Get("SyncGitHub_DefaultCommitMsg");
             _themeController = new ToolWindowThemeController(this, ApplyThemeBrushResources);
             ProgressListBox.ItemsSource = _progressMessages;
 
@@ -431,12 +437,25 @@ WHERE NOT EXISTS (SELECT 1 FROM @ExcludeNames AS e WHERE e.database_name = i.dat
             ToolWindowThemeResources.ApplySharedTheme(this);
         }
 
+        private void LocalizeWikiDescription()
+        {
+            WikiDescriptionTextBlock.Inlines.Clear();
+            WikiDescriptionTextBlock.Inlines.Add(new Run(Strings.Get("Common_FeatureDescriptionIn")));
+            WikiDescriptionTextBlock.Inlines.Add(new Run(" "));
+            var wikiLink = new Hyperlink(new Run(Strings.Get("Common_Wiki")))
+            {
+                NavigateUri = new Uri("https://github.com/liangguopeng1/AxialSqlTools/wiki/Sync-to-GitHub")
+            };
+            wikiLink.RequestNavigate += buttonWikiPage_Click;
+            WikiDescriptionTextBlock.Inlines.Add(wikiLink);
+        }
+
         private async void RunButton_Click(object sender, RoutedEventArgs e)
         {
 
             if (_currentProfile.Repo == null)
             {
-                MessageBox.Show("Please select a GitHub repo first.", "No Repo Selected",
+                MessageBox.Show(Strings.Get("Msg_SyncGitHub_SelectRepo"), Strings.Get("Msg_SyncGitHub_NoRepoTitle"),
                                 MessageBoxButton.OK, MessageBoxImage.Exclamation);
                 return;
             }
@@ -1112,7 +1131,7 @@ WHERE NOT EXISTS (SELECT 1 FROM @ExcludeNames AS e WHERE e.database_name = i.dat
                           $"Modified files: {toModify.Count}\n" +
                           $"Deleted files:  {toDelete.Count}\n\n" +
                           "Continue?";
-                if (MessageBox.Show(msg, "Confirm Commit", MessageBoxButton.YesNo, MessageBoxImage.Question)
+                if (MessageBox.Show(msg, Strings.Get("Msg_SyncGitHub_ConfirmCommit"), MessageBoxButton.YesNo, MessageBoxImage.Question)
                     != MessageBoxResult.Yes)
                 {
                     progress.Report("Commit cancelled by user.");

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel.Design;
 using System.IO;
 using EnvDTE;
+using AxialSqlTools.Properties;
 using Microsoft.SqlServer.TransactSql.ScriptDom;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
@@ -66,7 +67,7 @@ namespace AxialSqlTools
                 VsShellUtilities.ShowMessageBox(
                     this.package,
                     ex.Message,
-                    "Error toggling block comment",
+                    Strings.Get("Msg_ToggleComment_ErrorTitle"),
                     OLEMSGICON.OLEMSGICON_WARNING,
                     OLEMSGBUTTON.OLEMSGBUTTON_OK,
                     OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);

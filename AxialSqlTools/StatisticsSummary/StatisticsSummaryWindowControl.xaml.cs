@@ -5,9 +5,12 @@ using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
+using System.Windows.Media;
 using System.Windows.Navigation;
 using Microsoft.VisualStudio.Shell;
 using Newtonsoft.Json;
+using AxialSqlTools.Properties;
 
 namespace AxialSqlTools
 {
@@ -20,6 +23,8 @@ namespace AxialSqlTools
         public StatisticsSummaryWindowControl()
         {
             InitializeComponent();
+            UiLocalization.Apply(this);
+            LocalizeWikiDescription();
             _themeController = new ToolWindowThemeController(this, ApplyThemeBrushResources);
             _viewModel = new StatisticsSummaryViewModel();
             DataContext = _viewModel;
@@ -27,6 +32,7 @@ namespace AxialSqlTools
 
             Loaded += OnLoaded;
             IsVisibleChanged += OnIsVisibleChanged;
+            ResultsItemsControl.ItemContainerGenerator.StatusChanged += OnResultItemsContainerStatusChanged;
         }
 
         private void ApplyThemeBrushResources()
@@ -34,11 +40,85 @@ namespace AxialSqlTools
             ToolWindowThemeResources.ApplySharedTheme(this);
         }
 
+        private void LocalizeWikiDescription()
+        {
+            WikiDescriptionTextBlock.Inlines.Clear();
+            WikiDescriptionTextBlock.Inlines.Add(new Run(Strings.Get("Common_FeatureDescriptionIn")));
+            WikiDescriptionTextBlock.Inlines.Add(new Run(" "));
+            var wikiLink = new Hyperlink(new Run(Strings.Get("Common_Wiki")))
+            {
+                NavigateUri = new Uri("https://github.com/liangguopeng1/AxialSqlTools/wiki/Statistics-Summary")
+            };
+            wikiLink.RequestNavigate += WikiLink_RequestNavigate;
+            WikiDescriptionTextBlock.Inlines.Add(wikiLink);
+        }
+
+        private void OnResultItemsContainerStatusChanged(object sender, EventArgs e)
+        {
+            if (ResultsItemsControl.ItemContainerGenerator.Status != GeneratorStatus.ContainersGenerated)
+            {
+                return;
+            }
+
+            LocalizeGeneratedResultItems();
+        }
+
+        private void LocalizeGeneratedResultItems()
+        {
+            var generator = ResultsItemsControl.ItemContainerGenerator;
+            for (int i = 0; i < _viewModel.Results.Count; i++)
+            {
+                if (generator.ContainerFromIndex(i) is FrameworkElement container)
+                {
+                    UiLocalization.Apply(container);
+                    LocalizeResultDataGrid(FindVisualChild<DataGrid>(container));
+                }
+            }
+        }
+
+        private static void LocalizeResultDataGrid(DataGrid dataGrid)
+        {
+            if (dataGrid == null || dataGrid.Columns.Count < 3)
+            {
+                return;
+            }
+
+            dataGrid.Columns[0].Header = Strings.Get("Stats_ColTable");
+            dataGrid.Columns[1].Header = Strings.Get("Stats_ColScans");
+            dataGrid.Columns[2].Header = Strings.Get("Stats_ColLogicalReads");
+        }
+
+        private static T FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+        {
+            if (parent == null)
+            {
+                return null;
+            }
+
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                var child = VisualTreeHelper.GetChild(parent, i);
+                if (child is T match)
+                {
+                    return match;
+                }
+
+                var nested = FindVisualChild<T>(child);
+                if (nested != null)
+                {
+                    return nested;
+                }
+            }
+
+            return null;
+        }
+
         private void OnLoaded(object sender, System.Windows.RoutedEventArgs e)
         {
             EnsureSummarySubscription();
             StatisticsSummaryStore.SetWindowOpen(true);
             _viewModel.RefreshFromStore();
+            LocalizeGeneratedResultItems();
         }
 
         private void OnIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
@@ -69,6 +149,7 @@ namespace AxialSqlTools
             if (Dispatcher.CheckAccess())
             {
                 _viewModel.RefreshFromStore();
+                LocalizeGeneratedResultItems();
                 return;
             }
 
@@ -76,6 +157,7 @@ namespace AxialSqlTools
             {
                 await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
                 _viewModel.RefreshFromStore();
+                LocalizeGeneratedResultItems();
             });
         }
 
@@ -143,7 +225,7 @@ namespace AxialSqlTools
         {
             var lines = new List<string>
             {
-                string.Join(",", new[] { "Table", "Scans", "Logical reads" })
+                string.Join(",", new[] { Strings.Get("Stats_ColTable"), Strings.Get("Stats_ColScans"), Strings.Get("Stats_ColLogicalReads") })
             };
 
             lines.AddRange(result.Tables.Select(table => string.Join(",",
@@ -157,7 +239,7 @@ namespace AxialSqlTools
         private static string BuildMarkdownText(StatisticsSummaryResultViewModel result)
         {
             var sb = new StringBuilder();
-            sb.AppendLine("| Table | Scans | Logical reads |");
+            sb.AppendLine("| " + Strings.Get("Stats_ColTable") + " | " + Strings.Get("Stats_ColScans") + " | " + Strings.Get("Stats_ColLogicalReads") + " |");
             sb.AppendLine("| --- | ---: | ---: |");
 
             foreach (var table in result.Tables)
@@ -178,9 +260,9 @@ namespace AxialSqlTools
         {
             var rows = result.Tables.Select(table => new Dictionary<string, object>
             {
-                { "Table", table.TableName ?? string.Empty },
-                { "Scans", table.ScanCount },
-                { "Logical reads", table.TotalReads },
+                { Strings.Get("Stats_ColTable"), table.TableName ?? string.Empty },
+                { Strings.Get("Stats_ColScans"), table.ScanCount },
+                { Strings.Get("Stats_ColLogicalReads"), table.TotalReads },
             });
 
             return JsonConvert.SerializeObject(rows, Formatting.Indented);

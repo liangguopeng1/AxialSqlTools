@@ -2,6 +2,7 @@
 {
     using System;
     using System.Runtime.InteropServices;
+    using AxialSqlTools.Properties;
     using Microsoft.VisualStudio.Shell;
 
     /// <summary>
@@ -23,7 +24,7 @@
         /// </summary>
         public ToolWindowGridToEmail() : base(null)
         {
-            this.Caption = "Grid to Email";
+            this.Caption = Strings.Get("Window_GridToEmailCaption");
 
             // This is the user control hosted by the tool window; Note that, even if this class implements IDisposable,
             // we are not calling Dispose on this object. This is because ToolWindowPane calls Dispose on

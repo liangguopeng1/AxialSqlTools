@@ -16,6 +16,7 @@ using Task = System.Threading.Tasks.Task;
 using static AxialSqlTools.AxialSqlToolsPackage;
 using System.Windows.Input;
 using System.Windows.Interop;
+using AxialSqlTools.Properties;
 
 namespace AxialSqlTools
 {
@@ -165,7 +166,7 @@ namespace AxialSqlTools
                     VsShellUtilities.ShowMessageBox(
                         this.package,
                         ex.Message,
-                        "Error parsing the code",
+                        Strings.Get("Msg_FormatQuery_ParseErrorTitle"),
                         OLEMSGICON.OLEMSGICON_WARNING,
                         OLEMSGBUTTON.OLEMSGBUTTON_OK,
                         OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);

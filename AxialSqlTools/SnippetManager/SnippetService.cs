@@ -17,10 +17,7 @@ namespace AxialSqlTools
         {
             get
             {
-                string folder = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    "AxialSqlTools");
-                return Path.Combine(folder, "snippets.json");
+                return UserConfigPaths.SnippetsFile;
             }
         }
 

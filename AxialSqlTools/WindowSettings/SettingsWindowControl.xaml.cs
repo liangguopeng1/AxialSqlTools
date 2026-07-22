@@ -1,4 +1,4 @@
-﻿namespace AxialSqlTools
+namespace AxialSqlTools
 {
     using Microsoft.Data.SqlClient;
     using Newtonsoft.Json.Linq;
@@ -13,9 +13,11 @@
     using System.Windows;
     using System.Windows.Controls;
     using System.Collections.ObjectModel;
+    using System.Windows.Documents;
     using System.Windows.Media;
     using System.Windows.Navigation;
     using Microsoft.VisualBasic;
+    using UiStrings = AxialSqlTools.Properties.Strings;
     using static AxialSqlTools.AxialSqlToolsPackage;
 
     /// <summary>
@@ -67,7 +69,198 @@ as select 1;
             SourceQueryPreview.Text = tsqlFormatExample;
 
             formatTSqlExample();
+            ApplyLocalizedTexts();
+            LoadLanguageCombo();
+        }
 
+        private void ApplyLocalizedTexts()
+        {
+            SettingsTitleText.Text = UiStrings.Settings_WindowTitle;
+            TabGeneral.Header = UiStrings.Settings_Tab_General;
+            TabQueryTemplates.Header = UiStrings.Settings_Tab_QueryTemplates;
+            TabCodeSnippets.Header = UiStrings.Settings_Tab_CodeSnippets;
+            TabQueryHistory.Header = UiStrings.Settings_Tab_QueryHistory;
+            TabCodeFormat.Header = UiStrings.Settings_Tab_CodeFormat;
+            TabExcelExport.Header = UiStrings.Settings_Tab_ExcelExport;
+            TabGoogleSheets.Header = UiStrings.Settings_Tab_GoogleSheets;
+            TabConnectionColors.Header = UiStrings.Settings_Tab_ConnectionColors;
+            TabSmtp.Header = UiStrings.Settings_Tab_Smtp;
+            TabUpdates.Header = UiStrings.Settings_Tab_Updates;
+            LanguageLabelText.Text = UiStrings.Settings_LanguageLabel;
+            LanguageHintText.Text = UiStrings.Settings_LanguageHint;
+            ButtonSaveLanguage.Content = UiStrings.Settings_SaveLanguage;
+            UpdateSettingsWindowCaption();
+            UiLocalization.Apply(this);
+            LocalizeWikiDescriptions();
+            LocalizeGoogleSheetsAuth();
+            LocalizeUsefulTsqlScripts();
+            ApplyQueryHistoryStorageComboItems();
+            ApplyConnectionColorGridHeaders();
+            RefreshGoogleSheetsStatusText();
+        }
+
+        private void LocalizeWikiDescriptions()
+        {
+            LocalizeWikiDescription(WikiQueryTemplatesTextBlock, "https://github.com/liangguopeng1/AxialSqlTools/wiki/Query-Templates-and-Snippets");
+            LocalizeWikiDescription(WikiCodeSnippetsTextBlock, "https://github.com/liangguopeng1/AxialSqlTools/wiki/Query-Templates-and-Snippets");
+            LocalizeWikiDescription(WikiQueryHistoryTextBlock, "https://github.com/liangguopeng1/AxialSqlTools/wiki/Query-History");
+            LocalizeWikiDescription(WikiCodeFormatTextBlock, "https://github.com/liangguopeng1/AxialSqlTools/wiki/TSQL-Code-Formatting-with-Microsoft-ScriptDOM-library");
+            LocalizeWikiDescription(WikiExcelExportTextBlock, "https://github.com/liangguopeng1/AxialSqlTools/wiki/Export-Grid-To-Excel");
+            LocalizeWikiDescription(WikiSmtpTextBlock, "https://github.com/liangguopeng1/AxialSqlTools/wiki/Export-Grid-to-Email");
+        }
+
+        private void LocalizeWikiDescription(TextBlock textBlock, string uri)
+        {
+            if (textBlock == null)
+            {
+                return;
+            }
+            textBlock.Inlines.Clear();
+            textBlock.Inlines.Add(new Run(UiStrings.Get("Common_FeatureDescriptionIn")));
+            textBlock.Inlines.Add(new Run(" "));
+            var wikiLink = new Hyperlink(new Run(UiStrings.Get("Common_Wiki")))
+            {
+                NavigateUri = new Uri(uri)
+            };
+            wikiLink.RequestNavigate += buttonWikiPage_Click;
+            textBlock.Inlines.Add(wikiLink);
+        }
+
+        private void LocalizeGoogleSheetsAuth()
+        {
+            if (GoogleSheetsAuthTextBlock == null)
+            {
+                return;
+            }
+            GoogleSheetsAuthTextBlock.Inlines.Clear();
+            GoogleSheetsAuthTextBlock.Inlines.Add(new Run(UiStrings.Get("Settings_GoogleAuthPrefix")));
+            var consoleLink = new Hyperlink(new Run(UiStrings.Get("Settings_GoogleCloudConsole")))
+            {
+                NavigateUri = new Uri("https://console.cloud.google.com/apis/credentials")
+            };
+            consoleLink.RequestNavigate += buttonWikiPage_Click;
+            GoogleSheetsAuthTextBlock.Inlines.Add(consoleLink);
+            GoogleSheetsAuthTextBlock.Inlines.Add(new Run(UiStrings.Get("Settings_GoogleAuthSuffix")));
+        }
+
+        private void LocalizeUsefulTsqlScripts()
+        {
+            if (UsefulTsqlScriptsTextBlock == null)
+            {
+                return;
+            }
+            const string libraryUri = "https://github.com/liangguopeng1/AxialSqlTools/tree/main/query-library";
+            UsefulTsqlScriptsTextBlock.Inlines.Clear();
+            UsefulTsqlScriptsTextBlock.Inlines.Add(new Run(UiStrings.Get("Settings_UsefulTsqlScripts")));
+            UsefulTsqlScriptsTextBlock.Inlines.Add(new Run(" "));
+            var libraryLink = new Hyperlink(new Run(libraryUri))
+            {
+                NavigateUri = new Uri(libraryUri)
+            };
+            libraryLink.RequestNavigate += buttonWikiPage_Click;
+            UsefulTsqlScriptsTextBlock.Inlines.Add(libraryLink);
+        }
+
+        private void RefreshGoogleSheetsStatusText()
+        {
+            try
+            {
+                UpdateGoogleSheetsStatus(SettingsManager.GetGoogleSheetsSettings().refreshToken);
+            }
+            catch
+            {
+            }
+        }
+
+        private void ApplyQueryHistoryStorageComboItems()
+        {
+            foreach (ComboBoxItem item in QueryHistoryStorageType.Items)
+            {
+                var tag = item.Tag as string;
+                if (tag == QueryHistoryStorageModeDisabled)
+                {
+                    item.Content = UiStrings.Get("Settings_StorageDisabled");
+                }
+                else if (tag == QueryHistoryStorageModeDatabase)
+                {
+                    item.Content = UiStrings.Get("Settings_StorageDatabase");
+                }
+                else if (tag == QueryHistoryStorageModeTextFiles)
+                {
+                    item.Content = UiStrings.Get("Settings_StorageTextFiles");
+                }
+            }
+        }
+
+        private void ApplyConnectionColorGridHeaders()
+        {
+            if (ConnectionColorRulesListView?.View is GridView gridView && gridView.Columns.Count >= 4)
+            {
+                gridView.Columns[1].Header = UiStrings.Get("Settings_ServerContains");
+                gridView.Columns[2].Header = UiStrings.Get("Settings_DatabaseContains");
+                gridView.Columns[3].Header = UiStrings.Get("Settings_Color");
+            }
+        }
+
+        private void UpdateSettingsWindowCaption()
+        {
+            try
+            {
+                var package = AxialSqlToolsPackage.PackageInstance;
+                if (package == null)
+                {
+                    return;
+                }
+                var window = package.FindToolWindow(typeof(SettingsWindow), 0, false) as SettingsWindow;
+                if (window != null)
+                {
+                    window.Caption = UiStrings.Settings_ToolWindowCaption;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private void LoadLanguageCombo()
+        {
+            UiLanguageCombo.Items.Clear();
+            UiLanguageCombo.Items.Add(new ComboBoxItem
+            {
+                Content = UiStrings.Settings_Language_Chinese,
+                Tag = UiSettingsStore.LanguageZhCn
+            });
+            UiLanguageCombo.Items.Add(new ComboBoxItem
+            {
+                Content = UiStrings.Settings_Language_English,
+                Tag = UiSettingsStore.LanguageEn
+            });
+            var current = UiSettingsStore.GetUiLanguage();
+            foreach (ComboBoxItem item in UiLanguageCombo.Items)
+            {
+                if (string.Equals(item.Tag as string, current, StringComparison.OrdinalIgnoreCase))
+                {
+                    UiLanguageCombo.SelectedItem = item;
+                    break;
+                }
+            }
+            if (UiLanguageCombo.SelectedItem == null && UiLanguageCombo.Items.Count > 0)
+            {
+                UiLanguageCombo.SelectedIndex = 0;
+            }
+        }
+
+        private void Button_SaveLanguage_Click(object sender, RoutedEventArgs e)
+        {
+            var selected = UiLanguageCombo.SelectedItem as ComboBoxItem;
+            var language = selected?.Tag as string ?? UiSettingsStore.LanguageZhCn;
+            UiSettingsStore.SaveUiLanguage(language);
+            UiCultureService.Apply(language);
+            ApplyLocalizedTexts();
+            LoadLanguageCombo();
+            // Re-apply toolbar/menu captions for the new language (VSCT starts English; Chinese overlays must be reversible).
+            MenuTextLocalizer.ApplyFromIde();
+            MessageBox.Show(UiStrings.Settings_LanguageSaved, UiStrings.Settings_Saved);
         }
 
         private void UserControl_Loaded(object sender, System.Windows.RoutedEventArgs e)
@@ -124,7 +317,7 @@ as select 1;
                 return;
             }
 
-            bool isAuthorized = string.Equals(GoogleSheetsRefreshTokenLabel.Text, "Authorized", StringComparison.OrdinalIgnoreCase);
+            bool isAuthorized = string.Equals(GoogleSheetsRefreshTokenLabel.Text, UiStrings.Get("Settings_Authorized"), StringComparison.OrdinalIgnoreCase);
             GoogleSheetsRefreshTokenLabel.Foreground = GetThemedStatusBrush(isAuthorized);
         }
 
@@ -204,8 +397,8 @@ as select 1;
             {
                 _logger.Error(ex, "An exception occurred while loading settings");
 
-                string msg = $"Error message: {ex.Message} \nInnerException: {ex.InnerException}";
-                MessageBox.Show(msg, "Error");
+                string msg = string.Format(UiStrings.Get("Msg_Settings_LoadError"), ex.Message, ex.InnerException);
+                MessageBox.Show(msg, UiStrings.Common_Error);
             }
 
             try
@@ -224,7 +417,7 @@ as select 1;
 
             if (string.IsNullOrWhiteSpace(_queryHistoryConnectionString))
             {
-                Label_QueryHistoryConnectionInfo.Text = " < not configured > ";
+                Label_QueryHistoryConnectionInfo.Text = UiStrings.Get("Settings_NotConfigured");
             }
             else
             {
@@ -274,7 +467,7 @@ as select 1;
 
         private void buttonDownloadAxialScripts_Click(object sender, RoutedEventArgs e)
         {
-            string repoUrl = "https://github.com/Axial-SQL/AxialSqlTools/archive/main.zip";
+            string repoUrl = "https://github.com/liangguopeng1/AxialSqlTools/archive/main.zip";
             string targetFolderPath = "AxialSqlTools-main/query-library"; // Relative path inside the zip
             string targetPath = SettingsManager.GetTemplatesFolder();
 
@@ -286,14 +479,14 @@ as select 1;
                 // Extract the specific folder from the zip
                 ExtractSpecificFolderFromZip(tempZipPath, targetFolderPath, targetPath);
 
-                MessageBox.Show("Axial SQL Tool Query Library has been downloaded", "Done");
+                MessageBox.Show(UiStrings.Get("Msg_Settings_QueryLibraryDownloaded"), UiStrings.Common_Done);
 
             }
             catch (Exception ex)
             {
                 MessageBox.Show(
-                    string.Format(System.Globalization.CultureInfo.CurrentUICulture, "An error occurred: '{0}'", ex.Message),
-                    "Error");
+                    string.Format(System.Globalization.CultureInfo.CurrentUICulture, UiStrings.Get("Msg_Settings_DownloadFailed"), ex.Message),
+                    UiStrings.Common_Error);
             }
 
         }
@@ -371,9 +564,7 @@ as select 1;
 
         private void SavedMessage()
         {
-            MessageBox.Show(
-                string.Format(System.Globalization.CultureInfo.CurrentUICulture, "The change has been saved", this.ToString()),
-                "Setting saved");
+            MessageBox.Show(UiStrings.Settings_Saved, UiStrings.Settings_Saved);
         }
 
         private void buttonWikiPage_Click(object sender, RequestNavigateEventArgs e)
@@ -487,7 +678,7 @@ as select 1;
 
             if (!settings.HasClientConfiguration())
             {
-                MessageBox.Show("Client ID and Client Secret are required before authorizing Google Sheets.", "Google Sheets", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(UiStrings.Get("Msg_Settings_GoogleClientRequired"), UiStrings.Get("Msg_Settings_GoogleSheetsTitle"), MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
@@ -515,7 +706,7 @@ as select 1;
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Authorization failed: {ex.Message}", "Google Sheets", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(string.Format(System.Globalization.CultureInfo.CurrentUICulture, UiStrings.Get("Msg_Settings_AuthFailed"), ex.Message), UiStrings.Get("Msg_Settings_GoogleSheetsTitle"), MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -536,14 +727,13 @@ as select 1;
         {
             if (string.IsNullOrWhiteSpace(refreshToken))
             {
-                GoogleSheetsRefreshTokenLabel.Text = "Not authorized";
-                GoogleSheetsRefreshTokenLabel.Foreground = new SolidColorBrush(Colors.DarkRed);
+                GoogleSheetsRefreshTokenLabel.Text = UiStrings.Get("Settings_NotAuthorized");
             }
             else
             {
-                GoogleSheetsRefreshTokenLabel.Text = "Authorized";
-                GoogleSheetsRefreshTokenLabel.Foreground = new SolidColorBrush(Colors.DarkGreen);
+                GoogleSheetsRefreshTokenLabel.Text = UiStrings.Get("Settings_Authorized");
             }
+            ApplyGoogleSheetsAuthorizationBrush();
         }
 
         private void Hyperlink_RequestNavigateFormatQueryWiki(object sender, RequestNavigateEventArgs e)
@@ -847,7 +1037,7 @@ END
 
             if (string.IsNullOrEmpty(serverPattern) && string.IsNullOrEmpty(databasePattern))
             {
-                MessageBox.Show("Fill in at least the server name or the database name.", "Connection Colors");
+                MessageBox.Show(UiStrings.Get("Msg_Settings_ConnectionColorsFill"), UiStrings.Get("Msg_Settings_ConnectionColorsTitle"));
                 return;
             }
 

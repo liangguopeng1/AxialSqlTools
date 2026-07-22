@@ -1,11 +1,14 @@
-﻿namespace AxialSqlTools
+namespace AxialSqlTools
 {
+    using System;
     using System.Collections.Generic;
     using System.Collections.ObjectModel;
     using System.Diagnostics.CodeAnalysis;
     using System.Windows;
     using System.Windows.Controls;
+    using System.Windows.Documents;
     using System.Windows.Navigation;
+    using AxialSqlTools.Properties;
 
     /// <summary>
     /// Interaction logic for HealthDashboard_ServersControl.
@@ -24,6 +27,8 @@
         public HealthDashboard_ServersControl()
         {
             this.InitializeComponent();
+            UiLocalization.Apply(this);
+            LocalizeWikiDescription();
             _themeController = new ToolWindowThemeController(this, ApplyThemeBrushResources);
 
             Items = new ObservableCollection<MyRowModel>();
@@ -43,6 +48,19 @@
             ToolWindowThemeResources.ApplySharedTheme(this);
         }
 
+        private void LocalizeWikiDescription()
+        {
+            WikiDescriptionTextBlock.Inlines.Clear();
+            WikiDescriptionTextBlock.Inlines.Add(new Run(Strings.Get("Common_FeatureDescriptionIn")));
+            WikiDescriptionTextBlock.Inlines.Add(new Run(" "));
+            var wikiLink = new Hyperlink(new Run(Strings.Get("Common_Wiki")))
+            {
+                NavigateUri = new Uri("https://github.com/liangguopeng1/AxialSqlTools/wiki/Server-Health-Dashboard")
+            };
+            wikiLink.RequestNavigate += WikiLink_RequestNavigate;
+            WikiDescriptionTextBlock.Inlines.Add(wikiLink);
+        }
+
         private void WikiLink_RequestNavigate(object sender, RequestNavigateEventArgs e)
         {
             ToolWindowNavigation.HandleRequestNavigate(e);
@@ -59,7 +77,7 @@
         {
             MessageBox.Show(
                 string.Format(System.Globalization.CultureInfo.CurrentUICulture, "Invoked '{0}'", this.ToString()),
-                "HealthDashboard_Servers");
+                Strings.Get("Health_ServersHeaderTitle"));
         }
 
     }

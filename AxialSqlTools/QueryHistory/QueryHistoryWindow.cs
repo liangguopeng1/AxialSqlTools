@@ -1,4 +1,5 @@
-﻿using System;
+﻿using AxialSqlTools.Properties;
+using System;
 using System.Runtime.InteropServices;
 using Microsoft.VisualStudio.Shell;
 
@@ -23,7 +24,7 @@ namespace AxialSqlTools
         /// </summary>
         public QueryHistoryWindow() : base(null)
         {
-            this.Caption = "Query History";
+            this.Caption = Strings.Get("Menu_QueryHistory");
 
             // This is the user control hosted by the tool window; Note that, even if this class implements IDisposable,
             // we are not calling Dispose on this object. This is because ToolWindowPane calls Dispose on

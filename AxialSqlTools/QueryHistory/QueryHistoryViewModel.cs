@@ -9,6 +9,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Input;
 using Newtonsoft.Json;
+using AxialSqlTools.Properties;
 using static AxialSqlTools.QueryHistoryWindowControl;
 
 namespace AxialSqlTools
@@ -171,8 +172,8 @@ namespace AxialSqlTools
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Error loading data: " + ex.Message,
-                                "Error",
+                MessageBox.Show(string.Format(Strings.Get("Msg_QueryHistory_LoadError"), ex.Message),
+                                Strings.Get("Common_Error"),
                                 MessageBoxButton.OK,
                                 MessageBoxImage.Error);
             }

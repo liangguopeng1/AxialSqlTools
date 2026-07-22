@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Input;
+using AxialSqlTools.Properties;
 
 namespace AxialSqlTools
 {
@@ -169,7 +170,7 @@ namespace AxialSqlTools
         {
             if (string.IsNullOrWhiteSpace(EditPrefix))
             {
-                MessageBox.Show("Prefix is required.", "Snippet Manager", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(Strings.Get("Msg_Snippet_PrefixRequired"), Strings.Get("Menu_SnippetManager"), MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
@@ -201,8 +202,8 @@ namespace AxialSqlTools
                 return;
 
             var result = MessageBox.Show(
-                $"Delete snippet '{_selectedSnippet.Prefix}'?",
-                "Confirm Delete",
+                string.Format(Strings.Get("Msg_Snippet_DeleteConfirm"), _selectedSnippet.Prefix),
+                Strings.Get("Menu_SnippetManager"),
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Question);
 
@@ -243,7 +244,7 @@ namespace AxialSqlTools
                 {
                     SnippetService.ImportFromLegacyFolder(dialog.SelectedPath);
                     LoadSnippets();
-                    MessageBox.Show("Import completed.", "Snippet Manager", MessageBoxButton.OK, MessageBoxImage.Information);
+                    MessageBox.Show(Strings.Get("Msg_Snippet_ImportCompleted"), Strings.Get("Menu_SnippetManager"), MessageBoxButton.OK, MessageBoxImage.Information);
                 }
             }
         }
@@ -274,7 +275,7 @@ namespace AxialSqlTools
             settings.replaceKey = ReplaceKey;
             settings.cursorMarker = CursorMarker;
             SettingsManager.SaveSnippetSettings(settings);
-            MessageBox.Show("Settings saved.", "Snippet Manager", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(Strings.Get("Msg_Snippet_SettingsSaved"), Strings.Get("Menu_SnippetManager"), MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
         public event PropertyChangedEventHandler PropertyChanged;

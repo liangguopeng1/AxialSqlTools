@@ -1,3 +1,4 @@
+using AxialSqlTools.Properties;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
@@ -11,7 +12,7 @@ namespace AxialSqlTools
         public SavedConnectionPickerWindow(IEnumerable<SettingsManager.DataTransferSavedConnection> connections, string title)
         {
             InitializeComponent();
-
+            UiLocalization.Apply(this);
             HeaderTextBlock.Text = title;
             ConnectionsListBox.ItemsSource = connections.ToList();
         }
@@ -25,7 +26,7 @@ namespace AxialSqlTools
             }
             else
             {
-                MessageBox.Show("Select a saved connection.", "Saved Connections");
+                MessageBox.Show(Strings.Get("Msg_DataTransfer_SelectSavedConnection"), Strings.Get("Menu_DataTransfer"));
             }
         }
 

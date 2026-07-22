@@ -57,7 +57,7 @@
         </Grid.RowDefinitions>
 
         <!-- Settings Section -->
-        <GroupBox Grid.Row="0" Header="Settings" Margin="0,0,0,5">
+        <GroupBox Grid.Row="0" Header="Settings" Tag="loc:Snippet_Settings" Margin="0,0,0,5">
             <Grid Margin="5">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
@@ -75,11 +75,13 @@
                 <CheckBox Grid.Column="0"
                           x:Name="chkUseSnippets"
                           Content="Enable Snippets"
+                          Tag="loc:Snippet_EnableSnippets"
                           IsChecked="{Binding UseSnippets, Mode=TwoWay}"
                           VerticalAlignment="Center"
                           Margin="0,0,15,0"/>
 
                 <TextBlock Grid.Column="1" Text="Trigger Key:"
+                           Tag="loc:Snippet_TriggerKey"
                            VerticalAlignment="Center" Margin="0,0,5,0"/>
                 <ComboBox Grid.Column="2"
                           x:Name="cmbReplaceKey"
@@ -94,6 +96,7 @@
                 </ComboBox>
 
                 <TextBlock Grid.Column="3" Text="Cursor Marker:"
+                           Tag="loc:Snippet_CursorMarker"
                            VerticalAlignment="Center" Margin="0,0,5,0"/>
                 <TextBox Grid.Column="4"
                          x:Name="txtCursorMarker"
@@ -104,6 +107,7 @@
 
                 <Button Grid.Column="5"
                         Content="Save Settings"
+                        Tag="loc:Snippet_SaveSettings"
                         Command="{Binding SaveSettingsCommand}"
                         Width="90" Height="24"
                         FontWeight="Bold"/>
@@ -112,15 +116,15 @@
 
         <!-- Action Buttons -->
         <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,5">
-            <Button Content="+ New" Command="{Binding NewCommand}"
+            <Button Content="+ New" Tag="loc:Common_New" Command="{Binding NewCommand}"
                     Width="70" Height="24" Margin="0,0,5,0" FontWeight="Bold"/>
-            <Button Content="Duplicate" Command="{Binding DuplicateCommand}"
+            <Button Content="Duplicate" Tag="loc:Common_Duplicate" Command="{Binding DuplicateCommand}"
                     Width="75" Height="24" Margin="0,0,5,0"/>
-            <Button Content="Delete" Command="{Binding DeleteCommand}"
+            <Button Content="Delete" Tag="loc:Common_Delete" Command="{Binding DeleteCommand}"
                     Width="65" Height="24" Margin="0,0,5,0"/>
-            <Button Content="Edit" Command="{Binding EditCommand}"
+            <Button Content="Edit" Tag="loc:Common_Edit" Command="{Binding EditCommand}"
                     Width="65" Height="24" Margin="0,0,5,0"/>
-            <Button Content="Import .sql" Command="{Binding ImportLegacyCommand}"
+            <Button Content="Import .sql" Tag="loc:Snippet_ImportSql" Command="{Binding ImportLegacyCommand}"
                     Width="80" Height="24" Margin="0,0,5,0"/>
         </StackPanel>
 
@@ -133,7 +137,8 @@
             </Grid.ColumnDefinitions>
 
             <!-- DataGrid -->
-            <DataGrid Grid.Column="0"
+            <DataGrid x:Name="DataGrid_Snippets"
+                      Grid.Column="0"
                       ItemsSource="{Binding Snippets}"
                       SelectedItem="{Binding SelectedSnippet, Mode=TwoWay}"
                       AutoGenerateColumns="False"
@@ -162,6 +167,7 @@
 
             <!-- Edit Panel -->
             <GroupBox Grid.Column="2" Header="Snippet"
+                      Tag="loc:Snippet_GroupTitle"
                       Visibility="{Binding IsEditing, Converter={StaticResource BoolToVisibility}}"
                       Margin="0,0,0,0">
                 <Grid Margin="5">
@@ -178,6 +184,7 @@
                     </Grid.ColumnDefinitions>
 
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="Prefix:"
+                               Tag="loc:Snippet_Prefix"
                                VerticalAlignment="Center" Margin="0,0,0,5"/>
                     <TextBox Grid.Row="0" Grid.Column="1"
                              Text="{Binding EditPrefix, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
@@ -185,6 +192,7 @@
                              Margin="0,0,0,5" VerticalContentAlignment="Center"/>
 
                     <TextBlock Grid.Row="1" Grid.Column="0" Text="Description:"
+                               Tag="loc:Snippet_Description"
                                VerticalAlignment="Center" Margin="0,0,0,5"/>
                     <TextBox Grid.Row="1" Grid.Column="1"
                              Text="{Binding EditDescription, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
@@ -192,6 +200,7 @@
                              Margin="0,0,0,5" VerticalContentAlignment="Center"/>
 
                     <TextBlock Grid.Row="2" Grid.Column="0" Text="Body:"
+                               Tag="loc:Snippet_Body"
                                VerticalAlignment="Top" Margin="0,0,0,5"/>
                     <TextBox Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2"
                              Text="{Binding EditBody, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
@@ -209,9 +218,9 @@
                     <StackPanel Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2"
                                 Orientation="Horizontal" Margin="0,5,0,0"
                                 Visibility="{Binding IsEditMode, Converter={StaticResource BoolToVisibility}}">
-                        <Button Content="Save Snippet" Command="{Binding SaveCommand}"
+                        <Button Content="Save Snippet" Tag="loc:Snippet_SaveSnippet" Command="{Binding SaveCommand}"
                                 Width="100" Height="24" Margin="0,0,5,0" FontWeight="Bold"/>
-                        <Button Content="Cancel" Command="{Binding CancelCommand}"
+                        <Button Content="Cancel" Tag="loc:Common_Cancel" Command="{Binding CancelCommand}"
                                 Width="70" Height="24"/>
                     </StackPanel>
                 </Grid>
