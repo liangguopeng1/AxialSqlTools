@@ -19,15 +19,22 @@ namespace AxialSqlTools
                 return;
             }
             ApplyNode(root);
-            if (root is FrameworkElement fe)
+            // ColumnDefinition / RowDefinition etc. are DependencyObjects but not Visuals.
+            // Only walk FrameworkElement trees; never call VisualTreeHelper on non-Visual nodes.
+            if (!(root is FrameworkElement fe))
             {
-                foreach (var child in LogicalTreeHelper.GetChildren(fe))
+                return;
+            }
+            foreach (var child in LogicalTreeHelper.GetChildren(fe))
+            {
+                if (child is DependencyObject dep)
                 {
-                    if (child is DependencyObject dep)
-                    {
-                        Apply(dep);
-                    }
+                    Apply(dep);
                 }
+            }
+            if (!(root is Visual))
+            {
+                return;
             }
             int count = VisualTreeHelper.GetChildrenCount(root);
             for (int i = 0; i < count; i++)
