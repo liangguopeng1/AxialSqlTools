@@ -57,6 +57,15 @@ namespace AxialSqlTools
         public static string GetText(AsyncPackage package, string selectedObjectName)
         {
             var connectionInfo = ScriptFactoryAccess.GetCurrentConnectionInfo();
+            return GetText(package, selectedObjectName, connectionInfo);
+        }
+
+        public static string GetText(AsyncPackage package, string selectedObjectName, ConnectionInfo connectionInfo)
+        {
+            if (connectionInfo == null || string.IsNullOrWhiteSpace(connectionInfo.FullConnectionString))
+            {
+                throw new Exception("No connection information is available for scripting.");
+            }
 
             ScriptObjectSelectionItem selectedObject = null;
 

@@ -25,6 +25,7 @@ namespace AxialSqlTools
         public static string QueryHistoryDirectory => Path.Combine(Root, "query-history");
         public static string TemplatesDirectory => Path.Combine(Root, "templates");
         public static string LogsDirectory => Path.Combine(Root, "logs");
+        public static string QuickSearchIndexDirectory => Path.Combine(Root, "quick-search-index");
 
         public static void EnsureRootExists()
         {

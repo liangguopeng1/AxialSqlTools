@@ -33,6 +33,11 @@ public class GitHubSyncProfile
                     {
                         var json = Encoding.UTF8.GetString(plainBytes);
                         _serverConnection = JsonConvert.DeserializeObject<ScriptFactoryAccess.ConnectionInfo>(json);
+                        if (_serverConnection != null && !string.IsNullOrWhiteSpace(_serverConnection.FullConnectionString))
+                        {
+                            // Re-assign so ConnectionInfo setter applies TrustServerCertificate for older saved profiles.
+                            _serverConnection.FullConnectionString = _serverConnection.FullConnectionString;
+                        }
                     }
                     else
                     {

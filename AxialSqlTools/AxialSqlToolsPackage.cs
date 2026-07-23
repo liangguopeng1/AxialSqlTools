@@ -184,7 +184,6 @@ namespace AxialSqlTools
 
                 string connectionString = SettingsManager.GetQueryHistoryConnectionString();
                 string qhTableName = SettingsManager.GetQueryHistoryTableNameOrDefault();
-                string indexNameGuid = Guid.NewGuid().ToString(); // too much complexity trying to incorporate all possible table name combinations into proper index name
 
                 if (string.IsNullOrEmpty(connectionString))
                 {
@@ -194,30 +193,9 @@ namespace AxialSqlTools
                 using (SqlConnection connection = new SqlConnection(connectionString))
                 {
                     await connection.OpenAsync();
-                    string sql = $@"
-                        IF OBJECT_ID('{qhTableName}') IS NULL
-                        BEGIN
-                            CREATE TABLE {qhTableName} (
-                                [QueryID]           INT            IDENTITY (1, 1) NOT NULL,
-                                [StartTime]         DATETIME       NOT NULL,
-                                [FinishTime]        DATETIME       NOT NULL,
-                                [ElapsedTime]       VARCHAR (15)   NOT NULL,
-                                [TotalRowsReturned] BIGINT         NOT NULL,
-                                [ExecResult]        VARCHAR (100)  NOT NULL,
-                                [QueryText]         NVARCHAR (MAX) NOT NULL,
-                                [DataSource]        NVARCHAR (128) NOT NULL,
-                                [DatabaseName]      NVARCHAR (128) NOT NULL,
-                                [LoginName]         NVARCHAR (128) NOT NULL,
-                                [WorkstationId]     NVARCHAR (128) NOT NULL,
-                                PRIMARY KEY CLUSTERED ([QueryID]),
-                                INDEX [IDX_{indexNameGuid}_1] ([StartTime]),
-                                INDEX [IDX_{indexNameGuid}_2] ([FinishTime]),
-                                INDEX [IDX_{indexNameGuid}_3] ([DataSource]),
-                                INDEX [IDX_{indexNameGuid}_4] ([DatabaseName])
-                            );
-                            ALTER INDEX ALL ON {qhTableName} REBUILD WITH (DATA_COMPRESSION = PAGE);
-                        END
+                    QueryHistoryTableHelper.EnsureTableExists(connection, qhTableName);
 
+                    string sql = $@"
                         INSERT INTO {qhTableName}
                             (StartTime, FinishTime, ElapsedTime, TotalRowsReturned, 
                                 ExecResult, QueryText, DataSource, DatabaseName, LoginName, WorkstationId) 

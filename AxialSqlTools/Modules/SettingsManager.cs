@@ -787,23 +787,28 @@ ORDER BY sd.[name];
             {
             }
 
-            return key;
+            return EnsureTrustServerCertificate(key);
         }
+
         public static bool SaveQueryHistoryConnectionString(string connectionString)
         {
-            byte[] encKey = Protect(Encoding.UTF8.GetBytes(connectionString));
+            string normalized = EnsureTrustServerCertificate(connectionString) ?? string.Empty;
+            byte[] encKey = Protect(Encoding.UTF8.GetBytes(normalized));
             return SaveRegisterValue("QueryHistoryConnectionString", Convert.ToBase64String(encKey));
+        }
+
+        /// <summary>
+        /// Microsoft.Data.SqlClient defaults Encrypt=true; history DB often uses self-signed certs.
+        /// Ensure TrustServerCertificate so existing saved connection strings keep working.
+        /// </summary>
+        public static string EnsureTrustServerCertificate(string connectionString)
+        {
+            return ScriptFactoryAccess.EnsureTrustServerCertificate(connectionString);
         }
 
         public static string GetQueryHistoryTableNameOrDefault()
         {
-            string qhTable = GetRegisterValue("QueryHistoryTableName");
-
-            if (string.IsNullOrEmpty(qhTable))
-            {
-                qhTable = "QueryHistory";
-            }
-            return qhTable;
+            return QueryHistoryTableHelper.ResolveTableName(GetRegisterValue("QueryHistoryTableName"));
         }
 
         public static string GetQueryHistoryTableName()
@@ -818,14 +823,14 @@ ORDER BY sd.[name];
         public static string GetQueryHistoryStorageMode()
         {
             string mode = GetRegisterValue("QueryHistoryStorageMode");
-            return string.IsNullOrWhiteSpace(mode) ? "Database" : mode;
+            return string.IsNullOrWhiteSpace(mode) ? "TextFiles" : mode;
         }
 
         public static bool SaveQueryHistoryStorageMode(string storageMode)
         {
             if (string.IsNullOrWhiteSpace(storageMode))
             {
-                storageMode = "Database";
+                storageMode = "TextFiles";
             }
 
             return SaveRegisterValue("QueryHistoryStorageMode", storageMode);

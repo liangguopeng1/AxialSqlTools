@@ -247,6 +247,8 @@ namespace AxialSqlTools
             using (SqlConnection conn = new SqlConnection(connectionString))
             {
                 conn.Open();
+                QueryHistoryTableHelper.EnsureTableExists(conn, qhTableName);
+
                 using (SqlCommand cmd = new SqlCommand(sql, conn))
                 {
                     foreach (var p in parameters)

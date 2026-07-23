@@ -13,7 +13,6 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Web.UI.Design;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -25,13 +24,13 @@ namespace AxialSqlTools
 {
     public partial class QuickSearchWindowControl : UserControl
     {
-        private readonly ToolWindowThemeController themeController;
-        private string selectedConnectionString;
-        private string selectedDatabase;
-        private string selectedServer;
-        private CancellationTokenSource searchCancellationTokenSource;
+        private const int MaxParallelDatabaseSearches = 4;
 
+        private readonly ToolWindowThemeController themeController;
+        private CancellationTokenSource searchCancellationTokenSource;
+        private CancellationTokenSource indexCancellationTokenSource;
         private TextMarkerService textMarkerService;
+        private bool suppressSelectionEvents;
 
         public QuickSearchWindowControl()
         {
@@ -53,7 +52,6 @@ namespace AxialSqlTools
             {
                 textMarkerService = new TextMarkerService(SqlEditor);
             }
-
         }
 
         private void ApplyThemeBrushResources()
@@ -90,20 +88,134 @@ namespace AxialSqlTools
             ToolWindowNavigation.HandleRequestNavigate(e);
         }
 
-        private void Button_SelectConnection_Click(object sender, RoutedEventArgs e)
+        private void QuickSearchControl_Loaded(object sender, RoutedEventArgs e)
         {
-            var ci = ScriptFactoryAccess.GetCurrentConnectionInfoFromObjectExplorer();
-            if (ci == null)
+            RefreshServerList();
+        }
+
+        private void Button_RefreshConnections_Click(object sender, RoutedEventArgs e)
+        {
+            RefreshServerList(keepSelection: true);
+        }
+
+        private void RefreshServerList(bool keepSelection = false)
+        {
+            string previousServer = (ComboBox_Servers.SelectedItem as ConnectionInfo)?.ServerName;
+
+            suppressSelectionEvents = true;
+            try
             {
-                MessageBox.Show(Strings.Get("Msg_QuickSearch_SelectOeNode"), Strings.Get("Menu_QuickSearch"));
+                List<ConnectionInfo> sessions = ScriptFactoryAccess.GetConnectedObjectExplorerSessions();
+                ComboBox_Servers.ItemsSource = sessions;
+
+                if (sessions.Count == 0)
+                {
+                    ComboBox_Servers.SelectedItem = null;
+                    ComboBox_Databases.ItemsSource = null;
+                    SearchInputsGrid.IsEnabled = false;
+                    UpdateIndexStatus(null);
+                    return;
+                }
+
+                ConnectionInfo selected = null;
+                if (keepSelection && !string.IsNullOrWhiteSpace(previousServer))
+                {
+                    selected = sessions.FirstOrDefault(s =>
+                        string.Equals(s.ServerName, previousServer, StringComparison.OrdinalIgnoreCase));
+                }
+
+                ComboBox_Servers.SelectedItem = selected ?? sessions[0];
+            }
+            finally
+            {
+                suppressSelectionEvents = false;
+            }
+
+            LoadDatabasesForSelectedServer();
+        }
+
+        private void ComboBox_Servers_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (suppressSelectionEvents)
+            {
                 return;
             }
 
-            selectedConnectionString = ci.FullConnectionString;
-            selectedDatabase = ci.Database;
-            selectedServer = ci.ServerName;
-            Label_ConnectionDescription.Content = $"Server: [{selectedServer}] / Database: [{selectedDatabase}]";
-            SearchInputsGrid.IsEnabled = true;
+            LoadDatabasesForSelectedServer();
+        }
+
+        private void ComboBox_Databases_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            UpdateSearchEnabled();
+        }
+
+        private void LoadDatabasesForSelectedServer()
+        {
+            var server = ComboBox_Servers.SelectedItem as ConnectionInfo;
+            if (server == null)
+            {
+                ComboBox_Databases.ItemsSource = null;
+                SearchInputsGrid.IsEnabled = false;
+                UpdateIndexStatus(null);
+                return;
+            }
+
+            try
+            {
+                List<string> databases = ScriptFactoryAccess.GetDatabases(server);
+                var items = new List<DatabaseOptionItem>
+                {
+                    new DatabaseOptionItem(null, Strings.Get("QuickSearch_AllDatabasesOption"))
+                };
+                items.AddRange(databases.Select(name => new DatabaseOptionItem(name, name)));
+
+                suppressSelectionEvents = true;
+                ComboBox_Databases.ItemsSource = items;
+                ComboBox_Databases.SelectedIndex = 0;
+                suppressSelectionEvents = false;
+
+                UpdateSearchEnabled();
+                UpdateIndexStatus(server.ServerName);
+            }
+            catch (Exception ex)
+            {
+                ComboBox_Databases.ItemsSource = null;
+                SearchInputsGrid.IsEnabled = false;
+                MessageBox.Show(
+                    string.Format(Strings.Get("Msg_QuickSearch_LoadDatabasesFailed"), ex.Message),
+                    Strings.Get("Menu_QuickSearch"));
+            }
+        }
+
+        private void UpdateSearchEnabled()
+        {
+            SearchInputsGrid.IsEnabled = ComboBox_Servers.SelectedItem is ConnectionInfo;
+        }
+
+        private void UpdateIndexStatus(string serverName)
+        {
+            if (string.IsNullOrWhiteSpace(serverName) || !QuickSearchIndexStore.TryGetMeta(serverName, out QuickSearchIndexMeta meta))
+            {
+                TextBlock_IndexStatus.Text = Strings.Get("QuickSearch_IndexNone");
+                return;
+            }
+
+            DateTime local = meta.IndexedAtUtc.ToLocalTime();
+            TextBlock_IndexStatus.Text = string.Format(
+                Strings.Get("QuickSearch_IndexReady"),
+                local.ToString("yyyy-MM-dd HH:mm"),
+                meta.ObjectCount);
+        }
+
+        private ConnectionInfo GetSelectedServerConnection()
+        {
+            return ComboBox_Servers.SelectedItem as ConnectionInfo;
+        }
+
+        private string GetSelectedDatabaseNameOrNull()
+        {
+            var item = ComboBox_Databases.SelectedItem as DatabaseOptionItem;
+            return item?.Name;
         }
 
         private async void Button_Search_Click(object sender, RoutedEventArgs e)
@@ -119,7 +231,8 @@ namespace AxialSqlTools
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(selectedConnectionString))
+            ConnectionInfo server = GetSelectedServerConnection();
+            if (server == null)
             {
                 MessageBox.Show(Strings.Get("Msg_QuickSearch_SelectConnection"), Strings.Get("Menu_QuickSearch"));
                 return;
@@ -147,14 +260,13 @@ namespace AxialSqlTools
                 SqlEditor.Text = string.Empty;
                 TextBlock_ResultCount.Text = "Searching...";
 
-                bool allDatabases = CheckBox_AllDatabases.IsChecked == true;
-                bool wholeWord = CheckBox_WholeWord.IsChecked == true;
                 bool useWildcards = CheckBox_UseWildcards.IsChecked == true;
                 bool includeProcs = CheckBox_StoredProcedures.IsChecked == true;
                 bool includeViews = CheckBox_Views.IsChecked == true;
                 bool includeFunctions = CheckBox_Functions.IsChecked == true;
                 bool includeTables = CheckBox_Tables.IsChecked == true;
                 bool includeAgentJobSteps = CheckBox_AgentJobSteps.IsChecked == true;
+                string selectedDatabase = GetSelectedDatabaseNameOrNull();
 
                 CancellationToken cancellationToken = searchCancellationTokenSource.Token;
                 var progress = new Progress<string>(databaseName =>
@@ -162,7 +274,37 @@ namespace AxialSqlTools
                     TextBlock_ResultCount.Text = $"Searching [{databaseName}]...";
                 });
 
-                DataTable results = await Task.Run(() => ExecuteSearchAsync(searchText, allDatabases, wholeWord, useWildcards, includeProcs, includeViews, includeFunctions, includeTables, includeAgentJobSteps, progress, cancellationToken), cancellationToken);
+                DataTable results;
+                if (QuickSearchIndexStore.HasIndex(server.ServerName))
+                {
+                    TextBlock_ResultCount.Text = Strings.Get("QuickSearch_SearchingIndex");
+                    results = await Task.Run(() => SearchFromIndex(
+                        server.ServerName,
+                        searchText,
+                        useWildcards,
+                        selectedDatabase,
+                        includeProcs,
+                        includeViews,
+                        includeFunctions,
+                        includeTables,
+                        includeAgentJobSteps), cancellationToken);
+                }
+                else
+                {
+                    results = await Task.Run(() => ExecuteSearchAsync(
+                        server,
+                        searchText,
+                        selectedDatabase,
+                        useWildcards,
+                        includeProcs,
+                        includeViews,
+                        includeFunctions,
+                        includeTables,
+                        includeAgentJobSteps,
+                        progress,
+                        cancellationToken), cancellationToken);
+                }
+
                 DataGrid_SearchResults.ItemsSource = results.DefaultView;
                 TextBlock_ResultCount.Text = $"{results.Rows.Count} result(s)";
             }
@@ -180,7 +322,7 @@ namespace AxialSqlTools
                 {
                     MessageBox.Show(string.Format(Strings.Get("Msg_QuickSearch_SearchFailed"), ex.Message), Strings.Get("Menu_QuickSearch"));
                     TextBlock_ResultCount.Text = "Search failed";
-                }           
+                }
             }
             finally
             {
@@ -201,111 +343,203 @@ namespace AxialSqlTools
             await RunSearchAsync();
         }
 
-        private async Task<DataTable> ExecuteSearchAsync(string searchText, bool allDatabases, bool wholeWord, bool useWildcards, bool includeProcs, bool includeViews, bool includeFunctions, bool includeTables, bool includeAgentJobSteps, IProgress<string> progress, CancellationToken cancellationToken)
+        private async void Button_RefreshIndex_Click(object sender, RoutedEventArgs e)
         {
-            List<string> databases = GetDatabasesToSearch(allDatabases);
-            DataTable allResults = BuildResultTable();
-
-            foreach (string dbName in databases)
+            if (indexCancellationTokenSource != null)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                progress?.Report(dbName);
+                indexCancellationTokenSource.Cancel();
+                return;
+            }
 
-                DataTable rows;
+            ConnectionInfo server = GetSelectedServerConnection();
+            if (server == null)
+            {
+                MessageBox.Show(Strings.Get("Msg_QuickSearch_SelectConnection"), Strings.Get("Menu_QuickSearch"));
+                return;
+            }
 
-                try
+            indexCancellationTokenSource = new CancellationTokenSource();
+            string previousContent = Button_RefreshIndex.Content?.ToString();
+            try
+            {
+                Button_RefreshIndex.Content = Strings.Get("Common_Cancel");
+                TextBlock_IndexStatus.Text = Strings.Get("QuickSearch_Indexing");
+
+                List<string> databases = ScriptFactoryAccess.GetDatabases(server);
+                var progress = new Progress<string>(db =>
                 {
-                    rows = await SearchDatabaseAsync(
-                        dbName,
-                        searchText,
-                        useWildcards,
-                        includeProcs,
-                        includeViews,
-                        includeFunctions,
-                        includeTables,
-                        includeAgentJobSteps,
-                        cancellationToken);
-                }
-                catch (SqlException)
-                {
-                    continue;
-                }
+                    TextBlock_IndexStatus.Text = string.Format(Strings.Get("QuickSearch_IndexingDatabase"), db);
+                });
 
+                await QuickSearchIndexStore.BuildIndexAsync(server, databases, progress, indexCancellationTokenSource.Token);
+                UpdateIndexStatus(server.ServerName);
+                MessageBox.Show(Strings.Get("Msg_QuickSearch_IndexBuilt"), Strings.Get("Menu_QuickSearch"));
+            }
+            catch (OperationCanceledException)
+            {
+                UpdateIndexStatus(server.ServerName);
+            }
+            catch (Exception ex)
+            {
+                UpdateIndexStatus(server.ServerName);
+                MessageBox.Show(string.Format(Strings.Get("Msg_QuickSearch_IndexFailed"), ex.Message), Strings.Get("Menu_QuickSearch"));
+            }
+            finally
+            {
+                indexCancellationTokenSource?.Dispose();
+                indexCancellationTokenSource = null;
+                Button_RefreshIndex.Content = previousContent ?? Strings.Get("QuickSearch_RefreshIndex");
+            }
+        }
 
-                foreach (DataRow row in rows.Rows)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    string sourceText = row["SourceText"]?.ToString() ?? string.Empty;
+        private DataTable SearchFromIndex(
+            string serverName,
+            string searchText,
+            bool useWildcards,
+            string selectedDatabase,
+            bool includeProcs,
+            bool includeViews,
+            bool includeFunctions,
+            bool includeTables,
+            bool includeAgentJobSteps)
+        {
+            DataTable allResults = BuildResultTable();
+            List<QuickSearchIndexEntry> entries = QuickSearchIndexStore.Search(
+                serverName,
+                searchText,
+                useWildcards,
+                selectedDatabase,
+                includeProcs,
+                includeViews,
+                includeFunctions,
+                includeTables,
+                includeAgentJobSteps);
 
-                    string preview = BuildPreview(sourceText, searchText, useWildcards);
-                    allResults.Rows.Add(
-                        row["DatabaseName"],
-                        row["ObjectType"],
-                        row["SchemaName"],
-                        row["ObjectName"],
-                        row["MatchLocation"],
-                        preview,
-                        row["ScriptDatabaseName"],
-                        row["ScriptSchemaName"],
-                        row["ScriptObjectName"],
-                        sourceText);
-                }
-            }           
+            foreach (QuickSearchIndexEntry entry in entries)
+            {
+                string preview = BuildPreview(entry.SourceText ?? string.Empty, searchText, useWildcards);
+                allResults.Rows.Add(
+                    entry.DatabaseName,
+                    entry.ObjectType,
+                    entry.SchemaName,
+                    entry.ObjectName,
+                    entry.MatchLocation,
+                    preview,
+                    entry.ScriptDatabaseName,
+                    entry.ScriptSchemaName,
+                    entry.ScriptObjectName,
+                    entry.SourceText);
+            }
 
             return allResults;
         }
 
-        private List<string> GetDatabasesToSearch(bool allDatabases)
+        private async Task<DataTable> ExecuteSearchAsync(
+            ConnectionInfo server,
+            string searchText,
+            string selectedDatabase,
+            bool useWildcards,
+            bool includeProcs,
+            bool includeViews,
+            bool includeFunctions,
+            bool includeTables,
+            bool includeAgentJobSteps,
+            IProgress<string> progress,
+            CancellationToken cancellationToken)
         {
-            var list = new List<string>();
+            List<string> databases = GetDatabasesToSearch(server, selectedDatabase);
+            DataTable allResults = BuildResultTable();
+            var sync = new object();
 
-            SqlConnectionStringBuilder builder = new SqlConnectionStringBuilder(selectedConnectionString)
+            using (var gate = new SemaphoreSlim(MaxParallelDatabaseSearches))
             {
-                InitialCatalog = "master"
-            };
-
-            using (var conn = new SqlConnection(builder.ConnectionString))
-            {
-                conn.Open();
-
-                if (allDatabases)
+                var tasks = databases.Select(async dbName =>
                 {
-                    string sql = @"
-
-                    SELECT [name]
-                    FROM sys.databases
-                    WHERE [name] <> 'tempdb'
-                      AND [state] = 0 --ONLINE
-                      AND [user_access] = 0 --MULTI_USER
-                      AND HAS_DBACCESS([name]) = 1
-                    ORDER BY [name];
-
-                    ";
-
-                    using (var cmd = new SqlCommand(sql, conn))
-                    using (var reader = cmd.ExecuteReader())
+                    await gate.WaitAsync(cancellationToken);
+                    try
                     {
-                        while (reader.Read())
+                        cancellationToken.ThrowIfCancellationRequested();
+                        progress?.Report(dbName);
+
+                        DataTable rows;
+                        try
                         {
-                            list.Add(reader.GetString(0));
+                            rows = await SearchDatabaseAsync(
+                                server,
+                                dbName,
+                                searchText,
+                                useWildcards,
+                                includeProcs,
+                                includeViews,
+                                includeFunctions,
+                                includeTables,
+                                includeAgentJobSteps,
+                                cancellationToken);
+                        }
+                        catch (SqlException)
+                        {
+                            return;
+                        }
+
+                        lock (sync)
+                        {
+                            foreach (DataRow row in rows.Rows)
+                            {
+                                cancellationToken.ThrowIfCancellationRequested();
+                                string sourceText = row["SourceText"]?.ToString() ?? string.Empty;
+                                string preview = BuildPreview(sourceText, searchText, useWildcards);
+                                allResults.Rows.Add(
+                                    row["DatabaseName"],
+                                    row["ObjectType"],
+                                    row["SchemaName"],
+                                    row["ObjectName"],
+                                    row["MatchLocation"],
+                                    preview,
+                                    row["ScriptDatabaseName"],
+                                    row["ScriptSchemaName"],
+                                    row["ScriptObjectName"],
+                                    sourceText);
+                            }
                         }
                     }
-                }
-                else
-                {
-                    list.Add(selectedDatabase);
-                }
+                    finally
+                    {
+                        gate.Release();
+                    }
+                }).ToArray();
+
+                await Task.WhenAll(tasks);
             }
 
-            return list;
+            return allResults;
         }
 
-        private async Task<DataTable> SearchDatabaseAsync(string databaseName, string searchText, bool useWildcards, bool includeProcs, bool includeViews, bool includeFunctions, bool includeTables, bool includeAgentJobSteps, CancellationToken cancellationToken)
+        private List<string> GetDatabasesToSearch(ConnectionInfo server, string selectedDatabase)
         {
+            if (!string.IsNullOrWhiteSpace(selectedDatabase))
+            {
+                return new List<string> { selectedDatabase };
+            }
 
+            return ScriptFactoryAccess.GetDatabases(server);
+        }
+
+        private async Task<DataTable> SearchDatabaseAsync(
+            ConnectionInfo server,
+            string databaseName,
+            string searchText,
+            bool useWildcards,
+            bool includeProcs,
+            bool includeViews,
+            bool includeFunctions,
+            bool includeTables,
+            bool includeAgentJobSteps,
+            CancellationToken cancellationToken)
+        {
             DataTable result = BuildResultTable();
+            string pattern = BuildPattern(searchText, useWildcards);
 
-            string definitionSql = $@"
+            string combinedSql = @"
 SELECT
     DB_NAME() AS DatabaseName,
     CASE
@@ -328,58 +562,54 @@ WHERE (
         (@includeViews = 1 AND o.[type] = 'V') OR
         (@includeFunctions = 1 AND o.[type] IN ('FN', 'IF', 'TF'))
       )
-
   AND m.[definition] LIKE @pattern ESCAPE '!'
-  AND o.is_ms_shipped = 0 ;";
-
-           string tableSql = $@"
+  AND o.is_ms_shipped = 0
+UNION ALL
 SELECT
-    DB_NAME() AS DatabaseName,
-    'Table' AS ObjectType,
-    s.[name] AS SchemaName,
-    t.[name] AS ObjectName,
-    'Table Name' AS MatchLocation,
-    t.[name] AS SourceText,
-    DB_NAME() AS ScriptDatabaseName,
-    s.[name] AS ScriptSchemaName,
-    t.[name] AS ScriptObjectName
+    DB_NAME(),
+    'Table',
+    s.[name],
+    t.[name],
+    'Table Name',
+    t.[name],
+    DB_NAME(),
+    s.[name],
+    t.[name]
 FROM sys.tables t
 INNER JOIN sys.schemas s ON s.schema_id = t.schema_id
 WHERE @includeTables = 1
-  AND t.[name] LIKE @pattern ESCAPE '!';";
-
-            string columnSql = $@"
+  AND t.[name] LIKE @pattern ESCAPE '!'
+UNION ALL
 SELECT
-    DB_NAME() AS DatabaseName,
-    'Table' AS ObjectType,
-    s.[name] AS SchemaName,
-    t.[name] AS ObjectName,
-    'Column' AS MatchLocation,
-    c.[name] AS SourceText,
-    DB_NAME() AS ScriptDatabaseName,
-    s.[name] AS ScriptSchemaName,
-    t.[name] AS ScriptObjectName
+    DB_NAME(),
+    'Table',
+    s.[name],
+    t.[name],
+    'Column',
+    c.[name],
+    DB_NAME(),
+    s.[name],
+    t.[name]
 FROM sys.tables t
 INNER JOIN sys.schemas s ON s.schema_id = t.schema_id
 INNER JOIN sys.columns c ON c.object_id = t.object_id
 WHERE @includeTables = 1
-  AND c.[name] LIKE @pattern ESCAPE '!';";
-
-            string parameterSql = $@"
+  AND c.[name] LIKE @pattern ESCAPE '!'
+UNION ALL
 SELECT
-    DB_NAME() AS DatabaseName,
+    DB_NAME(),
     CASE
         WHEN o.[type] = 'P' THEN 'Stored Procedure'
         WHEN o.[type] = 'V' THEN 'View'
         ELSE 'Function'
-    END AS ObjectType,
-    s.[name] AS SchemaName,
-    o.[name] AS ObjectName,
-    'Parameter' AS MatchLocation,
-    p.[name] AS SourceText,
-    DB_NAME() AS ScriptDatabaseName,
-    s.[name] AS ScriptSchemaName,
-    o.[name] AS ScriptObjectName
+    END,
+    s.[name],
+    o.[name],
+    'Parameter',
+    p.[name],
+    DB_NAME(),
+    s.[name],
+    o.[name]
 FROM sys.parameters p
 INNER JOIN sys.objects o ON o.object_id = p.object_id
 INNER JOIN sys.schemas s ON s.schema_id = o.schema_id
@@ -408,9 +638,7 @@ WHERE js.[command] LIKE @pattern ESCAPE '!'
    OR js.step_name LIKE @pattern ESCAPE '!'
    OR j.[name] LIKE @pattern;";
 
-            string pattern = BuildPattern(searchText, useWildcards);
-
-            SqlConnectionStringBuilder builder = new SqlConnectionStringBuilder(selectedConnectionString)
+            SqlConnectionStringBuilder builder = new SqlConnectionStringBuilder(server.FullConnectionString)
             {
                 InitialCatalog = databaseName
             };
@@ -418,16 +646,12 @@ WHERE js.[command] LIKE @pattern ESCAPE '!'
             using (var conn = new SqlConnection(builder.ConnectionString))
             {
                 await conn.OpenAsync(cancellationToken);
+                await ExecuteSearchQueryAsync(conn, combinedSql, pattern, includeProcs, includeViews, includeFunctions, includeTables, result, cancellationToken);
 
-                await ExecuteSearchQueryAsync(conn, definitionSql, pattern, includeProcs, includeViews, includeFunctions, includeTables, result, cancellationToken);
-                await ExecuteSearchQueryAsync(conn, tableSql, pattern, includeProcs, includeViews, includeFunctions, includeTables, result, cancellationToken);
-                await ExecuteSearchQueryAsync(conn, columnSql, pattern, includeProcs, includeViews, includeFunctions, includeTables, result, cancellationToken);
-                await ExecuteSearchQueryAsync(conn, parameterSql, pattern, includeProcs, includeViews, includeFunctions, includeTables, result, cancellationToken);
-
-                
                 if (databaseName == "msdb" && includeAgentJobSteps)
+                {
                     await ExecuteSearchQueryAsync(conn, agentJobsSql, pattern, includeProcs, includeViews, includeFunctions, includeTables, result, cancellationToken);
-
+                }
             }
 
             return result;
@@ -455,9 +679,9 @@ WHERE js.[command] LIKE @pattern ESCAPE '!'
                 }
             }
         }
+
         private static string BuildPattern(string text, bool useWildcards)
         {
-
             string escaped = text.Replace("!", "!!");
 
             if (useWildcards)
@@ -503,7 +727,6 @@ WHERE js.[command] LIKE @pattern ESCAPE '!'
                 : sourceText.Replace(Environment.NewLine, " ");
         }
 
-
         private void CheckBox_WholeWord_Checked(object sender, RoutedEventArgs e)
         {
             if (CheckBox_WholeWord.IsChecked == true)
@@ -539,11 +762,17 @@ WHERE js.[command] LIKE @pattern ESCAPE '!'
             }
 
             try
-            { 
+            {
+                ConnectionInfo server = GetSelectedServerConnection();
+                if (server == null)
+                {
+                    MessageBox.Show(Strings.Get("Msg_QuickSearch_SelectConnection"), Strings.Get("Menu_QuickSearch"));
+                    return;
+                }
+
                 string databaseName = rowView["ScriptDatabaseName"]?.ToString();
                 string schemaName = rowView["ScriptSchemaName"]?.ToString();
                 string objectName = rowView["ScriptObjectName"]?.ToString();
-
                 string matchLocation = rowView["MatchLocation"]?.ToString();
 
                 if (matchLocation == "JobStep")
@@ -552,23 +781,45 @@ WHERE js.[command] LIKE @pattern ESCAPE '!'
                     return;
                 }
 
+                ConnectionInfo scriptConnection = ScriptFactoryAccess.CloneWithDatabase(server, databaseName);
                 string selectedObjectName = $"[{databaseName}].[{schemaName}].[{objectName}]";
+                string fullScriptResult = ScriptObjectDefinition.GetText(
+                    AxialSqlToolsPackage.PackageInstance,
+                    selectedObjectName,
+                    scriptConnection);
 
-                string fullScriptResult = ScriptObjectDefinition.GetText(AxialSqlToolsPackage.PackageInstance, selectedObjectName);
+                if (string.IsNullOrEmpty(fullScriptResult))
+                {
+                    return;
+                }
 
-                var connectionInfo = ScriptFactoryAccess.GetCurrentConnectionInfo();
+                var uiConnection = scriptConnection.ActiveConnectionInfo;
+                if (uiConnection == null)
+                {
+                    var builder = new SqlConnectionStringBuilder(scriptConnection.FullConnectionString);
+                    uiConnection = ScriptFactoryAccess.TryCreateUiConnectionInfo(
+                        builder,
+                        builder.UserID,
+                        builder.Password,
+                        string.Empty);
+                }
 
-                ServiceCache.ScriptFactory.CreateNewBlankScript(ScriptType.Sql, connectionInfo.ActiveConnectionInfo, null);
+                if (uiConnection != null)
+                {
+                    ServiceCache.ScriptFactory.CreateNewBlankScript(ScriptType.Sql, uiConnection, null);
+                }
+                else
+                {
+                    ServiceCache.ScriptFactory.CreateNewBlankScript(ScriptType.Sql);
+                }
 
                 EnvDTE.TextDocument doc = (EnvDTE.TextDocument)ServiceCache.ExtensibilityModel.Application.ActiveDocument.Object(null);
-
                 doc.EndPoint.CreateEditPoint().Insert(fullScriptResult);
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 MessageBox.Show(string.Format(Strings.Get("Msg_QuickSearch_ScriptFailed"), ex.Message), Strings.Get("Msg_QuickSearch_ScriptObjectTitle"));
-            }           
-
+            }
         }
 
         private void DataGrid_SearchResults_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -581,27 +832,22 @@ WHERE js.[command] LIKE @pattern ESCAPE '!'
             }
 
             try
-            {               
+            {
                 SqlEditor.Text = rowView["SourceText"]?.ToString();
-
                 textMarkerService.RemoveAll();
 
                 string input = TextBox_SearchText.Text ?? string.Empty;
-
                 Regex regex;
 
                 if (CheckBox_UseWildcards.IsChecked == true)
                 {
-                    // Convert SQL LIKE wildcards to regex
                     string regexPattern = Regex.Escape(input)
                         .Replace(@"\%", ".*")
                         .Replace(@"\_", ".");
-
                     regex = new Regex(regexPattern, RegexOptions.IgnoreCase);
                 }
                 else
                 {
-                    // Simple substring search like LIKE '%text%'
                     regex = new Regex(Regex.Escape(input), RegexOptions.IgnoreCase);
                 }
 
@@ -611,7 +857,6 @@ WHERE js.[command] LIKE @pattern ESCAPE '!'
                     marker.BackgroundColor = System.Windows.Media.Colors.Yellow;
                     marker.ForegroundColor = System.Windows.Media.Colors.Black;
                 }
-
             }
             catch
             {
@@ -633,6 +878,18 @@ WHERE js.[command] LIKE @pattern ESCAPE '!'
             table.Columns.Add("ScriptObjectName", typeof(string));
             table.Columns.Add("SourceText", typeof(string));
             return table;
+        }
+
+        private sealed class DatabaseOptionItem
+        {
+            public DatabaseOptionItem(string name, string displayName)
+            {
+                Name = name;
+                DisplayName = displayName;
+            }
+
+            public string Name { get; }
+            public string DisplayName { get; }
         }
     }
 }

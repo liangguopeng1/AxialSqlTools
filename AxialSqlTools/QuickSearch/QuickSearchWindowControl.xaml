@@ -7,7 +7,8 @@
              mc:Ignorable="d"
              Name="QuickSearchControl"
              Background="{DynamicResource AxialThemeBackgroundBrush}"
-             Foreground="{DynamicResource AxialThemeForegroundBrush}">
+             Foreground="{DynamicResource AxialThemeForegroundBrush}"
+             Loaded="QuickSearchControl_Loaded">
     <UserControl.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
@@ -44,17 +45,35 @@
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="Auto"/>
-            </Grid.RowDefinitions>       
-        
+            </Grid.RowDefinitions>
+
             <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4,4,0,8">
-            
-                <Button Height="30"
-                        Width="220"
-                        Content="Select Target from Object Explorer"
-                        Tag="loc:QuickSearch_SelectTarget"
-                        FontWeight="Bold"
-                        Click="Button_SelectConnection_Click" />
-                <Label x:Name="Label_ConnectionDescription" Margin="8,0,0,0" VerticalAlignment="Center" Content="No connection selected"/>
+                <Label Content="Server:" Tag="loc:QuickSearch_Server" VerticalAlignment="Center"/>
+                <ComboBox x:Name="ComboBox_Servers"
+                          Width="240"
+                          Height="28"
+                          DisplayMemberPath="DisplayName"
+                          SelectionChanged="ComboBox_Servers_SelectionChanged"/>
+                <Label Content="Database:" Tag="loc:QuickSearch_Database" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                <ComboBox x:Name="ComboBox_Databases"
+                          Width="200"
+                          Height="28"
+                          DisplayMemberPath="DisplayName"
+                          SelectionChanged="ComboBox_Databases_SelectionChanged"/>
+                <Button x:Name="Button_RefreshConnections"
+                        Content="Refresh"
+                        Tag="loc:QuickSearch_RefreshConnections"
+                        Width="80"
+                        Height="28"
+                        Margin="8,0,0,0"
+                        Click="Button_RefreshConnections_Click"/>
+                <Button x:Name="Button_RefreshIndex"
+                        Content="Refresh Index"
+                        Tag="loc:QuickSearch_RefreshIndex"
+                        Width="110"
+                        Height="28"
+                        Margin="8,0,0,0"
+                        Click="Button_RefreshIndex_Click"/>
             </StackPanel>
 
             <Grid Grid.Row="1" x:Name="SearchInputsGrid" Margin="0,0,0,8" IsEnabled="False">
@@ -67,8 +86,7 @@
                 </Grid.ColumnDefinitions>
                 <Label Grid.Column="0" Content="Search for:" Tag="loc:QuickSearch_SearchFor" VerticalAlignment="Center"/>
                 <TextBox Grid.Column="1" x:Name="TextBox_SearchText" Margin="6,0,12,0" Height="24" VerticalContentAlignment="Center" KeyDown="TextBox_SearchText_KeyDown"/>
-                <CheckBox Grid.Column="2" x:Name="CheckBox_AllDatabases" Content="All user databases on the server" Tag="loc:QuickSearch_AllDatabases" VerticalAlignment="Center" Margin="0,0,12,0" IsChecked="True"/>
-                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0">
                     <CheckBox x:Name="CheckBox_WholeWord" Content="Match whole words only" Tag="loc:QuickSearch_WholeWord" Margin="0,0,12,0" Checked="CheckBox_WholeWord_Checked"/>
                     <CheckBox x:Name="CheckBox_UseWildcards" Content="Use wildcards" Tag="loc:QuickSearch_Wildcards" Checked="CheckBox_UseWildcards_Checked" />
                 </StackPanel>
@@ -122,6 +140,9 @@
                        Foreground="{DynamicResource AxialThemeForegroundBrush}">
                 <StatusBarItem>
                     <TextBlock x:Name="TextBlock_ResultCount" FontWeight="Bold"/>
+                </StatusBarItem>
+                <StatusBarItem>
+                    <TextBlock x:Name="TextBlock_IndexStatus" Margin="16,0,0,0"/>
                 </StatusBarItem>
             </StatusBar>
         </Grid>

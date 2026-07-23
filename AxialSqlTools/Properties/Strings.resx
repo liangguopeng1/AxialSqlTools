@@ -127,6 +127,16 @@
   <data name="Window_HealthDashboardServers" xml:space="preserve"><value>Health Dashboard - Servers</value></data>
   <data name="QuickSearch_HeaderTitle" xml:space="preserve"><value>Search for Object Definitions Across Multiple Databases</value></data>
   <data name="QuickSearch_SelectTarget" xml:space="preserve"><value>Select Target from Object Explorer</value></data>
+  <data name="QuickSearch_Server" xml:space="preserve"><value>Server:</value></data>
+  <data name="QuickSearch_Database" xml:space="preserve"><value>Database:</value></data>
+  <data name="QuickSearch_RefreshConnections" xml:space="preserve"><value>Refresh</value></data>
+  <data name="QuickSearch_RefreshIndex" xml:space="preserve"><value>Refresh Index</value></data>
+  <data name="QuickSearch_AllDatabasesOption" xml:space="preserve"><value>(All user databases)</value></data>
+  <data name="QuickSearch_IndexNone" xml:space="preserve"><value>Index: none</value></data>
+  <data name="QuickSearch_IndexReady" xml:space="preserve"><value>Index: {0} ({1} objects)</value></data>
+  <data name="QuickSearch_Indexing" xml:space="preserve"><value>Building index...</value></data>
+  <data name="QuickSearch_IndexingDatabase" xml:space="preserve"><value>Indexing [{0}]...</value></data>
+  <data name="QuickSearch_SearchingIndex" xml:space="preserve"><value>Searching local index...</value></data>
   <data name="QuickSearch_NoConnection" xml:space="preserve"><value>No connection selected</value></data>
   <data name="QuickSearch_SearchFor" xml:space="preserve"><value>Search for:</value></data>
   <data name="QuickSearch_AllDatabases" xml:space="preserve"><value>All user databases on the server</value></data>
@@ -363,13 +373,16 @@
   <data name="Settings_DatabaseContains" xml:space="preserve"><value>Database name contains:</value></data>
   <data name="Settings_StatusBarColor" xml:space="preserve"><value>Status bar and tab color:</value></data>
   <data name="Msg_QuickSearch_SelectOeNode" xml:space="preserve"><value>Please select a server or database node in Object Explorer first.</value></data>
-  <data name="Msg_QuickSearch_SelectConnection" xml:space="preserve"><value>Select a connection from Object Explorer first.</value></data>
+  <data name="Msg_QuickSearch_SelectConnection" xml:space="preserve"><value>Please select a server connection first.</value></data>
   <data name="Msg_QuickSearch_EnterText" xml:space="preserve"><value>Enter text to search.</value></data>
   <data name="Msg_QuickSearch_SelectObjectType" xml:space="preserve"><value>Select at least one object type.</value></data>
   <data name="Msg_QuickSearch_SearchFailed" xml:space="preserve"><value>Search failed: {0}</value></data>
   <data name="Msg_QuickSearch_ScriptFailed" xml:space="preserve"><value>Scripting failed: {0}</value></data>
   <data name="Msg_QuickSearch_Wip" xml:space="preserve"><value>TODO - WIP</value></data>
   <data name="Msg_QuickSearch_ScriptObjectTitle" xml:space="preserve"><value>Script Object</value></data>
+  <data name="Msg_QuickSearch_LoadDatabasesFailed" xml:space="preserve"><value>Failed to load databases: {0}</value></data>
+  <data name="Msg_QuickSearch_IndexBuilt" xml:space="preserve"><value>Local index built successfully.</value></data>
+  <data name="Msg_QuickSearch_IndexFailed" xml:space="preserve"><value>Failed to build index: {0}</value></data>
   <data name="Msg_QueryHistory_LoadError" xml:space="preserve"><value>Error loading data: {0}</value></data>
   <data name="Msg_Snippet_PrefixRequired" xml:space="preserve"><value>Prefix is required.</value></data>
   <data name="Msg_Snippet_DeleteConfirm" xml:space="preserve"><value>Delete snippet "{0}"?</value></data>

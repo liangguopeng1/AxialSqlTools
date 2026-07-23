@@ -127,6 +127,16 @@
   <data name="Window_HealthDashboardServers" xml:space="preserve"><value>健康仪表板 - 多服务器</value></data>
   <data name="QuickSearch_HeaderTitle" xml:space="preserve"><value>跨多个数据库搜索对象定义</value></data>
   <data name="QuickSearch_SelectTarget" xml:space="preserve"><value>从对象资源管理器选择目标</value></data>
+  <data name="QuickSearch_Server" xml:space="preserve"><value>服务器:</value></data>
+  <data name="QuickSearch_Database" xml:space="preserve"><value>数据库:</value></data>
+  <data name="QuickSearch_RefreshConnections" xml:space="preserve"><value>刷新</value></data>
+  <data name="QuickSearch_RefreshIndex" xml:space="preserve"><value>刷新索引</value></data>
+  <data name="QuickSearch_AllDatabasesOption" xml:space="preserve"><value>（全部用户数据库）</value></data>
+  <data name="QuickSearch_IndexNone" xml:space="preserve"><value>索引：未建立</value></data>
+  <data name="QuickSearch_IndexReady" xml:space="preserve"><value>索引：{0}（{1} 个对象）</value></data>
+  <data name="QuickSearch_Indexing" xml:space="preserve"><value>正在建立索引...</value></data>
+  <data name="QuickSearch_IndexingDatabase" xml:space="preserve"><value>正在索引 [{0}]...</value></data>
+  <data name="QuickSearch_SearchingIndex" xml:space="preserve"><value>正在搜索本地索引...</value></data>
   <data name="QuickSearch_NoConnection" xml:space="preserve"><value>未选择连接</value></data>
   <data name="QuickSearch_SearchFor" xml:space="preserve"><value>搜索:</value></data>
   <data name="QuickSearch_AllDatabases" xml:space="preserve"><value>服务器上所有用户数据库</value></data>
@@ -363,13 +373,16 @@
   <data name="Settings_DatabaseContains" xml:space="preserve"><value>数据库名包含:</value></data>
   <data name="Settings_StatusBarColor" xml:space="preserve"><value>状态栏与选项卡颜色:</value></data>
   <data name="Msg_QuickSearch_SelectOeNode" xml:space="preserve"><value>请先在对象资源管理器中选择服务器或数据库节点。</value></data>
-  <data name="Msg_QuickSearch_SelectConnection" xml:space="preserve"><value>请先从对象资源管理器选择连接。</value></data>
+  <data name="Msg_QuickSearch_SelectConnection" xml:space="preserve"><value>请先选择服务器连接。</value></data>
   <data name="Msg_QuickSearch_EnterText" xml:space="preserve"><value>请输入搜索文本。</value></data>
   <data name="Msg_QuickSearch_SelectObjectType" xml:space="preserve"><value>请至少选择一种对象类型。</value></data>
   <data name="Msg_QuickSearch_SearchFailed" xml:space="preserve"><value>搜索失败: {0}</value></data>
   <data name="Msg_QuickSearch_ScriptFailed" xml:space="preserve"><value>脚本生成失败: {0}</value></data>
   <data name="Msg_QuickSearch_Wip" xml:space="preserve"><value>TODO - 开发中</value></data>
   <data name="Msg_QuickSearch_ScriptObjectTitle" xml:space="preserve"><value>脚本对象</value></data>
+  <data name="Msg_QuickSearch_LoadDatabasesFailed" xml:space="preserve"><value>加载数据库失败: {0}</value></data>
+  <data name="Msg_QuickSearch_IndexBuilt" xml:space="preserve"><value>本地索引已建立。</value></data>
+  <data name="Msg_QuickSearch_IndexFailed" xml:space="preserve"><value>建立索引失败: {0}</value></data>
   <data name="Msg_QueryHistory_LoadError" xml:space="preserve"><value>加载数据出错: {0}</value></data>
   <data name="Msg_Snippet_PrefixRequired" xml:space="preserve"><value>前缀为必填项。</value></data>
   <data name="Msg_Snippet_DeleteConfirm" xml:space="preserve"><value>删除片段 "{0}"?</value></data>

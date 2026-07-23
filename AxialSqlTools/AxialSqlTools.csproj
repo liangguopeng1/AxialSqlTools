@@ -83,6 +83,7 @@
     <Compile Include="QuickSearch\QuickSearchWindowControl.xaml.cs">
       <DependentUpon>QuickSearchWindowControl.xaml</DependentUpon>
     </Compile>
+    <Compile Include="QuickSearch\QuickSearchIndexStore.cs" />
     <Compile Include="QuickSearch\TextMarkerService.cs" />
     <Compile Include="SyncToGitHub\DatabaseScripterToolWindow.cs" />
     <Compile Include="SyncToGitHub\DatabaseScripterToolWindowCommand.cs" />
@@ -176,6 +177,7 @@
       <DependentUpon>Strings.resx</DependentUpon>
     </Compile>
     <Compile Include="QueryHistory\QueryHistoryRecord.cs" />
+    <Compile Include="QueryHistory\QueryHistoryTableHelper.cs" />
     <Compile Include="QueryHistory\QueryHistoryViewModel.cs" />
     <Compile Include="QueryHistory\QueryHistoryWindow.cs" />
     <Compile Include="QueryHistory\QueryHistoryWindowCommand.cs" />

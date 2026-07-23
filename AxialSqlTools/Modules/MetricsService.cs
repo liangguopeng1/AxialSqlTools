@@ -150,6 +150,8 @@ namespace AxialSqlTools
 
                 Stopwatch stopwatch = Stopwatch.StartNew();
 
+                connectionString = ScriptFactoryAccess.EnsureTrustServerCertificate(connectionString);
+
                 // Create and open a connection to SQL Server
                 using (SqlConnection connection = new SqlConnection(connectionString))
                 {

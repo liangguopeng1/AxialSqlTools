@@ -8,8 +8,10 @@ using System.Collections.Generic;
 using Microsoft.Data.SqlClient;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
+using System.Windows.Forms;
 using System.Xml;
 using System.Text.RegularExpressions;
 using EnvDTE;
@@ -20,10 +22,16 @@ namespace AxialSqlTools
     public static class ScriptFactoryAccess
     {
         public class ConnectionInfo
-        {          
-            public string FullConnectionString { get; set; }
-            public string Database { get; set; }            
-            public string ServerName { get; set; }            
+        {
+            private string fullConnectionString;
+
+            public string FullConnectionString
+            {
+                get { return fullConnectionString; }
+                set { fullConnectionString = EnsureTrustServerCertificate(value); }
+            }
+            public string Database { get; set; }
+            public string ServerName { get; set; }
             public UIConnectionInfo ActiveConnectionInfo { get; set; }
 
             public string DisplayName
@@ -37,6 +45,39 @@ namespace AxialSqlTools
             public override string ToString() => DisplayName;
         }
 
+        /// <summary>
+        /// Microsoft.Data.SqlClient defaults Encrypt=true. Force TrustServerCertificate so
+        /// self-signed / internal SQL Server certs work across all plugin features.
+        /// </summary>
+        public static string EnsureTrustServerCertificate(string connectionString)
+        {
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                return connectionString;
+            }
+
+            try
+            {
+                var builder = new SqlConnectionStringBuilder(connectionString);
+                ApplyTrustServerCertificate(builder);
+                return builder.ConnectionString;
+            }
+            catch
+            {
+                return connectionString;
+            }
+        }
+
+        public static void ApplyTrustServerCertificate(SqlConnectionStringBuilder builder)
+        {
+            if (builder == null)
+            {
+                return;
+            }
+
+            builder.TrustServerCertificate = true;
+        }
+
         private static INodeInformation GetSelectedNode(IObjectExplorerService _objectExplorerService)
         {
             INodeInformation[] nodes;
@@ -46,23 +87,267 @@ namespace AxialSqlTools
             return (nodeCount > 0 ? nodes[0] : null);
         }
 
+        public static List<ConnectionInfo> GetConnectedObjectExplorerSessions()
+        {
+            var results = new List<ConnectionInfo>();
+            var seenServers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            try
+            {
+                var oeService = (IObjectExplorerService)ServiceCache.ServiceProvider.GetService(typeof(IObjectExplorerService));
+                if (oeService == null)
+                {
+                    return results;
+                }
+
+                foreach (INodeInformation rootNode in EnumerateConnectedRootNodes(oeService))
+                {
+                    ConnectionInfo ci = BuildConnectionInfoFromNode(rootNode, inMaster: true);
+                    if (ci == null || string.IsNullOrWhiteSpace(ci.ServerName))
+                    {
+                        continue;
+                    }
+
+                    if (seenServers.Add(ci.ServerName))
+                    {
+                        results.Add(ci);
+                    }
+                }
+
+                if (results.Count == 0)
+                {
+                    ConnectionInfo selected = GetCurrentConnectionInfoFromObjectExplorer(inMaster: true);
+                    if (selected != null && !string.IsNullOrWhiteSpace(selected.ServerName))
+                    {
+                        results.Add(selected);
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                ConnectionInfo selected = GetCurrentConnectionInfoFromObjectExplorer(inMaster: true);
+                if (selected != null && !string.IsNullOrWhiteSpace(selected.ServerName))
+                {
+                    results.Add(selected);
+                }
+            }
+
+            return results;
+        }
+
+        private static IEnumerable<INodeInformation> EnumerateConnectedRootNodes(IObjectExplorerService oeService)
+        {
+            TreeView treeView = TryGetObjectExplorerTreeView(oeService);
+            if (treeView != null)
+            {
+                foreach (TreeNode root in treeView.Nodes)
+                {
+                    INodeInformation info = GetNodeInformationFromTreeNode(root);
+                    if (info?.Connection != null)
+                    {
+                        yield return info;
+                    }
+                }
+
+                yield break;
+            }
+
+            foreach (INodeInformation info in EnumerateConnectedRootNodesFromHierarchies(oeService))
+            {
+                yield return info;
+            }
+        }
+
+        private static TreeView TryGetObjectExplorerTreeView(IObjectExplorerService oeService)
+        {
+            try
+            {
+                PropertyInfo treeProperty = oeService.GetType().GetProperty(
+                    "Tree",
+                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.IgnoreCase);
+                if (treeProperty == null)
+                {
+                    return null;
+                }
+
+                return treeProperty.GetValue(oeService, null) as TreeView;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static INodeInformation GetNodeInformationFromTreeNode(TreeNode node)
+        {
+            if (!(node is IServiceProvider serviceProvider))
+            {
+                return null;
+            }
+
+            return serviceProvider.GetService(typeof(INodeInformation)) as INodeInformation;
+        }
+
+        private static IEnumerable<INodeInformation> EnumerateConnectedRootNodesFromHierarchies(IObjectExplorerService oeService)
+        {
+            object tree;
+            try
+            {
+                PropertyInfo treeProperty = oeService.GetType().GetProperty(
+                    "Tree",
+                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.IgnoreCase);
+                tree = treeProperty?.GetValue(oeService, null);
+            }
+            catch
+            {
+                yield break;
+            }
+
+            if (tree == null)
+            {
+                yield break;
+            }
+
+            object hierarchies;
+            try
+            {
+                PropertyInfo hierarchiesProperty = tree.GetType().GetProperty(
+                    "Hierarchies",
+                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.IgnoreCase);
+                hierarchies = hierarchiesProperty?.GetValue(tree, null);
+            }
+            catch
+            {
+                yield break;
+            }
+
+            if (!(hierarchies is System.Collections.IEnumerable enumerable))
+            {
+                yield break;
+            }
+
+            foreach (object entry in enumerable)
+            {
+                object hierarchy = entry;
+                if (entry is System.Collections.DictionaryEntry dictionaryEntry)
+                {
+                    hierarchy = dictionaryEntry.Value;
+                }
+                else
+                {
+                    PropertyInfo valueProperty = entry?.GetType().GetProperty("Value");
+                    if (valueProperty != null)
+                    {
+                        hierarchy = valueProperty.GetValue(entry, null);
+                    }
+                }
+
+                if (hierarchy == null)
+                {
+                    continue;
+                }
+
+                INodeInformation root = TryGetHierarchyRoot(hierarchy);
+                if (root?.Connection != null)
+                {
+                    yield return root;
+                }
+            }
+        }
+
+        private static INodeInformation TryGetHierarchyRoot(object hierarchy)
+        {
+            string[] propertyNames = { "Root", "RootNode", "ConnectionNode", "ServerNode" };
+            foreach (string propertyName in propertyNames)
+            {
+                try
+                {
+                    PropertyInfo property = hierarchy.GetType().GetProperty(
+                        propertyName,
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                    object value = property?.GetValue(hierarchy, null);
+                    if (value is INodeInformation node)
+                    {
+                        return node;
+                    }
+
+                    if (value is TreeNode treeNode)
+                    {
+                        INodeInformation fromTree = GetNodeInformationFromTreeNode(treeNode);
+                        if (fromTree != null)
+                        {
+                            return fromTree;
+                        }
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            return null;
+        }
+
+        public static List<string> GetDatabases(ConnectionInfo connectionInfo)
+        {
+            var list = new List<string>();
+            if (connectionInfo == null || string.IsNullOrWhiteSpace(connectionInfo.FullConnectionString))
+            {
+                return list;
+            }
+
+            SqlConnectionStringBuilder builder = new SqlConnectionStringBuilder(connectionInfo.FullConnectionString)
+            {
+                InitialCatalog = "master"
+            };
+
+            using (var conn = new SqlConnection(builder.ConnectionString))
+            {
+                conn.Open();
+                const string sql = @"
+SELECT [name]
+FROM sys.databases
+WHERE [name] <> 'tempdb'
+  AND [state] = 0
+  AND [user_access] = 0
+  AND HAS_DBACCESS([name]) = 1
+ORDER BY [name];";
+
+                using (var cmd = new SqlCommand(sql, conn))
+                using (var reader = cmd.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        list.Add(reader.GetString(0));
+                    }
+                }
+            }
+
+            return list;
+        }
+
         public static ConnectionInfo GetCurrentConnectionInfoFromObjectExplorer(bool inMaster = false)
         {
-
             var oeService = (IObjectExplorerService)ServiceCache.ServiceProvider.GetService(typeof(IObjectExplorerService));
             if (oeService == null)
                 return null;
 
-            // Get the currently selected nodes in Object Explorer.
             var selectedNode = GetSelectedNode(oeService);
-
             if (selectedNode == null)
+                return null;
+
+            return BuildConnectionInfoFromNode(selectedNode, inMaster);
+        }
+
+        private static ConnectionInfo BuildConnectionInfoFromNode(INodeInformation selectedNode, bool inMaster)
+        {
+            if (selectedNode?.Connection == null)
                 return null;
 
             string databaseName = "master";
             if (!inMaster)
             {
-                Match match = Regex.Match(selectedNode.Context, @"Database\[@Name='(.*?)'\]");
+                Match match = Regex.Match(selectedNode.Context ?? string.Empty, @"Database\[@Name='(.*?)'\]");
                 if (match.Success)
                 {
                     databaseName = match.Groups[1].Value;
@@ -86,15 +371,107 @@ namespace AxialSqlTools
             if (objectExplorerConnection is SqlConnectionInfo sqlConnectionInfo)
             {
                 builder.Encrypt = sqlConnectionInfo.EncryptConnection;
-                builder.TrustServerCertificate = sqlConnectionInfo.TrustServerCertificate;
             }
+
+            ApplyTrustServerCertificate(builder);
 
             ConnectionInfo ci = new ConnectionInfo();
             ci.FullConnectionString = builder.ToString();
             ci.Database = databaseName;
             ci.ServerName = builder.DataSource;
+            ci.ActiveConnectionInfo = TryCreateUiConnectionInfo(builder, userName, password, auth);
 
             return ci;
+        }
+
+        public static UIConnectionInfo TryCreateUiConnectionInfo(
+            SqlConnectionStringBuilder builder,
+            string userName,
+            string password,
+            string auth)
+        {
+            if (builder == null || string.IsNullOrWhiteSpace(builder.DataSource))
+            {
+                return null;
+            }
+
+            try
+            {
+                var ui = new UIConnectionInfo
+                {
+                    ServerName = builder.DataSource,
+                    UserName = userName ?? string.Empty,
+                    Password = password ?? string.Empty
+                };
+
+                SetAdvancedOption(ui, "DATABASE", builder.InitialCatalog ?? "master");
+                SetAdvancedOption(ui, "ENCRYPT_CONNECTION", builder.Encrypt ? "True" : "False");
+                SetAdvancedOption(ui, "TRUST_SERVER_CERTIFICATE", "True");
+
+                if (!string.IsNullOrWhiteSpace(auth))
+                {
+                    ui.OtherParams = auth;
+                }
+
+                return ui;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static void SetAdvancedOption(UIConnectionInfo connection, string key, string value)
+        {
+            if (connection?.AdvancedOptions == null || string.IsNullOrWhiteSpace(key))
+            {
+                return;
+            }
+
+            try
+            {
+                connection.AdvancedOptions[key] = value;
+                return;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                MethodInfo setMethod = connection.AdvancedOptions.GetType().GetMethod(
+                    "Set",
+                    BindingFlags.Instance | BindingFlags.Public,
+                    null,
+                    new[] { typeof(string), typeof(string) },
+                    null);
+                setMethod?.Invoke(connection.AdvancedOptions, new object[] { key, value });
+            }
+            catch
+            {
+            }
+        }
+
+        public static ConnectionInfo CloneWithDatabase(ConnectionInfo source, string databaseName)
+        {
+            if (source == null)
+            {
+                return null;
+            }
+
+            var builder = new SqlConnectionStringBuilder(source.FullConnectionString)
+            {
+                InitialCatalog = string.IsNullOrWhiteSpace(databaseName) ? "master" : databaseName
+            };
+            ApplyTrustServerCertificate(builder);
+
+            return new ConnectionInfo
+            {
+                FullConnectionString = builder.ToString(),
+                Database = builder.InitialCatalog,
+                ServerName = builder.DataSource,
+                ActiveConnectionInfo = source.ActiveConnectionInfo
+            };
         }
 
         public static ConnectionInfo GetCurrentConnectionInfo(bool inMaster = false)
@@ -126,8 +503,7 @@ namespace AxialSqlTools
             if (IsTrue(GetAdvancedOption(connection, "ENCRYPT_CONNECTION")))
                 builder.Encrypt = true;
 
-            if (IsTrue(GetAdvancedOption(connection, "TRUST_SERVER_CERTIFICATE")))
-                builder.TrustServerCertificate = true;
+            ApplyTrustServerCertificate(builder);
 
             var ci = new ConnectionInfo
             {

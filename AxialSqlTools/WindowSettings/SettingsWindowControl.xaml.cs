@@ -763,13 +763,15 @@ as select 1;
 
         private void Button_SelectDatabaseFromObjectExplorer_Click(object sender, RoutedEventArgs e)
         {
+            var ci = ScriptFactoryAccess.GetCurrentConnectionInfoFromObjectExplorer();
+            if (ci == null || string.IsNullOrWhiteSpace(ci.FullConnectionString))
+            {
+                MessageBox.Show(UiStrings.Get("Msg_QuickSearch_SelectOeNode"), UiStrings.Settings_Tab_QueryHistory);
+                return;
+            }
 
-            var ci = ScriptFactoryAccess.GetCurrentConnectionInfo();
-
-            _queryHistoryConnectionString = ci.FullConnectionString;
-
+            _queryHistoryConnectionString = SettingsManager.EnsureTrustServerCertificate(ci.FullConnectionString);
             UpdateQueryHistoryConnectionDetails();
-
         }
 
         private void BrowseButton_Click(object sender, RoutedEventArgs e)
@@ -808,15 +810,15 @@ as select 1;
         {
             if (QueryHistoryStorageType.SelectedItem is ComboBoxItem item)
             {
-                return item.Tag?.ToString() ?? QueryHistoryStorageModeDatabase;
+                return item.Tag?.ToString() ?? QueryHistoryStorageModeTextFiles;
             }
 
-            return QueryHistoryStorageModeDatabase;
+            return QueryHistoryStorageModeTextFiles;
         }
 
         private void SelectQueryHistoryStorageType(string storageType)
         {
-            string mode = string.IsNullOrWhiteSpace(storageType) ? QueryHistoryStorageModeDatabase : storageType;
+            string mode = string.IsNullOrWhiteSpace(storageType) ? QueryHistoryStorageModeTextFiles : storageType;
 
             foreach (var obj in QueryHistoryStorageType.Items)
             {
@@ -902,7 +904,7 @@ as select 1;
         }
 
 
-        private static string DefaultQueryHistoryTableName => "[dbo].[QueryHistory]";
+        private static string DefaultQueryHistoryTableName => QueryHistoryTableHelper.DefaultTableName;
 
         private void QueryHistoryTableName_TextChanged(object sender, TextChangedEventArgs e)
         {
@@ -911,39 +913,12 @@ as select 1;
 
         private string EffectiveQueryHistoryTableName()
         {
-            var name = QueryHistoryTableName?.Text;
-            return string.IsNullOrWhiteSpace(name) ? DefaultQueryHistoryTableName : name.Trim();
+            return QueryHistoryTableHelper.ResolveTableName(QueryHistoryTableName?.Text);
         }
 
         private string GenerateQueryHistoryCreateTableScript(string tableName)
         {
-            // Deterministic index names for display-only purposes
-            string indexNameGuid = Guid.NewGuid().ToString();
-
-            return $@"
-IF OBJECT_ID(N'{tableName}', N'U') IS NULL
-BEGIN
-    CREATE TABLE {tableName} (
-        [QueryID]           INT            IDENTITY (1, 1) NOT NULL,
-        [StartTime]         DATETIME       NOT NULL,
-        [FinishTime]        DATETIME       NOT NULL,
-        [ElapsedTime]       VARCHAR (15)   NOT NULL,
-        [TotalRowsReturned] BIGINT         NOT NULL,
-        [ExecResult]        VARCHAR (100)  NOT NULL,
-        [QueryText]         NVARCHAR (MAX) NOT NULL,
-        [DataSource]        NVARCHAR (128) NOT NULL,
-        [DatabaseName]      NVARCHAR (128) NOT NULL,
-        [LoginName]         NVARCHAR (128) NOT NULL,
-        [WorkstationId]     NVARCHAR (128) NOT NULL,
-        PRIMARY KEY CLUSTERED ([QueryID]),
-        INDEX [IDX_{indexNameGuid}_1] ([StartTime]),
-        INDEX [IDX_{indexNameGuid}_2] ([FinishTime]),
-        INDEX [IDX_{indexNameGuid}_3] ([DataSource]),
-        INDEX [IDX_{indexNameGuid}_4] ([DatabaseName])
-    );
-    ALTER INDEX ALL ON {tableName} REBUILD WITH (DATA_COMPRESSION = PAGE);
-END
-".Trim();
+            return QueryHistoryTableHelper.BuildEnsureTableSql(tableName).Trim();
         }
 
         private void RefreshQueryHistoryCreateScript()
