@@ -25,12 +25,21 @@ namespace AxialSqlTools
     public partial class QuickSearchWindowControl : UserControl
     {
         private const int MaxParallelDatabaseSearches = 4;
+        private static readonly TimeSpan IndexAutoRefreshMaxAge = TimeSpan.FromDays(7);
 
         private readonly ToolWindowThemeController themeController;
         private CancellationTokenSource searchCancellationTokenSource;
-        private CancellationTokenSource indexCancellationTokenSource;
+        private readonly Dictionary<string, ServerIndexingState> activeIndexingByServer =
+            new Dictionary<string, ServerIndexingState>(StringComparer.OrdinalIgnoreCase);
         private TextMarkerService textMarkerService;
         private bool suppressSelectionEvents;
+
+        private sealed class ServerIndexingState
+        {
+            public CancellationTokenSource CancellationSource { get; set; }
+            public string StatusText { get; set; }
+            public bool Silent { get; set; }
+        }
 
         public QuickSearchWindowControl()
         {
@@ -91,6 +100,53 @@ namespace AxialSqlTools
         private void QuickSearchControl_Loaded(object sender, RoutedEventArgs e)
         {
             RefreshServerList();
+            AutoRefreshStaleIndexForAllServers();
+        }
+
+        private void AutoRefreshStaleIndexForAllServers()
+        {
+            if (!(ComboBox_Servers.ItemsSource is IList<ConnectionInfo> servers) || servers.Count == 0)
+            {
+                return;
+            }
+
+            foreach (ConnectionInfo server in servers)
+            {
+                if (server == null || string.IsNullOrWhiteSpace(server.ServerName))
+                {
+                    continue;
+                }
+
+                if (activeIndexingByServer.ContainsKey(server.ServerName))
+                {
+                    continue;
+                }
+
+                bool needsRefresh = !QuickSearchIndexStore.TryGetMeta(server.ServerName, out QuickSearchIndexMeta meta)
+                    || (DateTime.UtcNow - meta.IndexedAtUtc) > IndexAutoRefreshMaxAge;
+
+                if (needsRefresh)
+                {
+                    StartIndexing(server, silent: true);
+                }
+            }
+        }
+
+        private void AutoRefreshStaleIndexIfNeeded()
+        {
+            var server = ComboBox_Servers.SelectedItem as ConnectionInfo;
+            if (server == null || string.IsNullOrWhiteSpace(server.ServerName))
+            {
+                return;
+            }
+
+            bool needsRefresh = !QuickSearchIndexStore.TryGetMeta(server.ServerName, out QuickSearchIndexMeta meta)
+                || (DateTime.UtcNow - meta.IndexedAtUtc) > IndexAutoRefreshMaxAge;
+
+            if (needsRefresh)
+            {
+                StartIndexing(server, silent: true);
+            }
         }
 
         private void Button_RefreshConnections_Click(object sender, RoutedEventArgs e)
@@ -114,6 +170,7 @@ namespace AxialSqlTools
                     ComboBox_Databases.ItemsSource = null;
                     SearchInputsGrid.IsEnabled = false;
                     UpdateIndexStatus(null);
+                    UpdateRefreshIndexButton();
                     return;
                 }
 
@@ -157,6 +214,7 @@ namespace AxialSqlTools
                 ComboBox_Databases.ItemsSource = null;
                 SearchInputsGrid.IsEnabled = false;
                 UpdateIndexStatus(null);
+                UpdateRefreshIndexButton();
                 return;
             }
 
@@ -176,11 +234,13 @@ namespace AxialSqlTools
 
                 UpdateSearchEnabled();
                 UpdateIndexStatus(server.ServerName);
+                UpdateRefreshIndexButton();
             }
             catch (Exception ex)
             {
                 ComboBox_Databases.ItemsSource = null;
                 SearchInputsGrid.IsEnabled = false;
+                UpdateRefreshIndexButton();
                 MessageBox.Show(
                     string.Format(Strings.Get("Msg_QuickSearch_LoadDatabasesFailed"), ex.Message),
                     Strings.Get("Menu_QuickSearch"));
@@ -194,6 +254,15 @@ namespace AxialSqlTools
 
         private void UpdateIndexStatus(string serverName)
         {
+            if (!string.IsNullOrWhiteSpace(serverName) &&
+                activeIndexingByServer.TryGetValue(serverName, out ServerIndexingState state))
+            {
+                TextBlock_IndexStatus.Text = string.IsNullOrEmpty(state.StatusText)
+                    ? Strings.Get("QuickSearch_Indexing")
+                    : state.StatusText;
+                return;
+            }
+
             if (string.IsNullOrWhiteSpace(serverName) || !QuickSearchIndexStore.TryGetMeta(serverName, out QuickSearchIndexMeta meta))
             {
                 TextBlock_IndexStatus.Text = Strings.Get("QuickSearch_IndexNone");
@@ -205,6 +274,24 @@ namespace AxialSqlTools
                 Strings.Get("QuickSearch_IndexReady"),
                 local.ToString("yyyy-MM-dd HH:mm"),
                 meta.ObjectCount);
+        }
+
+        private void RefreshIndexStatusIfSelected(string serverName)
+        {
+            var selected = ComboBox_Servers.SelectedItem as ConnectionInfo;
+            if (selected != null && string.Equals(selected.ServerName, serverName, StringComparison.OrdinalIgnoreCase))
+            {
+                UpdateIndexStatus(serverName);
+            }
+        }
+
+        private void UpdateRefreshIndexButton()
+        {
+            var server = ComboBox_Servers.SelectedItem as ConnectionInfo;
+            bool indexing = server != null && activeIndexingByServer.ContainsKey(server.ServerName);
+            Button_RefreshIndex.Content = indexing
+                ? Strings.Get("Common_Cancel")
+                : Strings.Get("QuickSearch_RefreshIndex");
         }
 
         private ConnectionInfo GetSelectedServerConnection()
@@ -343,14 +430,8 @@ namespace AxialSqlTools
             await RunSearchAsync();
         }
 
-        private async void Button_RefreshIndex_Click(object sender, RoutedEventArgs e)
+        private void Button_RefreshIndex_Click(object sender, RoutedEventArgs e)
         {
-            if (indexCancellationTokenSource != null)
-            {
-                indexCancellationTokenSource.Cancel();
-                return;
-            }
-
             ConnectionInfo server = GetSelectedServerConnection();
             if (server == null)
             {
@@ -358,37 +439,66 @@ namespace AxialSqlTools
                 return;
             }
 
-            indexCancellationTokenSource = new CancellationTokenSource();
-            string previousContent = Button_RefreshIndex.Content?.ToString();
+            if (activeIndexingByServer.TryGetValue(server.ServerName, out ServerIndexingState existing))
+            {
+                existing.CancellationSource.Cancel();
+                return;
+            }
+
+            StartIndexing(server, silent: false);
+        }
+
+        private async void StartIndexing(ConnectionInfo server, bool silent)
+        {
+            string serverName = server.ServerName;
+            if (string.IsNullOrWhiteSpace(serverName) || activeIndexingByServer.ContainsKey(serverName))
+            {
+                return;
+            }
+
+            var state = new ServerIndexingState
+            {
+                CancellationSource = new CancellationTokenSource(),
+                StatusText = Strings.Get(silent ? "QuickSearch_IndexAutoRefreshing" : "QuickSearch_Indexing"),
+                Silent = silent
+            };
+            activeIndexingByServer[serverName] = state;
+            RefreshIndexStatusIfSelected(serverName);
+            UpdateRefreshIndexButton();
+
             try
             {
-                Button_RefreshIndex.Content = Strings.Get("Common_Cancel");
-                TextBlock_IndexStatus.Text = Strings.Get("QuickSearch_Indexing");
-
                 List<string> databases = ScriptFactoryAccess.GetDatabases(server);
                 var progress = new Progress<string>(db =>
                 {
-                    TextBlock_IndexStatus.Text = string.Format(Strings.Get("QuickSearch_IndexingDatabase"), db);
+                    state.StatusText = string.Format(Strings.Get("QuickSearch_IndexingDatabase"), db);
+                    RefreshIndexStatusIfSelected(serverName);
                 });
 
-                await QuickSearchIndexStore.BuildIndexAsync(server, databases, progress, indexCancellationTokenSource.Token);
-                UpdateIndexStatus(server.ServerName);
-                MessageBox.Show(Strings.Get("Msg_QuickSearch_IndexBuilt"), Strings.Get("Menu_QuickSearch"));
+                await QuickSearchIndexStore.BuildIndexAsync(server, databases, progress, state.CancellationSource.Token);
+
+                if (!silent)
+                {
+                    MessageBox.Show(Strings.Get("Msg_QuickSearch_IndexBuilt"), Strings.Get("Menu_QuickSearch"));
+                }
             }
             catch (OperationCanceledException)
             {
-                UpdateIndexStatus(server.ServerName);
+                // 取消：状态栏在 finally 中回退到该服务器自身的索引状态
             }
             catch (Exception ex)
             {
-                UpdateIndexStatus(server.ServerName);
-                MessageBox.Show(string.Format(Strings.Get("Msg_QuickSearch_IndexFailed"), ex.Message), Strings.Get("Menu_QuickSearch"));
+                if (!silent)
+                {
+                    MessageBox.Show(string.Format(Strings.Get("Msg_QuickSearch_IndexFailed"), ex.Message), Strings.Get("Menu_QuickSearch"));
+                }
             }
             finally
             {
-                indexCancellationTokenSource?.Dispose();
-                indexCancellationTokenSource = null;
-                Button_RefreshIndex.Content = previousContent ?? Strings.Get("QuickSearch_RefreshIndex");
+                activeIndexingByServer.Remove(serverName);
+                state.CancellationSource.Dispose();
+                RefreshIndexStatusIfSelected(serverName);
+                UpdateRefreshIndexButton();
             }
         }
 

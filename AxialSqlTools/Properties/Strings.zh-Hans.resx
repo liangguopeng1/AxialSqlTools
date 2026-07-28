@@ -136,6 +136,7 @@
   <data name="QuickSearch_IndexReady" xml:space="preserve"><value>索引：{0}（{1} 个对象）</value></data>
   <data name="QuickSearch_Indexing" xml:space="preserve"><value>正在建立索引...</value></data>
   <data name="QuickSearch_IndexingDatabase" xml:space="preserve"><value>正在索引 [{0}]...</value></data>
+  <data name="QuickSearch_IndexAutoRefreshing" xml:space="preserve"><value>索引不存在或已超过 7 天，正在后台自动刷新...</value></data>
   <data name="QuickSearch_SearchingIndex" xml:space="preserve"><value>正在搜索本地索引...</value></data>
   <data name="QuickSearch_NoConnection" xml:space="preserve"><value>未选择连接</value></data>
   <data name="QuickSearch_SearchFor" xml:space="preserve"><value>搜索:</value></data>
@@ -488,6 +489,9 @@
   <data name="ScriptObject_DialogTitle" xml:space="preserve"><value>选择对象</value></data>
   <data name="Settings_AuthorizationStatus" xml:space="preserve"><value>授权状态:</value></data>
   <data name="Settings_Authorized" xml:space="preserve"><value>已授权</value></data>
+  <data name="Settings_BuildTimeLabel" xml:space="preserve"><value>打包时间:</value></data>
+  <data name="Settings_BuildTimeWithVersion" xml:space="preserve"><value>{0}（v{1}）</value></data>
+  <data name="Settings_BuildTimeUnknown" xml:space="preserve"><value>(未知)</value></data>
   <data name="Settings_CheckForUpdates" xml:space="preserve"><value>检查更新</value></data>
   <data name="Settings_CheckUpdatesOnStartup" xml:space="preserve"><value>启动时检查 Axial SQL Tools 更新</value></data>
   <data name="Settings_ClientId" xml:space="preserve"><value>客户端 ID:</value></data>

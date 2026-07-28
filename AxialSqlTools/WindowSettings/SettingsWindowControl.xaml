@@ -1010,6 +1010,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
                     <CheckBox Grid.Row="0"
@@ -1047,6 +1048,27 @@
                                    TextWrapping="Wrap"
                                    Margin="5"/>
                     </GroupBox>
+
+                    <Border Grid.Row="4"
+                            Margin="5"
+                            Padding="8"
+                            BorderBrush="{DynamicResource AxialThemeBorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="2"
+                            HorizontalAlignment="Stretch">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="Label_BuildTime"
+                                       Text="Build time:"
+                                       Tag="loc:Settings_BuildTimeLabel"
+                                       VerticalAlignment="Center"
+                                       Margin="0,0,6,0"
+                                       Opacity="0.85"/>
+                            <TextBlock x:Name="TextBlock_BuildTime"
+                                       Text="(unknown)"
+                                       VerticalAlignment="Center"
+                                       FontFamily="Consolas"/>
+                        </StackPanel>
+                    </Border>
                 </Grid>
             </TabItem>
 

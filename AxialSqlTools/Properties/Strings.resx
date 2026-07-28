@@ -136,6 +136,7 @@
   <data name="QuickSearch_IndexReady" xml:space="preserve"><value>Index: {0} ({1} objects)</value></data>
   <data name="QuickSearch_Indexing" xml:space="preserve"><value>Building index...</value></data>
   <data name="QuickSearch_IndexingDatabase" xml:space="preserve"><value>Indexing [{0}]...</value></data>
+  <data name="QuickSearch_IndexAutoRefreshing" xml:space="preserve"><value>Index missing or older than 7 days - refreshing in background...</value></data>
   <data name="QuickSearch_SearchingIndex" xml:space="preserve"><value>Searching local index...</value></data>
   <data name="QuickSearch_NoConnection" xml:space="preserve"><value>No connection selected</value></data>
   <data name="QuickSearch_SearchFor" xml:space="preserve"><value>Search for:</value></data>
@@ -486,6 +487,9 @@ InnerException: {1}</value></data>
   <data name="ScriptObject_DialogTitle" xml:space="preserve"><value>Select Object</value></data>
   <data name="Settings_AuthorizationStatus" xml:space="preserve"><value>Authorization Status:</value></data>
   <data name="Settings_Authorized" xml:space="preserve"><value>Authorized</value></data>
+  <data name="Settings_BuildTimeLabel" xml:space="preserve"><value>Build time:</value></data>
+  <data name="Settings_BuildTimeWithVersion" xml:space="preserve"><value>{0} (v{1})</value></data>
+  <data name="Settings_BuildTimeUnknown" xml:space="preserve"><value>(unknown)</value></data>
   <data name="Settings_CheckForUpdates" xml:space="preserve"><value>Check for updates</value></data>
   <data name="Settings_CheckUpdatesOnStartup" xml:space="preserve"><value>Check for Axial SQL Tools updates on startup</value></data>
   <data name="Settings_ClientId" xml:space="preserve"><value>Client ID:</value></data>

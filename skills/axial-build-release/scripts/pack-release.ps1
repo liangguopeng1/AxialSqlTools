@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-  One-click Release pack for AxialSqlTools (VSIX + Desktop ZIP).
+  One-click Release pack for AxialSqlTools (VSIX + output ZIP).
 
 .DESCRIPTION
-  Builds AxialSqlTools.vsix (Release|AnyCPU) and ensures a Desktop ZIP:
-  AxialSqlTools_SSMS22_<version>.zip
+  Builds AxialSqlTools.vsix (Release|AnyCPU) and ensures a ZIP beside it:
+  AxialSqlTools/bin/<Config>/AxialSqlTools_SSMS22_<version>.zip
 
   Handles common local-machine quirks:
   - MSBuild from full VS (VSSDK) or BuildTools fallback
@@ -88,8 +88,22 @@ function Get-PackageVersion {
     return $version
 }
 
-function Get-DesktopZipPath([string]$Version) {
-    return Join-Path $env:USERPROFILE ("Desktop\AxialSqlTools_SSMS22_$Version.zip")
+function Get-OutputZipPath([string]$Version) {
+    return Join-Path $projectDir "bin\$Configuration\AxialSqlTools_SSMS22_$Version.zip"
+}
+
+function Ensure-OutputZip([string]$Version) {
+    $zipPath = Get-OutputZipPath -Version $Version
+    if (Test-Path $zipPath) {
+        Write-Host "Output ZIP ready: $zipPath"
+        return $zipPath
+    }
+    if (-not (Test-Path $vsixPath)) {
+        throw "VSIX missing, cannot create ZIP: $vsixPath"
+    }
+    Write-Host "PostBuild ZIP missing; creating: $zipPath"
+    Compress-Archive -Path $vsixPath -DestinationPath $zipPath -Force
+    return $zipPath
 }
 
 function Expand-MsBuildPath([string]$Value) {
@@ -238,20 +252,6 @@ function Invoke-MsBuild {
     }
 }
 
-function Ensure-DesktopZip([string]$Version) {
-    $zipPath = Get-DesktopZipPath -Version $Version
-    if (Test-Path $zipPath) {
-        Write-Host "Desktop ZIP ready: $zipPath"
-        return $zipPath
-    }
-    if (-not (Test-Path $vsixPath)) {
-        throw "VSIX missing, cannot create ZIP: $vsixPath"
-    }
-    Write-Host "PostBuild ZIP missing; creating: $zipPath"
-    Compress-Archive -Path $vsixPath -DestinationPath $zipPath -Force
-    return $zipPath
-}
-
 try {
     if (-not (Test-Path $projectPath)) {
         throw "Project not found: $projectPath"
@@ -315,7 +315,7 @@ try {
     }
 
     Write-Step 'Package ZIP'
-    $zipPath = Ensure-DesktopZip -Version $version
+    $zipPath = Ensure-OutputZip -Version $version
     $vsixItem = Get-Item -LiteralPath $vsixPath
     $zipItem = Get-Item -LiteralPath $zipPath
 

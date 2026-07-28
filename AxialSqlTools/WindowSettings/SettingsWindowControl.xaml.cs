@@ -71,6 +71,7 @@ as select 1;
             formatTSqlExample();
             ApplyLocalizedTexts();
             LoadLanguageCombo();
+            ShowBuildTime();
         }
 
         private void ApplyLocalizedTexts()
@@ -219,6 +220,31 @@ as select 1;
             }
             catch
             {
+            }
+        }
+
+        private void ShowBuildTime()
+        {
+            if (TextBlock_BuildTime == null)
+            {
+                return;
+            }
+
+            string raw = BuildInfo.BuildTime;
+            if (string.IsNullOrWhiteSpace(raw) || raw == "BUILD_TIME_PLACEHOLDER")
+            {
+                TextBlock_BuildTime.Text = UiStrings.Get("Settings_BuildTimeUnknown");
+                return;
+            }
+
+            string version = BuildInfo.AssemblyVersion;
+            if (!string.IsNullOrWhiteSpace(version) && version != "unknown")
+            {
+                TextBlock_BuildTime.Text = string.Format(UiStrings.Get("Settings_BuildTimeWithVersion"), raw, version);
+            }
+            else
+            {
+                TextBlock_BuildTime.Text = raw;
             }
         }
 

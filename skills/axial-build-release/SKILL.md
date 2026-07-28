@@ -38,6 +38,8 @@ description: Builds, reinstalls, versions, and packages the AxialSqlTools SSMS 2
 
 - 输出 VSIX：`AxialSqlTools/bin/<Config>/AxialSqlTools.vsix`
 
+- 输出 ZIP：`AxialSqlTools/bin/<Config>/AxialSqlTools_SSMS22_<version>.zip`
+
 - Debug 本地扩展目录（csproj 可能复制到）：  
 
   `C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Extensions\AxialSqlTools\`
@@ -84,7 +86,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\skills\axial-build-release
 
 4. Restore + Release 构建 VSIX
 
-5. 确保桌面生成 `AxialSqlTools_SSMS22_<version>.zip`
+5. 在 `AxialSqlTools/bin/<Config>/` 生成 `AxialSqlTools_SSMS22_<version>.zip`（与 VSIX 同目录）
 
 6. **始终还原** csproj（`try/finally`）
 
@@ -147,6 +149,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\skills\axial-build-release
 - 无 CI：本地机器路径与 SSMS 安装位置是构建成功的关键
 
 - 引用缺失时先确认 SSMS 安装路径；一键打包脚本会尝试自动 remap
+
+- `.vscode/axial-extension.ps1` 的 VSIXInstaller 路径**硬编码 C 盘**；SSMS 装在 D 盘时 Reinstall 会失败，需改用 D 盘路径手动执行 `/quiet /uninstall:AxialSqlTools` + `/quiet <vsix>`（pack-release.ps1 无此问题，会自动探测 C/D 盘）
+
+- 本机（RTSD）环境：SSMS 22 在 `D:\Program Files\...`；只有 VS2022 **BuildTools**（无 VSSDK 组件），日常 Build/Reinstall 脚本不可用，统一用 `pack-release.ps1`
 
 
 
