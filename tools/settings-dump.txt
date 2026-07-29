@@ -1,0 +1,5 @@
+path=C:\Users\RTSD\AppData\Roaming\AxialSqlTools\settings.json
+exists=True
+{
+  "uiLanguage": "zh-CN"
+}

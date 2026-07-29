@@ -1,3 +1,4 @@
+using AxialSqlTools.IntelliSense;
 using System;
 using System.IO;
 using Newtonsoft.Json;
@@ -9,6 +10,10 @@ namespace AxialSqlTools
         /// <summary>zh-CN (default) or en</summary>
         [JsonProperty("uiLanguage")]
         public string UiLanguage { get; set; } = UiSettingsStore.LanguageZhCn;
+
+        /// <summary>IntelliSense 设置节点。null 兼容旧 settings.json。</summary>
+        [JsonProperty("intelliSense")]
+        public IntelliSenseSettings IntelliSense { get; set; }
     }
 
     public static class UiSettingsStore
@@ -76,6 +81,24 @@ namespace AxialSqlTools
             Save(settings);
         }
 
+        public static IntelliSenseSettings GetIntelliSenseSettings()
+        {
+            var settings = Load();
+            return settings.IntelliSense ?? new IntelliSenseSettings();
+        }
+
+        public static bool GetIntelliSenseEnabled()
+        {
+            return GetIntelliSenseSettings().enabled;
+        }
+
+        public static void SaveIntelliSenseSettings(IntelliSenseSettings intelliSense)
+        {
+            var settings = Load();
+            settings.IntelliSense = intelliSense ?? new IntelliSenseSettings();
+            Save(settings);
+        }
+
         public static void InvalidateCache()
         {
             lock (SyncRoot)
@@ -100,11 +123,21 @@ namespace AxialSqlTools
             {
                 settings.UiLanguage = LanguageZhCn;
             }
+
+            // IntelliSense 节点缺失时给默认值，保证功能可用。
+            if (settings.IntelliSense == null)
+            {
+                settings.IntelliSense = new IntelliSenseSettings();
+            }
         }
 
         private static UiSettings Clone(UiSettings source)
         {
-            return new UiSettings { UiLanguage = source.UiLanguage };
+            return new UiSettings
+            {
+                UiLanguage = source.UiLanguage,
+                IntelliSense = source.IntelliSense ?? new IntelliSenseSettings()
+            };
         }
     }
 }

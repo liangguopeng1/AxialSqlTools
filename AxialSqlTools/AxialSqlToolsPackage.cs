@@ -14,6 +14,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
+using System.Windows.Threading;
 using Task = System.Threading.Tasks.Task;
 using Microsoft.SqlServer.Management.UI.Grid;
 using Microsoft.SqlServer.Management.UI.VSIntegration;
@@ -26,6 +27,7 @@ using Microsoft.Data.SqlClient;
 using System.Data;
 using System.Linq;
 using AxialSqlTools.Properties;
+using AxialSqlTools.IntelliSense;
 
 namespace AxialSqlTools
 {
@@ -285,6 +287,32 @@ namespace AxialSqlTools
             UserConfigPaths.EnsureRootExists();
 
             InitializeLogging();
+
+            // IntelliSense: 尝试禁用 SSMS 自带 IntelliSense（防双弹框）。
+            // 禁用需重启 SSMS 才生效；本次会话若内建仍开，Manager 会抑制自动触发，仅 Ctrl+Space 可用。
+            try
+            {
+                if (!IntelliSenseManager.EnsureSsmsIntelliSenseDisabled())
+                {
+                    _logger?.Warn("IntelliSense: 写注册表失败，SSMS 内建未能禁用。本会话自动补全被抑制，仅 Ctrl+Space 手动可用，重启 SSMS 后恢复。");
+                }
+                else if (IntelliSenseManager.AutoTriggerSuppressed)
+                {
+                    // 写后立即验证：若仍为启用状态，说明注册表路径/键名不准确
+                    if (!IntelliSense.IntelliSenseDisableHelper.IsSsmsIntelliSenseDisabled())
+                    {
+                        _logger?.Warn("IntelliSense: 写注册表成功但立即读回仍为启用——SSMS 22 的 IntelliSense 禁用键路径/键名可能不准，请用 regedit 确认 Software\\Microsoft\\SQL Server Management Studio\\22.0\\ 下 EnableIntelliSense 的精确位置。当前自动补全被抑制。");
+                    }
+                    else
+                    {
+                        _logger?.Info("IntelliSense: 已写注册表禁用 SSMS 内建，但需重启 SSMS 生效。本会话自动补全被抑制，仅 Ctrl+Space 手动可用，重启后恢复。");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.Error(ex, "IntelliSense: EnsureSsmsIntelliSenseDisabled threw.");
+            }
 
             try
             {
@@ -583,6 +611,16 @@ namespace AxialSqlTools
 
             try
             {
+                if (ShouldCloseIntelliSensePopups(GotFocus, LostFocus))
+                    IntelliSenseManager.CloseAllPopups();
+            }
+            catch (Exception ex)
+            {
+                _logger?.Warn(ex, "IntelliSense: CloseAllPopups on window activate failed.");
+            }
+
+            try
+            {
                 EnsureStatisticsExecutionHookForActiveWindow("window-activated");
             }
             catch (Exception ex)
@@ -590,7 +628,8 @@ namespace AxialSqlTools
                 _logger.Error(ex, "Failed to reattach statistics handler during window activation.");
             }
 
-            if (SettingsManager.GetUseSnippets())
+            // IntelliSense 必须独立于 snippets 可用：任一启用即挂载 KeypressCommandFilter
+            if (SettingsManager.GetUseSnippets() || UiSettingsStore.GetIntelliSenseEnabled())
             {
                 try
                 {
@@ -634,6 +673,20 @@ namespace AxialSqlTools
                 _logger.Error(ex, "An exception occurred applying connection color");
             }
 
+        }
+
+        private static bool ShouldCloseIntelliSensePopups(EnvDTE.Window gotFocus, EnvDTE.Window lostFocus)
+        {
+            // 无 LostFocus：应用内焦点抖动（如弹出补全窗），不关
+            if (lostFocus == null) return false;
+            try
+            {
+                if (gotFocus != null && gotFocus == lostFocus) return false;
+            }
+            catch
+            {
+            }
+            return true;
         }
 
         private void WindowClosing_Event(EnvDTE.Window Window)
@@ -1141,6 +1194,15 @@ namespace AxialSqlTools
         private void CommandEvents_BeforeExecute(string Guid, int ID, object CustomIn, object CustomOut, ref bool CancelDefault)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
+
+            try
+            {
+                IntelliSenseManager.CloseAllPopups();
+            }
+            catch (Exception ex)
+            {
+                _logger?.Warn(ex, "IntelliSense: CloseAllPopups on query execute failed.");
+            }
 
             try
             {

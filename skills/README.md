@@ -20,6 +20,7 @@
 | Sync to GitHub / DacFx / SMO 脚本 | `axial-sync-github` |
 | Query Templates / Snippets | `axial-snippets-templates` |
 | 设置窗口、注册表、凭据加密 | `axial-settings-secrets` |
+| SQL IntelliSense 补全/ToolTip/参数提示 | `axial-intellisense` |
 | 构建、安装、改版本、发 ZIP | `axial-build-release` |
 
 ## 共享参考

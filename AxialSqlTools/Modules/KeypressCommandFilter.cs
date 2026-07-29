@@ -4,6 +4,7 @@ using Microsoft.VisualStudio.TextManager.Interop;
 using System;
 using System.Runtime.InteropServices;
 using System.Windows.Input;
+using AxialSqlTools.IntelliSense;
 
 namespace AxialSqlTools
 {
@@ -11,9 +12,17 @@ namespace AxialSqlTools
     {
         private IOleCommandTarget nextCommandTarget;
         private IVsTextView textView;
+        private readonly IntelliSenseKeyHandler _intelliSense;
+
         public KeypressCommandFilter(AxialSqlToolsPackage package, IVsTextView textView)
         {
             this.textView = textView;
+
+            // IntelliSense 独立于 snippets：enabled 即创建处理器
+            if (UiSettingsStore.GetIntelliSenseEnabled())
+            {
+                _intelliSense = new IntelliSenseKeyHandler(package, textView);
+            }
         }
 
         public void AddToChain()
@@ -27,6 +36,31 @@ namespace AxialSqlTools
 
         public int Exec(ref Guid cmdGroup, uint nCmdID, uint nCmdexecopt, IntPtr pvaIn, IntPtr pvaOut)
         {
+            // IntelliSense 优先级链（spec §5.1）：
+            // 1. 弹框开 → 路由键（Up/Down/Tab/Enter/Esc 等），吞键
+            if (_intelliSense != null && _intelliSense.IsSessionOpen && _intelliSense.HandleSessionKey(cmdGroup, nCmdID))
+            {
+                return VSConstants.S_OK;
+            }
+
+            // 2. Ctrl+Space / Ctrl+J 强制补全；弹框已开时 COMPLETEWORD 提交选中项
+            if (_intelliSense != null && cmdGroup == VSConstants.VSStd2K &&
+                (nCmdID == (uint)VSConstants.VSStd2KCmdID.COMPLETEWORD || nCmdID == (uint)VSConstants.VSStd2KCmdID.SHOWMEMBERLIST))
+            {
+                if (_intelliSense.IsSessionOpen)
+                {
+                    return VSConstants.S_OK;
+                }
+                if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+                {
+                    _intelliSense.TriggerCompletion(true);
+                    return VSConstants.S_OK;
+                }
+                // 吞掉 SSMS 内建自动 COMPLETEWORD，由 TYPECHAR 防抖触发本插件补全
+                return VSConstants.S_OK;
+            }
+
+            // 3. 弹框关 → snippet / asterisk（互斥）
             if (cmdGroup == VSConstants.VSStd2K && IsSupportedKey(nCmdID))
             {
                 if (ShouldProcessSnippetKey(nCmdID) && TryReplaceSnippet())
@@ -40,6 +74,12 @@ namespace AxialSqlTools
                     // Asterisk was expanded — swallow the key so no newline/tab is inserted.
                     return VSConstants.S_OK;
                 }
+            }
+
+            // 4. 自动触发补全（防抖；弹框开时立即刷新候选）
+            if (_intelliSense != null)
+            {
+                _intelliSense.MaybeScheduleAutoTrigger(nCmdID);
             }
 
             // Pass along the command so that other command handlers can process it.
@@ -102,89 +142,7 @@ namespace AxialSqlTools
 
         private bool TryReplaceSnippet()
         {
-            if (textView.GetBuffer(out IVsTextLines textLines) != VSConstants.S_OK)
-                return false;
-
-            textView.GetCaretPos(out int iLine, out int iColumn);
-
-            textLines.GetLengthOfLine(iLine, out int lineLength);
-            textLines.GetLineText(iLine, 0, iLine, lineLength, out string lineText);
-
-            if (string.IsNullOrEmpty(lineText) || iColumn == 0)
-                return false;
-
-            int wordStart = iColumn;
-            for (int i = iColumn - 1; i >= 0; i--)
-            {
-                char c = lineText[i];
-                if (c == ' ' || c == '\t' || c == '(' || c == ')' || c == ',' || c == ';')
-                    break;
-
-                wordStart = i;
-            }
-
-            if (wordStart >= iColumn)
-                return false;
-
-            string word = lineText.Substring(wordStart, iColumn - wordStart).Trim();
-            if (string.IsNullOrEmpty(word))
-                return false;
-
-            var dict = SnippetService.SnippetDictionary;
-            if (!dict.TryGetValue(word, out SnippetItem snippet))
-                return false;
-
-            var settings = SettingsManager.GetSnippetSettings();
-            var result = SnippetVariableProcessor.ProcessVariables(snippet.Body, settings.cursorMarker);
-            string newText = result.ProcessedText;
-            int cursorOffset = result.CursorOffset;
-
-            var indent = wordStart;
-            if (indent > 0)
-            {
-                newText = newText.Replace(Environment.NewLine, Environment.NewLine + new string(' ', indent));
-            }
-
-            IntPtr pNewText = Marshal.StringToHGlobalUni(newText);
-            try
-            {
-                TextSpan[] pChangedSpan = new TextSpan[1];
-                textLines.ReplaceLines(iLine, wordStart, iLine, iColumn, pNewText, newText.Length, pChangedSpan);
-            }
-            finally
-            {
-                Marshal.FreeHGlobal(pNewText);
-            }
-
-            SetCaretPosition(iLine, wordStart, newText, cursorOffset >= 0 ? cursorOffset : newText.Length);
-            return true;
-        }
-
-        private void SetCaretPosition(int startLine, int startColumn, string text, int offset)
-        {
-            int targetLine = startLine;
-            int targetColumn = startColumn;
-
-            for (int i = 0; i < offset && i < text.Length; i++)
-            {
-                if (text[i] == '\r' && i + 1 < text.Length && text[i + 1] == '\n')
-                {
-                    targetLine++;
-                    targetColumn = 0;
-                    i++;
-                }
-                else if (text[i] == '\n')
-                {
-                    targetLine++;
-                    targetColumn = 0;
-                }
-                else
-                {
-                    targetColumn++;
-                }
-            }
-
-            textView.SetCaretPos(targetLine, targetColumn);
+            return SnippetExpansionHelper.TryExpandWordAtCaret(textView);
         }
 
         public int QueryStatus(ref Guid cmdGroup, uint cCmds, OLECMD[] prgCmds, IntPtr pCmdText)

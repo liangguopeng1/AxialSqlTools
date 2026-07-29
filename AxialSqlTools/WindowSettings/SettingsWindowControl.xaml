@@ -144,6 +144,78 @@
                 </Grid>
             </TabItem>
 
+            <TabItem x:Name="TabIntelliSense" Header="IntelliSense">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="8">
+                    <StackPanel>
+                        <TextBlock Margin="5,0,5,10" TextWrapping="Wrap" Opacity="0.85"
+                                   Text="点击「保存」后写入设置。生效时机见各项说明。"/>
+                        <StackPanel Margin="5,0,5,4">
+                            <CheckBox x:Name="IntelliSenseEnabled"
+                                      Content="启用 Axial IntelliSense（替代 SSMS 内建）"/>
+                            <TextBlock Margin="22,2,0,0" Opacity="0.75" FontSize="11" Text="生效：关→实时；开→新开标签"/>
+                        </StackPanel>
+                        <StackPanel Margin="5,0,5,4"
+                                    IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
+                            <CheckBox x:Name="IntelliSenseDisableSsms"
+                                      Content="禁用 SSMS 内建 IntelliSense"/>
+                            <TextBlock Margin="22,2,0,0" Opacity="0.75" FontSize="11" Text="生效：需要重启 SSMS"/>
+                        </StackPanel>
+                        <StackPanel Margin="5,0,5,4"
+                                    IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
+                            <CheckBox x:Name="IntelliSenseAutoTrigger"
+                                      Content="输入时自动触发补全"/>
+                            <TextBlock Margin="22,2,0,0" Opacity="0.75" FontSize="11" Text="生效：实时"/>
+                        </StackPanel>
+                        <StackPanel Margin="5,0,5,4"
+                                    IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
+                            <CheckBox x:Name="IntelliSenseHoverTooltip"
+                                      Content="悬停显示表/列/存储过程信息"/>
+                            <TextBlock Margin="22,2,0,0" Opacity="0.75" FontSize="11" Text="生效：关→实时；开→新开标签"/>
+                        </StackPanel>
+                        <StackPanel Margin="5,0,5,4"
+                                    IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
+                            <CheckBox x:Name="IntelliSenseIncludeKeywords"
+                                      Content="补全中包含 SQL 关键字"/>
+                            <TextBlock Margin="22,2,0,0" Opacity="0.75" FontSize="11" Text="生效：实时"/>
+                        </StackPanel>
+                        <StackPanel Margin="5,0,5,4"
+                                    IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
+                            <CheckBox x:Name="IntelliSenseIncludeSystemObjects"
+                                      Content="包含系统对象（sys.*, INFORMATION_SCHEMA.*, sp_*）"/>
+                            <TextBlock Margin="22,2,0,0" Opacity="0.75" FontSize="11" Text="生效：实时"/>
+                        </StackPanel>
+                        <StackPanel Margin="5,8,5,4"
+                                    IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="自动触发延迟（毫秒）:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBox x:Name="IntelliSenseAutoTriggerDelay" Width="60" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <TextBlock Margin="0,2,0,0" Opacity="0.75" FontSize="11" Text="生效：新开标签"/>
+                        </StackPanel>
+                        <StackPanel Margin="5,0,5,4"
+                                    IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="悬停延迟（毫秒）:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBox x:Name="IntelliSenseHoverDelay" Width="60" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <TextBlock Margin="0,2,0,0" Opacity="0.75" FontSize="11" Text="生效：实时"/>
+                        </StackPanel>
+                        <StackPanel Margin="5,0,5,4"
+                                    IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="最大候选项数:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBox x:Name="IntelliSenseMaxItems" Width="60" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <TextBlock Margin="0,2,0,0" Opacity="0.75" FontSize="11" Text="生效：实时"/>
+                        </StackPanel>
+                        <Button x:Name="button_SaveIntelliSenseSettings"
+                                Click="Button_SaveIntelliSenseSettings_Click"
+                                Width="80" Height="24" Margin="5,8,0,0"
+                                HorizontalAlignment="Left" FontWeight="Bold" Content="保存"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
             <TabItem x:Name="TabQueryTemplates" Header="Query Templates">
                 <Grid>
                     <Grid.RowDefinitions>
@@ -1072,7 +1144,7 @@
                 </Grid>
             </TabItem>
 
-            <TabItem Header="GitHub Integration" Visibility="Hidden">
+            <TabItem Header="GitHub Integration" Visibility="Collapsed">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
@@ -1155,7 +1227,6 @@
 							FontWeight="Bold"/>
                 </Grid>
             </TabItem>
-
         </TabControl>
     </DockPanel>
 </UserControl>

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project>
+  <PropertyGroup>
+    <!-- Override: msbuild -p:SsmsRoot="D:\Program Files\Microsoft SQL Server Management Studio 22" -->
+    <_SsmsProbeC>C:\Program Files\Microsoft SQL Server Management Studio 22</_SsmsProbeC>
+    <_SsmsProbeD>D:\Program Files\Microsoft SQL Server Management Studio 22</_SsmsProbeD>
+    <_SsmsProbeEnv>$(ProgramFiles)\Microsoft SQL Server Management Studio 22</_SsmsProbeEnv>
+    <_SsmsSmoProbeRel>Release\Common7\IDE\Microsoft.SqlServer.Smo.dll</_SsmsSmoProbeRel>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(SsmsRoot)' == ''">
+    <SsmsRoot Condition="Exists('$(_SsmsProbeC)\$(_SsmsSmoProbeRel)')">$(_SsmsProbeC)</SsmsRoot>
+    <SsmsRoot Condition="'$(SsmsRoot)' == '' and Exists('$(_SsmsProbeD)\$(_SsmsSmoProbeRel)')">$(_SsmsProbeD)</SsmsRoot>
+    <SsmsRoot Condition="'$(SsmsRoot)' == '' and Exists('$(_SsmsProbeEnv)\$(_SsmsSmoProbeRel)')">$(_SsmsProbeEnv)</SsmsRoot>
+  </PropertyGroup>
+  <PropertyGroup>
+    <SsmsIdeDir Condition="'$(SsmsIdeDir)' == '' and '$(SsmsRoot)' != ''">$(SsmsRoot)\Release\Common7\IDE</SsmsIdeDir>
+    <SsmsAppExtDir Condition="'$(SsmsAppExtDir)' == '' and '$(SsmsIdeDir)' != ''">$(SsmsIdeDir)\Extensions\Application</SsmsAppExtDir>
+  </PropertyGroup>
+  <Target Name="WarnIfSsmsRootMissing" BeforeTargets="Build" Condition="'$(SsmsIdeDir)' == '' or !Exists('$(SsmsIdeDir)\Microsoft.SqlServer.Smo.dll')">
+    <Warning Text="SSMS 22 not found on C:/D:/ProgramFiles. Install SSMS or pass -p:SsmsRoot=&quot;...&quot;. SSMS-only references (GridControl, SQLEditors, etc.) will not resolve." />
+  </Target>
+</Project>

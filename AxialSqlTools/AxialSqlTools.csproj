@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
@@ -50,7 +50,7 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
     <CopyVsixExtensionFiles>True</CopyVsixExtensionFiles>
-    <CopyVsixExtensionLocation>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Extensions\AxialSqlTools\</CopyVsixExtensionLocation>
+    <CopyVsixExtensionLocation>$(SsmsIdeDir)\Extensions\AxialSqlTools\</CopyVsixExtensionLocation>
     <DeployExtension>False</DeployExtension>
     <UseWinFormsOutOfProcDesigner>True</UseWinFormsOutOfProcDesigner>
   </PropertyGroup>
@@ -112,6 +112,7 @@
     <Compile Include="Commands\ScriptSelectedObject.cs" />
     <Compile Include="Commands\SelectCurrentStatementCommand.cs" />
     <Compile Include="Commands\ToggleBlockCommentCommand.cs" />
+    <Compile Include="SnippetManager\SnippetExpansionHelper.cs" />
     <Compile Include="SnippetManager\SnippetItem.cs" />
     <Compile Include="SnippetManager\SnippetService.cs" />
     <Compile Include="SnippetManager\SnippetVariableProcessor.cs" />
@@ -159,6 +160,19 @@
     <Compile Include="Modules\SettingsManager.cs" />
     <Compile Include="Modules\UserConfigPaths.cs" />
     <Compile Include="Modules\UiSettingsStore.cs" />
+    <Compile Include="IntelliSense\MetadataModels.cs" />
+    <Compile Include="IntelliSense\CompletionItem.cs" />
+    <Compile Include="IntelliSense\MetadataCatalogService.cs" />
+    <Compile Include="IntelliSense\CompletionEngine.cs" />
+    <Compile Include="IntelliSense\IntelliSenseKeyHandler.cs" />
+    <Compile Include="IntelliSense\CompletionListWindow.xaml.cs">
+      <DependentUpon>CompletionListWindow.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="IntelliSense\QuickInfoProvider.cs" />
+    <Compile Include="IntelliSense\QuickInfoTooltip.cs" />
+    <Compile Include="IntelliSense\IntelliSenseTextViewExtension.cs" />
+    <Compile Include="IntelliSense\IntelliSenseDisableHelper.cs" />
+    <Compile Include="IntelliSense\IntelliSenseManager.cs" />
     <Compile Include="Modules\UiCultureService.cs" />
     <Compile Include="Modules\MenuTextLocalizer.cs" />
     <Compile Include="Modules\UiLocalization.cs" />
@@ -235,116 +249,100 @@
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.SqlServer.Dac">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Extensions\Application\Microsoft.SqlServer.Dac.dll</HintPath>
+      <HintPath>$(SsmsAppExtDir)\Microsoft.SqlServer.Dac.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.SqlServer.Dac.Extensions">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Extensions\Application\Microsoft.SqlServer.Dac.Extensions.dll</HintPath>
+      <HintPath>$(SsmsAppExtDir)\Microsoft.SqlServer.Dac.Extensions.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.Data.Tools.Schema.Sql">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Extensions\Application\Microsoft.Data.Tools.Schema.Sql.dll</HintPath>
+      <HintPath>$(SsmsAppExtDir)\Microsoft.Data.Tools.Schema.Sql.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.Data.Tools.Schema.Tasks.Sql">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Extensions\Application\Microsoft.Data.Tools.Schema.Tasks.Sql.dll</HintPath>
+      <HintPath>$(SsmsAppExtDir)\Microsoft.Data.Tools.Schema.Tasks.Sql.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.Data.Tools.Utilities">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Extensions\Application\Microsoft.Data.Tools.Utilities.dll</HintPath>
+      <HintPath>$(SsmsAppExtDir)\Microsoft.Data.Tools.Utilities.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.Data.SqlClient">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Microsoft.Data.SqlClient.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\Microsoft.Data.SqlClient.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.VisualStudio.CommandBars">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\PublicAssemblies\Microsoft.VisualStudio.CommandBars.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\PublicAssemblies\Microsoft.VisualStudio.CommandBars.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.VisualStudio.Imaging">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Microsoft.VisualStudio.Imaging.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\Microsoft.VisualStudio.Imaging.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.VisualStudio.ImageCatalog">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Microsoft.VisualStudio.ImageCatalog.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\Microsoft.VisualStudio.ImageCatalog.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.VisualStudio.Imaging.Interop.14.0.DesignTime">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\PublicAssemblies\Microsoft.VisualStudio.Imaging.Interop.14.0.DesignTime.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\PublicAssemblies\Microsoft.VisualStudio.Imaging.Interop.14.0.DesignTime.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.VisualStudio.Interop">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\PublicAssemblies\Microsoft.VisualStudio.Interop.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\PublicAssemblies\Microsoft.VisualStudio.Interop.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.VisualStudio.OLE.Interop">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\PublicAssemblies\Microsoft.VisualStudio.OLE.Interop.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\PublicAssemblies\Microsoft.VisualStudio.OLE.Interop.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.VisualStudio.Shell.15.0">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\PublicAssemblies\Microsoft.VisualStudio.Shell.15.0.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\PublicAssemblies\Microsoft.VisualStudio.Shell.15.0.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.VisualStudio.Shell.Framework">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\PublicAssemblies\Microsoft.VisualStudio.Shell.Framework.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\PublicAssemblies\Microsoft.VisualStudio.Shell.Framework.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.VisualStudio.Shell.Interop">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\PublicAssemblies\Microsoft.VisualStudio.Shell.Interop.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\PublicAssemblies\Microsoft.VisualStudio.Shell.Interop.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.VisualStudio.TextManager.Interop">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\PublicAssemblies\Microsoft.VisualStudio.TextManager.Interop.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\PublicAssemblies\Microsoft.VisualStudio.TextManager.Interop.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.VisualStudio.Threading">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\PublicAssemblies\Microsoft.VisualStudio.Threading.17.x\Microsoft.VisualStudio.Threading.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\PublicAssemblies\Microsoft.VisualStudio.Threading.17.x\Microsoft.VisualStudio.Threading.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.SqlServer.ConnectionInfo, Version=17.0.0.0, Culture=neutral, PublicKeyToken=89845dcd8080cc91, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Microsoft.SqlServer.ConnectionInfo.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\Microsoft.SqlServer.ConnectionInfo.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.SqlServer.GridControl">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Microsoft.SqlServer.GridControl.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\Microsoft.SqlServer.GridControl.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.SqlServer.Management.Sdk.Sfc, Version=17.0.0.0, Culture=neutral, PublicKeyToken=89845dcd8080cc91, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Microsoft.SqlServer.Management.Sdk.Sfc.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\Microsoft.SqlServer.Management.Sdk.Sfc.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.SqlServer.RegSvrEnum, Version=17.0.0.0, Culture=neutral, PublicKeyToken=89845dcd8080cc91, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Microsoft.SqlServer.RegSvrEnum.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\Microsoft.SqlServer.RegSvrEnum.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.SqlServer.Smo, Version=17.0.0.0, Culture=neutral, PublicKeyToken=89845dcd8080cc91, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Microsoft.SqlServer.Smo.dll</HintPath>
+      <HintPath>$(SsmsIdeDir)\Microsoft.SqlServer.Smo.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.VisualBasic" />
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
-    <Reference Include="Newtonsoft.Json">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\PrivateAssemblies\Newtonsoft.Json.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
-    <Reference Include="SQLEditors">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Extensions\Application\SQLEditors.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
-    <Reference Include="SqlPackageBase">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\SqlPackageBase.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
-    <Reference Include="SqlWorkbench.Interfaces">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\SqlWorkbench.Interfaces.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
     <Reference Include="System" />
     <Reference Include="System.Data" />
     <Reference Include="System.Design" />
@@ -356,8 +354,20 @@
     <Reference Include="System.Xaml" />
     <Reference Include="System.Xml.Linq" />
     <Reference Include="System.Xml" />
+    <Reference Include="SQLEditors">
+      <HintPath>$(SsmsAppExtDir)\SQLEditors.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="SqlPackageBase">
+      <HintPath>$(SsmsIdeDir)\SqlPackageBase.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="SqlWorkbench.Interfaces">
+      <HintPath>$(SsmsIdeDir)\SqlWorkbench.Interfaces.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="Microsoft.SqlServer.TransactSql.ScriptDom">
-      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\Extensions\Application\Microsoft.SqlServer.TransactSql.ScriptDom.dll</HintPath>
+      <HintPath>$(SsmsAppExtDir)\Microsoft.SqlServer.TransactSql.ScriptDom.dll</HintPath>
       <Private>True</Private>
     </Reference>
     <Reference Include="WindowsBase" />
@@ -372,6 +382,14 @@
     <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="18.5.40034">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="MSBuildTasks">
+      <Version>1.5.0.235</Version>
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Newtonsoft.Json">
+      <Version>13.0.3</Version>
     </PackageReference>
     <PackageReference Include="NLog">
       <Version>6.1.3</Version>
@@ -402,6 +420,9 @@
     </PackageReference>
     <PackageReference Include="System.Net.Http">
       <Version>4.3.4</Version>
+    </PackageReference>
+    <PackageReference Include="System.Net.Http.Json">
+      <Version>11.0.0-preview.6.26359.118</Version>
     </PackageReference>
     <PackageReference Include="System.Numerics.Vectors">
       <Version>4.6.1</Version>
@@ -538,6 +559,10 @@
     <Page Include="WindowSettings\SettingsWindowControl.xaml">
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
+    </Page>
+    <Page Include="IntelliSense\CompletionListWindow.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
     </Page>
     <Page Include="Themes\SharedToolWindowTheme.xaml">
       <Generator>MSBuild:Compile</Generator>

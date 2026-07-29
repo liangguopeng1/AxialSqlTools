@@ -96,6 +96,34 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\skills\axial-build-release
 
 
 
+## 日常开发一键重载（推荐）
+
+
+
+改完代码后无需手动卸载 VSIX，在仓库根目录执行：
+
+
+
+```powershell
+
+.\tools\dev-reload.ps1
+
+```
+
+
+
+脚本会：自动探测 C/D 盘 SSMS 22 → Release 构建 → 关闭 SSMS → 静默覆盖安装 → 启动 SSMS。
+
+
+
+可选参数：`-Configuration Debug`（更快、带符号）、`-SkipBuild`、`-NoLaunch`
+
+
+
+在 Cursor/VS Code 中也可运行任务：**AxialSqlTools: Dev reload (build + install + SSMS)**。
+
+
+
 ## 构建（仅编译）
 
 

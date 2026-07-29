@@ -205,8 +205,8 @@ function Remove-EnvDteReferences {
     $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
     $ns.AddNamespace('m', 'http://schemas.microsoft.com/developer/msbuild/2003')
     $removed = 0
-    $nodes = @($xml.SelectNodes('//m:Reference', $ns))
-    foreach ($ref in $nodes) {
+    $refNodes = @($xml.SelectNodes('//m:Reference', $ns))
+    foreach ($ref in $refNodes) {
         $include = $ref.GetAttribute('Include')
         if ($include -eq 'EnvDTE' -or $include -eq 'EnvDTE80' -or $include.StartsWith('EnvDTE,') -or $include.StartsWith('EnvDTE80,')) {
             [void]$ref.ParentNode.RemoveChild($ref)
@@ -222,20 +222,28 @@ function Remove-EnvDteReferences {
 }
 
 function Assert-BuildPrerequisites {
-    $deadline = (Get-Date).AddSeconds(10)
-    while ((Get-Process -Name 'VSIXInstaller' -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {
-        Start-Sleep -Milliseconds 250
-    }
-    if (Get-Process -Name 'VSIXInstaller' -ErrorAction SilentlyContinue) {
-        throw 'VSIXInstaller is still running and may lock the output VSIX. Wait, then rerun.'
-    }
     if (Test-Path $vsixPath) {
         try {
             Remove-Item -LiteralPath $vsixPath -Force
         }
         catch {
-            throw "Existing VSIX is locked: $vsixPath. Close anything using it, then rerun."
+            $deadline = (Get-Date).AddSeconds(10)
+            while ((Get-Date) -lt $deadline) {
+                Start-Sleep -Milliseconds 250
+                try {
+                    Remove-Item -LiteralPath $vsixPath -Force
+                    break
+                }
+                catch {
+                }
+            }
+            if (Test-Path $vsixPath) {
+                throw "Existing VSIX is locked: $vsixPath. Close SSMS/VSIXInstaller, then rerun."
+            }
         }
+    }
+    if (Get-Process -Name 'VSIXInstaller' -ErrorAction SilentlyContinue) {
+        Write-Warning 'VSIXInstaller process detected but output VSIX is not locked; continuing build.'
     }
 }
 
@@ -273,7 +281,6 @@ try {
     Assert-BuildPrerequisites
 
     Write-Step 'Prepare project (temporary local fixes)'
-    [void](Set-SsmsHintPaths -SsmsRoot $ssmsRoot)
     if (-not $msbuild.HasVssdkComponent) {
         Remove-EnvDteReferences
     }
@@ -306,6 +313,7 @@ try {
     $nugetRoot = Get-NuGetPackageRoot
     Write-Host "NuGetPackageRoot: $nugetRoot"
     $extraProps += "/p:NuGetPackageRoot=$nugetRoot"
+    $extraProps += "/p:SsmsRoot=$ssmsRoot"
 
     Write-Step 'Build Release VSIX'
     Invoke-MsBuild -MsBuildPath $msbuild.Path -Arguments ($msbuildArgsBase + $extraProps + @('/t:Build', '/m'))

@@ -12,7 +12,7 @@
 2. **SSMS 适配**：`Modules/GridAccess.cs`、`Modules/ScriptFactoryAccess.cs`、`Modules/ResultGridControlAdaptor.cs`、`Modules/KeypressCommandFilter.cs`
 3. **SQL 连接/引擎**：`Microsoft.Data.SqlClient`、SMO、DacFx、ScriptDOM（引用多来自 SSMS 安装目录绝对路径）
 4. **功能模块**：各目录 `*Command` / `*Window` / `*Control.xaml(.cs)`
-5. **配置**：`Modules/SettingsManager.cs`（注册表）、JSON（`%LOCALAPPDATA%\AxialSQL\`）、DPAPI、Credential Manager
+5. **配置**：`Modules/SettingsManager.cs`（注册表，历史）、JSON（`%APPDATA%\AxialSqlTools\`，统一新位置，见 `_shared/conventions.md`）、DPAPI、Credential Manager
 
 ## 双命令体系
 

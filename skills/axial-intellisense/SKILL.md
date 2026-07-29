@@ -1,0 +1,116 @@
+---
+name: axial-intellisense
+description: AxialSqlTools 的自研 SQL IntelliSense（补全 + ToolTip + 参数提示），覆盖 ScriptDOM 解析、按库元数据缓存、WPF Popup 弹框、键盘路由、SSMS 内建禁用降级。用 when 改补全候选/上下文判定、设置项、弹框行为、双弹框降级、ScriptDom 解析、ToolTip、Filter 挂载。
+---
+
+# SQL IntelliSense（自研）
+
+为 SSMS 22 查询编辑器提供补全 + 悬停 ToolTip，安装后替代 SSMS 自带 IntelliSense。设计文档：`docs/superpowers/specs/2026-07-28-sql-intellisense-design.md`（含评审修订记录）。
+
+## 关键文件
+
+`AxialSqlTools/IntelliSense/`：
+
+| 文件 | 职责 |
+|---|---|
+| `MetadataModels.cs` | `IntelliSenseSettings` + 元数据模型（`MetadataCatalog`/`TableColumnInfo`/`RoutineInfo` 等） |
+| `CompletionItem.cs` | 补全项 + `CompletionKind`/`CompletionContext` 枚举 |
+| `MetadataCatalogService.cs` | 按 `(Server, Database)` 内存缓存元数据；独立 SqlConnection 查 sys.*（5s 超时）；连接复用；缓存失效 |
+| `CompletionEngine.cs` | TSql170Parser 解析 → GO 分批 + AST 缓存 → 上下文判定（§4 映射表）→ 候选生成 |
+| `IntelliSenseKeyHandler.cs` | 防抖 DispatcherTimer + 弹框态键路由 + Tab 优先级链 + 光标坐标锚定 + 提交插入 |
+| `CompletionListWindow.xaml(.cs)` | WPF 无边框 Window，定位到光标屏幕坐标 |
+| `QuickInfoProvider.cs` | Token → 元数据对象 → 信息文本 |
+| `QuickInfoTooltip.cs` | WPF ToolTip 渲染 |
+| `IntelliSenseTextViewExtension.cs` | 悬停监听（HWND subclass + DispatcherTimer） |
+| `IntelliSenseDisableHelper.cs` | 写 SSMS 注册表禁用内建 |
+| `IntelliSenseManager.cs` | 总调度入口 + `AutoTriggerSuppressed` 降级 |
+
+修改文件：
+- `Modules/KeypressCommandFilter.cs` — 加 IntelliSense 优先级链分支
+- `Modules/UiSettingsStore.cs` — 扩展 `UiSettings` 加 `intelliSense` 节点
+- `AxialSqlToolsPackage.cs` — Filter 挂载条件解耦 + Initialize 调 Ensure
+- `WindowSettings/SettingsWindowControl.xaml(.cs)` — `TabIntelliSense`
+
+## 架构与数据流
+
+```
+按键 → KeypressCommandFilter.Exec
+  1. 弹框开 → HandleSessionKey 路由（Up/Down/Tab/Enter/Esc/PageUp/Down/Home/End）→ 吞键
+  2. Ctrl+Space / Ctrl+J → TriggerCompletion(true) → 吞键
+  3. 弹框关 → snippet / asterisk（互斥）
+  4. TYPECHAR → MaybeScheduleAutoTrigger → 防抖 timer（弹框关）/ BeginInvoke 立即刷新（弹框开）
+
+TriggerCompletion:
+  IVsTextBuffer 全文 → 按 GO 分批取光标所在批次 → TSql170Parser.Parse（缓存）
+  → CompletionEngine.GetContext → 对象上下文查 MetadataCatalogService
+  → Filter 候选 → IVsTextView.GetPointOfLineColumn 取光标屏幕坐标 → Window.ShowAt
+```
+
+## 关键约束（踩坑必查）
+
+### Filter 挂载
+- `KeypressCommandFilter` 原仅在 `GetUseSnippets()==true` 时挂载（`Package.cs:593`）。已改为 `GetUseSnippets() || GetIntelliSenseEnabled()`。
+- `KeypressCommandFilter` 构造里按 `GetIntelliSenseEnabled()` 创建 `IntelliSenseKeyHandler`。
+
+### Tab 优先级链（互斥）
+1. 弹框开 → Tab/Enter 提交补全（吞键）
+2. 弹框关 + 命中 snippet → snippet 替换
+3. 弹框关 + 命中 asterisk → asterisk 扩展
+4. 否则放行编辑器
+
+### 双弹框降级（spec §6.1）
+- SSMS 内建禁用写 SSMS 自身注册表（非插件配置），**需重启 SSMS 才生效**。
+- `IntelliSenseManager.EnsureSsmsIntelliSenseDisabled()`：内建已禁→不抑制；需要写注册表→设 `AutoTriggerSuppressed=true`。
+- `MaybeScheduleAutoTrigger` 检查 `AutoTriggerSuppressed`，为 true 时 TYPECHAR 不自动弹，仅 Ctrl+Space 手动可用。
+- `Package.InitializeAsync` 必须调 `Ensure`，否则 SSMS 内建始终开着 → 双弹框 → 弹框闪关。
+- 弹框 `Window` 必须设 Owner（`WindowInteropHelper` + `Process.MainWindowHandle`），否则被宿主焦点切换 deactivate 而隐藏（"闪关"根因）。
+
+### ScriptDom / VS API 陷阱
+详见 `axial-scriptdom` skill「ScriptDom API 陷阱」节。要点：
+- `IVsTextView.GetPointOfLineColumn` 第三参数是 `POINT[]`（单元素数组），非 `out POINT`。
+- `VSConstants.VSStd2KCmdID` 无 `ESCAPE`，Escape 键用 `CANCEL`。
+
+## 设置项
+
+`%APPDATA%\AxialSqlTools\settings.json` 的 `intelliSense` 节点（由 `UiSettingsStore` 统一加锁读写，与 `uiLanguage` 同文件）：
+
+```json
+"intelliSense": {
+  "enabled": true,
+  "disableSsmsIntelliSense": true,
+  "autoTrigger": true,
+  "autoTriggerDelayMs": 200,
+  "hoverTooltipEnabled": true,
+  "hoverTooltipDelayMs": 500,
+  "includeKeywords": true,
+  "includeSystemObjects": true,
+  "includeLocalTempTables": true,
+  "includeLocalVariables": true,
+  "maxCompletionItems": 50,
+  "autoRefreshMinutes": 0
+}
+```
+
+- `IntelliSenseSettings` 模型放 `IntelliSense/MetadataModels.cs`，**不放进 `SettingsManager`**（避免注册表/JSON 后端混用）。
+- 设置 UI 在 `SettingsWindowControl` 的 `TabIntelliSense`（当前中文硬编码，`loc` Tag 待接入）。
+
+## 修改指引
+
+1. 改补全候选/上下文判定 → `CompletionEngine`（`BuildItems`/`GetContext`/§4 映射表）。
+2. 改弹框行为/键路由 → `IntelliSenseKeyHandler` + `CompletionListWindow`。
+3. 改元数据查询/缓存 → `MetadataCatalogService`（注意 `FormatDataType`、缓存失效时机）。
+4. 新增设置项 → `MetadataModels.IntelliSenseSettings` + `UiSettingsStore` Get/Save + `TabIntelliSense` 控件 + 加载/保存。
+5. 新增 `.cs`/`.xaml` 必须**登记 csproj**（传统 csproj 不自动包含）。
+6. UI 线程切换用 `JoinableTaskFactory`；后台查询回 UI 用 DispatcherTimer/BeginInvoke。
+
+## 已知 TODO（待 SSMS 实测）
+
+- `IntelliSenseDisableHelper` 的 SSMS 内建注册表路径 `Software\Microsoft\SQL Server Management Studio\22.0\Text Editor\Transact-SQL\IntelliSense` 精确键名待确认（不准则内建禁不掉，但降级链保证不双弹框）。
+- `IntelliSenseTextViewExtension` 悬停用光标位置近似鼠标位置（精确应接 `IVsTextView.GetLineColumnFromPoint`）。
+- 设置 UI 本地化 `loc` Tag + `Strings.resx` 未接（当前中文硬编码）。
+
+## 验证
+
+构建用 `skills/axial-build-release/scripts/pack-release.ps1`（SSMS 在 D 盘会自动 remap HintPath）。
+SSMS 实测回归矩阵见 spec §9（snippet×IntelliSense×SSMS内建 开关组合 5 种）。
+日志：`%LOCALAPPDATA%\AxialSQL\AxialSQLToolsLog\`，找 IntelliSense 相关 Info/Warn。
