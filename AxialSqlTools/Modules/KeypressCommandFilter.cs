@@ -36,6 +36,15 @@ namespace AxialSqlTools
 
         public int Exec(ref Guid cmdGroup, uint nCmdID, uint nCmdexecopt, IntPtr pvaIn, IntPtr pvaOut)
         {
+            if (IntelliSenseManager.IsExecuteCommand(cmdGroup, nCmdID))
+            {
+                IntelliSenseManager.CloseAllPopups();
+            }
+            else if (_intelliSense != null && EditorSelectionHelper.HasTextSelection(textView))
+            {
+                IntelliSenseManager.CloseAllPopups();
+            }
+
             // IntelliSense 优先级链（spec §5.1）：
             // 1. 弹框开 → 路由键（Up/Down/Tab/Enter/Esc 等），吞键
             if (_intelliSense != null && _intelliSense.IsSessionOpen && _intelliSense.HandleSessionKey(cmdGroup, nCmdID))
@@ -55,6 +64,10 @@ namespace AxialSqlTools
                 {
                     _intelliSense.TriggerCompletion(true);
                     return VSConstants.S_OK;
+                }
+                if (EditorSelectionHelper.HasTextSelection(textView))
+                {
+                    return nextCommandTarget?.Exec(ref cmdGroup, nCmdID, nCmdexecopt, pvaIn, pvaOut) ?? VSConstants.S_OK;
                 }
                 // 吞掉 SSMS 内建自动 COMPLETEWORD，由 TYPECHAR 防抖触发本插件补全
                 return VSConstants.S_OK;

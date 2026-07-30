@@ -294,18 +294,17 @@ namespace AxialSqlTools
             {
                 if (!IntelliSenseManager.EnsureSsmsIntelliSenseDisabled())
                 {
-                    _logger?.Warn("IntelliSense: 写注册表失败，SSMS 内建未能禁用。本会话自动补全被抑制，仅 Ctrl+Space 手动可用，重启 SSMS 后恢复。");
+                    _logger?.Warn("IntelliSense: 写 SSMS settings.json 失败，内建未能禁用。本会话自动补全被抑制，仅 Ctrl+Space 手动可用，重启 SSMS 后恢复。");
                 }
                 else if (IntelliSenseManager.AutoTriggerSuppressed)
                 {
-                    // 写后立即验证：若仍为启用状态，说明注册表路径/键名不准确
                     if (!IntelliSense.IntelliSenseDisableHelper.IsSsmsIntelliSenseDisabled())
                     {
-                        _logger?.Warn("IntelliSense: 写注册表成功但立即读回仍为启用——SSMS 22 的 IntelliSense 禁用键路径/键名可能不准，请用 regedit 确认 Software\\Microsoft\\SQL Server Management Studio\\22.0\\ 下 EnableIntelliSense 的精确位置。当前自动补全被抑制。");
+                        _logger?.Warn("IntelliSense: 写 settings.json 成功但读回仍为启用，请确认 SSMS.isolation.ini 的 InstallationID 与 %LOCALAPPDATA%\\Microsoft\\SSMS\\22.0_* 目录一致。当前自动补全被抑制。");
                     }
                     else
                     {
-                        _logger?.Info("IntelliSense: 已写注册表禁用 SSMS 内建，但需重启 SSMS 生效。本会话自动补全被抑制，仅 Ctrl+Space 手动可用，重启后恢复。");
+                        _logger?.Info("IntelliSense: 已在 settings.json 禁用 SSMS 内建 IntelliSense，需重启 SSMS 生效。本会话自动补全被抑制，仅 Ctrl+Space 手动可用，重启后恢复。");
                     }
                 }
             }
@@ -354,10 +353,9 @@ namespace AxialSqlTools
                 IVsProfferCommands3 profferCommands3 = await base.GetServiceAsync(typeof(SVsProfferCommands)) as IVsProfferCommands3;
                 OleMenuCommandService oleMenuCommandService = await GetServiceAsync(typeof(IMenuCommandService)) as OleMenuCommandService;
 
-                var command = application.Commands.Item("Query.Execute");
-                m_queryExecuteEvent = application.Events.get_CommandEvents(command.Guid, command.ID);
-                m_queryExecuteEvent.BeforeExecute += this.CommandEvents_BeforeExecute;
-                m_queryExecuteEvent.AfterExecute += this.CommandEvents_AfterExecute;
+                HookExecuteCommand(application, "Query.Execute", hookAfterExecute: true);
+                HookExecuteCommand(application, "Query.ExecuteSelection");
+                HookExecuteCommand(application, "Query.Parse");
 
                 EnvDTE80.Events2 events = (EnvDTE80.Events2)application.Events;
                 EnvDTE.WindowEvents windowEvents = events.WindowEvents;
@@ -432,6 +430,20 @@ namespace AxialSqlTools
         {
             if (disposing)
             {
+                try
+                {
+                    if (UiSettingsStore.GetIntelliSenseEnabled())
+                    {
+                        IntelliSense.IntelliSenseDisableHelper.TryDisableSsmsIntelliSense();
+                    }
+                    else
+                    {
+                        IntelliSense.IntelliSenseDisableHelper.TryEnableSsmsIntelliSense();
+                    }
+                }
+                catch
+                {
+                }
                 UpdateChecker.LaunchDeferredUpdateOnClose();
             }
 
@@ -1191,13 +1203,36 @@ namespace AxialSqlTools
             return true;
         }
 
-        private void CommandEvents_BeforeExecute(string Guid, int ID, object CustomIn, object CustomOut, ref bool CancelDefault)
+        private void HookExecuteCommand(DTE2 application, string commandName, bool hookAfterExecute = false)
         {
-            ThreadHelper.ThrowIfNotOnUIThread();
-
             try
             {
-                IntelliSenseManager.CloseAllPopups();
+                var cmd = application.Commands.Item(commandName);
+                var cmdGuid = new Guid(cmd.Guid);
+                IntelliSenseManager.RegisterExecuteCommand(cmdGuid, (uint)cmd.ID);
+                var evt = application.Events.get_CommandEvents(cmd.Guid, cmd.ID);
+                evt.BeforeExecute += this.CommandEvents_BeforeExecute;
+                if (hookAfterExecute)
+                {
+                    m_queryExecuteEvent = evt;
+                    evt.AfterExecute += this.CommandEvents_AfterExecute;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.Warn(ex, "IntelliSense: failed to hook execute command {0}.", commandName);
+            }
+        }
+
+        private void CommandEvents_BeforeExecute(string Guid, int ID, object CustomIn, object CustomOut, ref bool CancelDefault)
+        {
+            try
+            {
+                ThreadHelper.JoinableTaskFactory.Run(async () =>
+                {
+                    await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+                    IntelliSenseManager.CloseAllPopups();
+                });
             }
             catch (Exception ex)
             {
@@ -1206,22 +1241,33 @@ namespace AxialSqlTools
 
             try
             {
-                EnsureStatisticsExecutionHookForActiveWindow("query-execute-before");
-
-                if (!StatisticsSummaryStore.IsWindowOpen())
+                ThreadHelper.JoinableTaskFactory.Run(async () =>
                 {
-                    return;
-                }
-
-                var captureVersion = Interlocked.Increment(ref _statisticsCaptureVersion);
-                Interlocked.Exchange(ref _pendingStatisticsCaptureVersion, captureVersion);
-
-                StatisticsSummaryStore.BeginCapture(captureVersion);
+                    await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+                    PrepareStatisticsCaptureBeforeExecute();
+                });
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "Failed to prepare statistics capture before query execution.");
             }
+        }
+
+        private void PrepareStatisticsCaptureBeforeExecute()
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            EnsureStatisticsExecutionHookForActiveWindow("query-execute-before");
+
+            if (!StatisticsSummaryStore.IsWindowOpen())
+            {
+                return;
+            }
+
+            var captureVersion = Interlocked.Increment(ref _statisticsCaptureVersion);
+            Interlocked.Exchange(ref _pendingStatisticsCaptureVersion, captureVersion);
+
+            StatisticsSummaryStore.BeginCapture(captureVersion);
         }
 
         //it has been executed, but the Grid hasn't been created yet...

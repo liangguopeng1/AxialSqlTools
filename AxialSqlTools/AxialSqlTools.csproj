@@ -164,6 +164,7 @@
     <Compile Include="IntelliSense\CompletionItem.cs" />
     <Compile Include="IntelliSense\MetadataCatalogService.cs" />
     <Compile Include="IntelliSense\CompletionEngine.cs" />
+    <Compile Include="IntelliSense\EditorSelectionHelper.cs" />
     <Compile Include="IntelliSense\IntelliSenseKeyHandler.cs" />
     <Compile Include="IntelliSense\CompletionListWindow.xaml.cs">
       <DependentUpon>CompletionListWindow.xaml</DependentUpon>

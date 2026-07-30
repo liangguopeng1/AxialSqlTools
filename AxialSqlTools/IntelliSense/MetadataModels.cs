@@ -12,6 +12,7 @@ namespace AxialSqlTools
         public class IntelliSenseSettings
         {
             public bool enabled = true;
+            /// <summary>已合并到 enabled；保存时与 enabled 同步，仅作 JSON 向后兼容。</summary>
             public bool disableSsmsIntelliSense = true;
             public bool autoTrigger = true;
             public int autoTriggerDelayMs = 200;

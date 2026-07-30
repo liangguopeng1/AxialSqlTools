@@ -468,7 +468,6 @@ as select 1;
             {
                 var isettings = UiSettingsStore.GetIntelliSenseSettings();
                 IntelliSenseEnabled.IsChecked = isettings.enabled;
-                IntelliSenseDisableSsms.IsChecked = isettings.disableSsmsIntelliSense;
                 IntelliSenseAutoTrigger.IsChecked = isettings.autoTrigger;
                 IntelliSenseHoverTooltip.IsChecked = isettings.hoverTooltipEnabled;
                 IntelliSenseIncludeKeywords.IsChecked = isettings.includeKeywords;
@@ -490,10 +489,11 @@ as select 1;
 
         private void Button_SaveIntelliSenseSettings_Click(object sender, RoutedEventArgs e)
         {
+            bool axialEnabled = IntelliSenseEnabled.IsChecked.GetValueOrDefault();
             UiSettingsStore.SaveIntelliSenseSettings(new AxialSqlTools.IntelliSense.IntelliSenseSettings
             {
-                enabled = IntelliSenseEnabled.IsChecked.GetValueOrDefault(),
-                disableSsmsIntelliSense = IntelliSenseDisableSsms.IsChecked.GetValueOrDefault(),
+                enabled = axialEnabled,
+                disableSsmsIntelliSense = axialEnabled,
                 autoTrigger = IntelliSenseAutoTrigger.IsChecked.GetValueOrDefault(),
                 hoverTooltipEnabled = IntelliSenseHoverTooltip.IsChecked.GetValueOrDefault(),
                 includeKeywords = IntelliSenseIncludeKeywords.IsChecked.GetValueOrDefault(),
@@ -502,6 +502,23 @@ as select 1;
                 hoverTooltipDelayMs = int.TryParse(IntelliSenseHoverDelay.Text, out var d2) ? d2 : 500,
                 maxCompletionItems = int.TryParse(IntelliSenseMaxItems.Text, out var mi) ? mi : 50
             });
+            bool ssmsIntelliSenseEnabled = !axialEnabled;
+            if (!IntelliSense.IntelliSenseDisableHelper.TrySetSsmsIntelliSenseEnabled(ssmsIntelliSenseEnabled, out string ssmsError))
+            {
+                string action = ssmsIntelliSenseEnabled ? "恢复" : "禁用";
+                MessageBox.Show(
+                    "插件设置已保存，但未能" + action + " SSMS settings.json 中的系统 IntelliSense。\n" +
+                    (string.IsNullOrEmpty(ssmsError)
+                        ? "请手动修改 languages.sql.intelliSense.enableIntellisense 后重启 SSMS。"
+                        : ssmsError),
+                    UiStrings.Common_Error,
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+            else
+            {
+                IntelliSense.IntelliSenseDisableHelper.ScheduleSyncRetries(ssmsIntelliSenseEnabled);
+            }
             SavedMessage();
         }
 

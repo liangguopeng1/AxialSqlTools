@@ -231,7 +231,7 @@ namespace AxialSqlTools.IntelliSense
 
         private void OnEditorPointerDown()
         {
-            if (!_sessionOpen || IsWithinAcceptGrace()) return;
+            if (!_sessionOpen) return;
             Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() =>
             {
                 if (_sessionOpen) CloseSession();
@@ -267,6 +267,17 @@ namespace AxialSqlTools.IntelliSense
 
             try
             {
+                if (EditorSelectionHelper.HasTextSelection(_textView))
+                {
+                    switch ((VSStd2KCmdID)nCmdID)
+                    {
+                        case VSStd2KCmdID.TAB:
+                        case VSStd2KCmdID.RETURN:
+                            CloseSession();
+                            return false;
+                    }
+                }
+
                 switch ((VSStd2KCmdID)nCmdID)
                 {
                     case VSStd2KCmdID.UP:
@@ -317,8 +328,13 @@ namespace AxialSqlTools.IntelliSense
         {
             var settings = UiSettingsStore.GetIntelliSenseSettings();
             if (!settings.enabled || !settings.autoTrigger) return;
+            if (EditorSelectionHelper.HasTextSelection(_textView))
+            {
+                _debounceTimer.Stop();
+                return;
+            }
 
-            // SSMS 内建未禁用（首次安装/注册表写失败）→ 抑制自动弹，仅 Ctrl+Space 手动可用，避免双弹框
+            // SSMS 内建未禁用（首次安装/settings.json 写失败）→ 抑制自动弹，仅 Ctrl+Space 手动可用，避免双弹框
             if (IntelliSenseManager.AutoTriggerSuppressed) return;
 
             bool isTypeChar = nCmdID == (uint)VSStd2KCmdID.TYPECHAR;
@@ -356,6 +372,12 @@ namespace AxialSqlTools.IntelliSense
         public void TriggerCompletion(bool force, bool editingRefresh = false)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
+
+            if (!force && EditorSelectionHelper.HasTextSelection(_textView))
+            {
+                CloseSession();
+                return;
+            }
 
             var settings = UiSettingsStore.GetIntelliSenseSettings();
             if (!settings.enabled && !force)

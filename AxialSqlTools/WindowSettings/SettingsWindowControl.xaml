@@ -152,13 +152,8 @@
                         <StackPanel Margin="5,0,5,4">
                             <CheckBox x:Name="IntelliSenseEnabled"
                                       Content="启用 Axial IntelliSense（替代 SSMS 内建）"/>
-                            <TextBlock Margin="22,2,0,0" Opacity="0.75" FontSize="11" Text="生效：关→实时；开→新开标签"/>
-                        </StackPanel>
-                        <StackPanel Margin="5,0,5,4"
-                                    IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
-                            <CheckBox x:Name="IntelliSenseDisableSsms"
-                                      Content="禁用 SSMS 内建 IntelliSense"/>
-                            <TextBlock Margin="22,2,0,0" Opacity="0.75" FontSize="11" Text="生效：需要重启 SSMS"/>
+                            <TextBlock Margin="22,2,0,0" Opacity="0.75" FontSize="11" TextWrapping="Wrap"
+                                       Text="生效：关→实时；开→新开标签。启用时会自动禁用系统 IntelliSense，需重启 SSMS 后生效。"/>
                         </StackPanel>
                         <StackPanel Margin="5,0,5,4"
                                     IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">

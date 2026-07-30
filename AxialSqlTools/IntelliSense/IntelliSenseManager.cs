@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace AxialSqlTools.IntelliSense
 {
@@ -20,32 +21,61 @@ namespace AxialSqlTools.IntelliSense
         public static bool AutoTriggerSuppressed { get; private set; }
 
         /// <summary>
-        /// 尝试禁用 SSMS 自带 IntelliSense（写 SSMS 自身注册表）。
-        /// 幂等。返回 false 表示写注册表失败。
+        /// 尝试禁用 SSMS 自带 IntelliSense（写 SSMS 用户 settings.json）。
+        /// 幂等。返回 false 表示写入失败。
         /// </summary>
         public static bool EnsureSsmsIntelliSenseDisabled()
         {
             var s = UiSettingsStore.GetIntelliSenseSettings();
-            if (!s.enabled || !s.disableSsmsIntelliSense)
+            if (!s.enabled)
             {
-                return true; // 用户不要禁用内建
+                return true;
             }
 
-            // 内建已禁用（用户之前重启过 SSMS 让注册表生效）→ 无需动作，恢复自动弹
+            // 内建已禁用 → 无需动作，恢复自动弹
             if (IntelliSenseDisableHelper.IsSsmsIntelliSenseDisabled())
             {
                 AutoTriggerSuppressed = false;
                 return true;
             }
 
-            // 需要写注册表。SSMS 必须重启才生效，本次会话内建仍可能开着 → 抑制自动触发
+            // 需要写 settings.json。SSMS 必须重启才生效，本次会话内建仍可能开着 → 抑制自动触发
             bool ok = IntelliSenseDisableHelper.TryDisableSsmsIntelliSense();
+            if (ok)
+                IntelliSenseDisableHelper.ScheduleDisableRetries();
             AutoTriggerSuppressed = true;
             return ok;
         }
 
         public static bool AnyPopupOpen() =>
             QuickInfoTooltip.IsOpen || IntelliSenseKeyHandler.AnySessionOpen();
+
+        private static readonly List<(Guid Group, uint Id)> ExecuteCommandIds = new List<(Guid, uint)>();
+
+        public static void RegisterExecuteCommand(Guid group, uint id)
+        {
+            if (group == Guid.Empty) return;
+            lock (ExecuteCommandIds)
+            {
+                foreach (var existing in ExecuteCommandIds)
+                {
+                    if (existing.Group == group && existing.Id == id) return;
+                }
+                ExecuteCommandIds.Add((group, id));
+            }
+        }
+
+        public static bool IsExecuteCommand(Guid group, uint id)
+        {
+            lock (ExecuteCommandIds)
+            {
+                foreach (var existing in ExecuteCommandIds)
+                {
+                    if (existing.Group == group && existing.Id == id) return true;
+                }
+            }
+            return false;
+        }
 
         /// <summary>切换窗口/失焦/菜单命令时关闭补全弹框与悬停提示。</summary>
         public static void CloseAllPopups()
