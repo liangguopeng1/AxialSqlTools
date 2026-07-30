@@ -3,6 +3,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
+using System.Text.RegularExpressions;
 
 namespace AxialSqlTools
 {
@@ -26,9 +27,32 @@ namespace AxialSqlTools
             private readonly ConcurrentDictionary<string, MetadataCatalog> _cache =
                 new ConcurrentDictionary<string, MetadataCatalog>(StringComparer.OrdinalIgnoreCase);
 
+            private readonly ConcurrentDictionary<string, List<string>> _linkedServerCache =
+                new ConcurrentDictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+            private readonly ConcurrentDictionary<string, List<string>> _linkedDatabaseCache =
+                new ConcurrentDictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+            private readonly ConcurrentDictionary<string, TableColumnInfo> _tableColumnCache =
+                new ConcurrentDictionary<string, TableColumnInfo>(StringComparer.OrdinalIgnoreCase);
+
+            private static readonly Regex IPv4Regex = new Regex(
+                @"^\d{1,3}(\.\d{1,3}){3}$",
+                RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
             private static string Key(string server, string database)
             {
                 return (server ?? string.Empty) + "|" + (database ?? string.Empty);
+            }
+
+            private static string LinkedCatalogKey(string linkedServer, string database)
+            {
+                return "ls:" + (linkedServer ?? string.Empty) + "|" + (database ?? string.Empty);
+            }
+
+            private static string LinkedDatabaseListKey(string localServer, string linkedServer)
+            {
+                return (localServer ?? string.Empty) + "|ls|" + (linkedServer ?? string.Empty);
             }
 
             /// <summary>取或构建目录。connInfo 为当前活动连接；dbOverride 用于三段名跨库。</summary>
@@ -46,10 +70,13 @@ namespace AxialSqlTools
                 }
 
                 string key = Key(connInfo.ServerName, database);
-                if (_cache.TryGetValue(key, out var cached) && cached != null && !cached.IsEmpty)
+                if (_cache.TryGetValue(key, out var cached) && cached != null && !cached.IsEmpty
+                    && string.Equals(cached.Database, database, StringComparison.OrdinalIgnoreCase))
                 {
                     return cached;
                 }
+
+                _cache.TryRemove(key, out _);
 
                 var catalog = BuildCatalog(connInfo, database);
                 if (catalog != null)
@@ -57,6 +84,280 @@ namespace AxialSqlTools
                     _cache[key] = catalog;
                 }
                 return catalog;
+            }
+
+            /// <summary>按需加载单表列（catalog 未命中或跨库时的兜底）。</summary>
+            public TableColumnInfo GetTableColumns(
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string database,
+                string schema,
+                string tableName)
+            {
+                if (connInfo == null || string.IsNullOrWhiteSpace(tableName))
+                    return null;
+
+                string db = string.IsNullOrWhiteSpace(database) ? connInfo.Database : database;
+                if (string.IsNullOrWhiteSpace(db)) db = "master";
+                string sch = string.IsNullOrWhiteSpace(schema) ? "dbo" : schema;
+                string cacheKey = (connInfo.ServerName ?? string.Empty) + "|" + db + "|" + sch + "|" + tableName;
+                if (_tableColumnCache.TryGetValue(cacheKey, out var cached) && cached != null)
+                    return cached;
+
+                var target = ScriptFactoryAccess.CloneWithDatabase(connInfo, db);
+                if (target == null || string.IsNullOrWhiteSpace(target.FullConnectionString))
+                    return null;
+
+                const string sql = @"
+SELECT c.name, t.name, c.max_length, c.precision, c.scale, c.is_nullable,
+       OBJECT_DEFINITION(c.default_object_id), ep.value
+FROM sys.columns c
+JOIN sys.types t ON c.user_type_id = t.user_type_id
+JOIN sys.objects o ON c.object_id = o.object_id
+JOIN sys.schemas s ON o.schema_id = s.schema_id
+LEFT JOIN sys.extended_properties ep
+       ON ep.major_id = c.object_id AND ep.minor_id = c.column_id AND ep.name = 'MS_Description'
+WHERE s.name = @schema AND o.name = @table AND o.type IN ('U','V')
+ORDER BY c.column_id;";
+
+                try
+                {
+                    using (var conn = new SqlConnection(WithConnectTimeout(target.FullConnectionString)))
+                    {
+                        conn.Open();
+                        using (var cmd = Cmd(conn, sql))
+                        {
+                            cmd.Parameters.AddWithValue("@schema", sch);
+                            cmd.Parameters.AddWithValue("@table", tableName);
+                            using (var reader = cmd.ExecuteReader())
+                            {
+                                TableColumnInfo info = null;
+                                while (reader.Read())
+                                {
+                                    if (info == null)
+                                    {
+                                        info = new TableColumnInfo { Schema = sch, Name = tableName };
+                                    }
+                                    info.Columns.Add(new ColumnInfo
+                                    {
+                                        Name = reader.IsDBNull(0) ? null : reader.GetString(0),
+                                        DataType = FormatDataType(
+                                            reader.IsDBNull(1) ? null : reader.GetString(1),
+                                            reader.IsDBNull(2) ? (short)0 : reader.GetInt16(2),
+                                            reader.IsDBNull(3) ? (byte)0 : reader.GetByte(3),
+                                            reader.IsDBNull(4) ? (byte)0 : reader.GetByte(4)),
+                                        Nullable = !reader.IsDBNull(5) && reader.GetBoolean(5),
+                                        DefaultValue = reader.IsDBNull(6) ? null : reader.GetString(6),
+                                        Description = reader.IsDBNull(7) ? null : reader.GetString(7)
+                                    });
+                                }
+                                if (info != null)
+                                    _tableColumnCache[cacheKey] = info;
+                                return info;
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            /// <summary>链接服务器上的库列表（四段名 [server].master.sys.databases）。</summary>
+            public List<string> GetLinkedServerDatabases(ScriptFactoryAccess.ConnectionInfo connInfo, string linkedServer)
+            {
+                var list = new List<string>();
+                if (connInfo == null || string.IsNullOrWhiteSpace(linkedServer))
+                    return list;
+
+                string cacheKey = LinkedDatabaseListKey(connInfo.ServerName, linkedServer);
+                if (_linkedDatabaseCache.TryGetValue(cacheKey, out var cached) && cached != null)
+                    return new List<string>(cached);
+
+                if (string.IsNullOrWhiteSpace(connInfo.FullConnectionString))
+                    return list;
+
+                string prefix = FourPartPrefix(linkedServer, "master");
+                const string sql = @"
+SELECT d.name
+FROM {0}.sys.databases d
+WHERE d.state = 0
+  AND d.name <> 'tempdb'
+ORDER BY d.name;";
+
+                try
+                {
+                    using (var conn = new SqlConnection(WithConnectTimeout(connInfo.FullConnectionString)))
+                    {
+                        conn.Open();
+                        using (var cmd = Cmd(conn, string.Format(sql, prefix)))
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                if (!reader.IsDBNull(0))
+                                    list.Add(reader.GetString(0));
+                            }
+                        }
+                    }
+                    _linkedDatabaseCache[cacheKey] = list;
+                }
+                catch
+                {
+                }
+                return list;
+            }
+
+            /// <summary>已注册的链接服务器 + 常见 IP 形态（用于 [server]. 补全）。</summary>
+            public List<string> GetLinkedServers(ScriptFactoryAccess.ConnectionInfo connInfo)
+            {
+                if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
+                    return new List<string>();
+
+                if (_linkedServerCache.TryGetValue(connInfo.ServerName, out var cached) && cached != null)
+                    return new List<string>(cached);
+
+                var list = LoadLinkedServers(connInfo);
+                _linkedServerCache[connInfo.ServerName] = list;
+                return new List<string>(list);
+            }
+
+            public bool IsLinkedServerName(ScriptFactoryAccess.ConnectionInfo connInfo, string name)
+            {
+                if (string.IsNullOrWhiteSpace(name))
+                    return false;
+                if (IsLocalDatabaseName(connInfo, name))
+                    return false;
+                if (IPv4Regex.IsMatch(name))
+                    return true;
+                foreach (var server in GetLinkedServers(connInfo))
+                {
+                    if (string.Equals(server, name, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                return false;
+            }
+
+            public bool IsLinkedServerDatabase(ScriptFactoryAccess.ConnectionInfo connInfo, string linkedServer, string database)
+            {
+                if (string.IsNullOrWhiteSpace(linkedServer) || string.IsNullOrWhiteSpace(database))
+                    return false;
+                foreach (var db in GetLinkedServerDatabases(connInfo, linkedServer))
+                {
+                    if (string.Equals(db, database, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                return false;
+            }
+
+            /// <summary>链接服务器目标库的表/视图目录。</summary>
+            public MetadataCatalog GetOrBuildLinkedCatalog(
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string linkedServer,
+                string database)
+            {
+                if (connInfo == null || string.IsNullOrWhiteSpace(linkedServer) || string.IsNullOrWhiteSpace(database))
+                    return null;
+
+                string key = LinkedCatalogKey(linkedServer, database);
+                if (_cache.TryGetValue(key, out var cached) && cached != null && !cached.IsEmpty)
+                    return cached;
+
+                var catalog = BuildLinkedCatalog(connInfo, linkedServer, database);
+                if (catalog != null)
+                    _cache[key] = catalog;
+                return catalog;
+            }
+
+            private List<string> LoadLinkedServers(ScriptFactoryAccess.ConnectionInfo connInfo)
+            {
+                var list = new List<string>();
+                if (string.IsNullOrWhiteSpace(connInfo?.FullConnectionString))
+                    return list;
+                try
+                {
+                    using (var conn = new SqlConnection(WithConnectTimeout(connInfo.FullConnectionString)))
+                    {
+                        conn.Open();
+                        using (var cmd = Cmd(conn, "SELECT name FROM sys.servers WHERE is_linked = 1 ORDER BY name"))
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                if (!reader.IsDBNull(0))
+                                    list.Add(reader.GetString(0));
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                }
+                return list;
+            }
+
+            private MetadataCatalog BuildLinkedCatalog(
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string linkedServer,
+                string database)
+            {
+                if (string.IsNullOrWhiteSpace(connInfo?.FullConnectionString))
+                    return null;
+
+                string prefix = FourPartPrefix(linkedServer, database);
+                try
+                {
+                    using (var conn = new SqlConnection(WithConnectTimeout(connInfo.FullConnectionString)))
+                    {
+                        conn.Open();
+                        var catalog = new MetadataCatalog
+                        {
+                            Server = linkedServer,
+                            Database = database,
+                            BuiltAt = DateTime.Now
+                        };
+                        LoadTablesAndViews(conn, catalog, prefix);
+                        LoadRoutines(conn, catalog, prefix);
+                        LoadSynonyms(conn, catalog, prefix);
+                        return catalog;
+                    }
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            private static bool IsLocalDatabaseName(ScriptFactoryAccess.ConnectionInfo connInfo, string name)
+            {
+                if (connInfo == null || string.IsNullOrWhiteSpace(name))
+                    return false;
+                try
+                {
+                    foreach (var db in ScriptFactoryAccess.GetDatabases(connInfo))
+                    {
+                        if (string.Equals(db, name, StringComparison.OrdinalIgnoreCase))
+                            return true;
+                    }
+                }
+                catch
+                {
+                }
+                return false;
+            }
+
+            private static string FourPartPrefix(string linkedServer, string database)
+            {
+                return BracketSqlIdent(linkedServer) + "." + BracketSqlIdent(database);
+            }
+
+            internal static string BracketSqlIdent(string name)
+            {
+                if (string.IsNullOrEmpty(name))
+                    return name;
+                if (name.StartsWith("[", StringComparison.Ordinal))
+                    return name;
+                return "[" + name.Replace("]", "]]") + "]";
             }
 
             private MetadataCatalog BuildCatalog(ScriptFactoryAccess.ConnectionInfo connInfo, string database)
@@ -117,9 +418,19 @@ namespace AxialSqlTools
                 return new SqlCommand(sql, conn) { CommandTimeout = QueryTimeoutSeconds };
             }
 
-            private void LoadTablesAndViews(SqlConnection conn, MetadataCatalog catalog)
+            private static string QualifySys(string fourPartPrefix, string objectName)
             {
-                const string sql = @"
+                return string.IsNullOrEmpty(fourPartPrefix) ? objectName : fourPartPrefix + "." + objectName;
+            }
+
+            private void LoadTablesAndViews(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null)
+            {
+                string objects = QualifySys(fourPartPrefix, "sys.objects");
+                string schemas = QualifySys(fourPartPrefix, "sys.schemas");
+                string columns = QualifySys(fourPartPrefix, "sys.columns");
+                string types = QualifySys(fourPartPrefix, "sys.types");
+                string extProps = QualifySys(fourPartPrefix, "sys.extended_properties");
+                string sql = $@"
 SELECT s.name AS schema_name,
        o.name AS object_name,
        o.type AS object_type,
@@ -132,13 +443,13 @@ SELECT s.name AS schema_name,
        OBJECT_DEFINITION(c.default_object_id) AS default_value,
        ep_col.value AS column_description,
        ep_obj.value AS object_description
-FROM sys.objects o
-JOIN sys.schemas s ON o.schema_id = s.schema_id
-JOIN sys.columns c ON c.object_id = o.object_id
-JOIN sys.types t ON c.user_type_id = t.user_type_id
-LEFT JOIN sys.extended_properties ep_col
+FROM {objects} o
+JOIN {schemas} s ON o.schema_id = s.schema_id
+JOIN {columns} c ON c.object_id = o.object_id
+JOIN {types} t ON c.user_type_id = t.user_type_id
+LEFT JOIN {extProps} ep_col
        ON ep_col.major_id = c.object_id AND ep_col.minor_id = c.column_id AND ep_col.name = 'MS_Description'
-LEFT JOIN sys.extended_properties ep_obj
+LEFT JOIN {extProps} ep_obj
        ON ep_obj.major_id = o.object_id AND ep_obj.minor_id = 0 AND ep_obj.name = 'MS_Description'
 WHERE o.type IN ('U','V') AND o.is_ms_shipped = 0
 ORDER BY s.name, o.name, c.column_id;";
@@ -201,9 +512,15 @@ ORDER BY s.name, o.name, c.column_id;";
                 }
             }
 
-            private void LoadRoutines(SqlConnection conn, MetadataCatalog catalog)
+            private void LoadRoutines(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null)
             {
-                const string sql = @"
+                string objects = QualifySys(fourPartPrefix, "sys.objects");
+                string schemas = QualifySys(fourPartPrefix, "sys.schemas");
+                string parameters = QualifySys(fourPartPrefix, "sys.parameters");
+                string types = QualifySys(fourPartPrefix, "sys.types");
+                string modules = QualifySys(fourPartPrefix, "sys.sql_modules");
+                string extProps = QualifySys(fourPartPrefix, "sys.extended_properties");
+                string sql = $@"
 SELECT s.name AS schema_name,
        o.name AS object_name,
        o.type AS object_type,
@@ -218,12 +535,12 @@ SELECT s.name AS schema_name,
        OBJECT_DEFINITION(p.default_object_id) AS default_value,
        m.definition AS object_definition,
        ep.value AS object_description
-FROM sys.objects o
-JOIN sys.schemas s ON o.schema_id = s.schema_id
-LEFT JOIN sys.parameters p ON p.object_id = o.object_id
-LEFT JOIN sys.types t ON p.user_type_id = t.user_type_id
-LEFT JOIN sys.sql_modules m ON m.object_id = o.object_id
-LEFT JOIN sys.extended_properties ep
+FROM {objects} o
+JOIN {schemas} s ON o.schema_id = s.schema_id
+LEFT JOIN {parameters} p ON p.object_id = o.object_id
+LEFT JOIN {types} t ON p.user_type_id = t.user_type_id
+LEFT JOIN {modules} m ON m.object_id = o.object_id
+LEFT JOIN {extProps} ep
        ON ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description'
 WHERE o.type IN ('P','FN','TF','IF') AND o.is_ms_shipped = 0
 ORDER BY s.name, o.name, p.parameter_id;";
@@ -286,15 +603,18 @@ ORDER BY s.name, o.name, p.parameter_id;";
                 }
             }
 
-            private void LoadSynonyms(SqlConnection conn, MetadataCatalog catalog)
+            private void LoadSynonyms(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null)
             {
-                const string sql = @"
+                string synonyms = QualifySys(fourPartPrefix, "sys.synonyms");
+                string schemas = QualifySys(fourPartPrefix, "sys.schemas");
+                string extProps = QualifySys(fourPartPrefix, "sys.extended_properties");
+                string sql = $@"
 SELECT s.name AS schema_name,
        o.name AS object_name,
        ep.value AS object_description
-FROM sys.synonyms o
-JOIN sys.schemas s ON o.schema_id = s.schema_id
-LEFT JOIN sys.extended_properties ep
+FROM {synonyms} o
+JOIN {schemas} s ON o.schema_id = s.schema_id
+LEFT JOIN {extProps} ep
        ON ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description'
 WHERE o.is_ms_shipped = 0
 ORDER BY s.name, o.name;";

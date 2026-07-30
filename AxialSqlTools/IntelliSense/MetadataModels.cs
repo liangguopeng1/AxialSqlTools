@@ -22,6 +22,8 @@ namespace AxialSqlTools
             public bool includeSystemObjects = true;
             public bool includeLocalTempTables = true;
             public bool includeLocalVariables = true;
+            /// <summary>选中补全项时插入文本是否带方括号 []。</summary>
+            public bool bracketIdentifiers = true;
             public int maxCompletionItems = 50;
             public int autoRefreshMinutes = 0; // 0 = 关闭后台刷新
         }

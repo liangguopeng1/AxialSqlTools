@@ -5,10 +5,9 @@ using Microsoft.SqlServer.Management.UI.VSIntegration.ObjectExplorer;
 using Microsoft.SqlServer.Management.Common;
 using System;
 using System.Collections.Generic;
-using Microsoft.Data.SqlClient;
 using System.IO;
-using System.Linq;
 using System.Reflection;
+using Microsoft.Data.SqlClient;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -476,6 +475,12 @@ ORDER BY [name];";
 
         public static ConnectionInfo GetCurrentConnectionInfo(bool inMaster = false)
         {
+            return GetCurrentConnectionInfoForEditor(null, inMaster);
+        }
+
+        /// <summary>优先读取查询编辑器工具栏当前库（m_connection.Database），避免 AdvancedOptions 滞后。</summary>
+        public static ConnectionInfo GetCurrentConnectionInfoForEditor(Microsoft.VisualStudio.TextManager.Interop.IVsTextView textView = null, bool inMaster = false)
+        {
             var scriptFactory = ServiceCache.ScriptFactory;
             if (scriptFactory == null) return null;
 
@@ -486,6 +491,15 @@ ORDER BY [name];";
             if (connection == null) return null;
 
             string databaseName = inMaster ? "master" : GetAdvancedOption(connection, "DATABASE");
+            if (!inMaster && textView != null
+                && GridAccess.TryGetConnectionInfoForTextView(textView, out _, out string viewDatabase))
+            {
+                databaseName = viewDatabase;
+            }
+            else if (!inMaster && TryGetQueryEditorDatabase(connInfo, out string editorDatabase))
+            {
+                databaseName = editorDatabase;
+            }
             if (string.IsNullOrWhiteSpace(databaseName))
                 databaseName = "master";
 
@@ -505,15 +519,98 @@ ORDER BY [name];";
 
             ApplyTrustServerCertificate(builder);
 
-            var ci = new ConnectionInfo
+            return new ConnectionInfo
             {
                 FullConnectionString = builder.ToString(),
                 Database = databaseName,
                 ServerName = connection.ServerName,
                 ActiveConnectionInfo = connection
             };
+        }
 
-            return ci;
+        private static bool TryGetQueryEditorDatabase(object activeWndConnectionInfo, out string database)
+        {
+            database = null;
+            if (!TryFindSqlConnectionObject(activeWndConnectionInfo, out object connection))
+                return false;
+            database = GridAccess.GetProperty(connection, "Database") as string;
+            return !string.IsNullOrWhiteSpace(database);
+        }
+
+        private static bool TryFindSqlConnectionObject(object root, out object connection)
+        {
+            connection = null;
+            if (root == null)
+                return false;
+
+            var visited = new HashSet<object>(ReferenceEqualityComparer.Instance);
+            var queue = new Queue<object>();
+            queue.Enqueue(root);
+            int steps = 0;
+
+            while (queue.Count > 0 && steps++ < 250)
+            {
+                object current = queue.Dequeue();
+                if (current == null || !visited.Add(current))
+                    continue;
+
+                string database = GridAccess.GetProperty(current, "Database") as string;
+                string dataSource = GridAccess.GetProperty(current, "DataSource") as string;
+                if (!string.IsNullOrWhiteSpace(database) && !string.IsNullOrWhiteSpace(dataSource))
+                {
+                    connection = current;
+                    return true;
+                }
+
+                EnqueueReflectionChildren(current, queue);
+            }
+
+            return false;
+        }
+
+        private static void EnqueueReflectionChildren(object current, Queue<object> queue)
+        {
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            Type type = current.GetType();
+            if (IsSimpleReflectionType(type))
+                return;
+
+            foreach (FieldInfo field in type.GetFields(flags))
+            {
+                object value = null;
+                try { value = field.GetValue(current); } catch { }
+                if (value != null)
+                    queue.Enqueue(value);
+            }
+
+            foreach (PropertyInfo property in type.GetProperties(flags))
+            {
+                if (!property.CanRead || property.GetIndexParameters().Length > 0)
+                    continue;
+                object value = null;
+                try { value = property.GetValue(current, null); } catch { }
+                if (value != null)
+                    queue.Enqueue(value);
+            }
+        }
+
+        private static bool IsSimpleReflectionType(Type type)
+        {
+            return type == null
+                || type.IsPrimitive
+                || type.IsEnum
+                || type == typeof(string)
+                || type == typeof(decimal)
+                || type == typeof(DateTime)
+                || type == typeof(TimeSpan)
+                || type == typeof(Guid);
+        }
+
+        private sealed class ReferenceEqualityComparer : IEqualityComparer<object>
+        {
+            public static readonly ReferenceEqualityComparer Instance = new ReferenceEqualityComparer();
+            public new bool Equals(object x, object y) => ReferenceEquals(x, y);
+            public int GetHashCode(object obj) => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
         }
 
         private static string GetAdvancedOption(UIConnectionInfo connection, string key)

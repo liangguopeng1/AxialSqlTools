@@ -280,7 +280,7 @@ namespace AxialSqlTools.IntelliSense
 
         private ScriptFactoryAccess.ConnectionInfo SafeGetCurrentConnection()
         {
-            try { return ScriptFactoryAccess.GetCurrentConnectionInfo(); }
+            try { return ScriptFactoryAccess.GetCurrentConnectionInfoForEditor(_textView); }
             catch { return null; }
         }
 

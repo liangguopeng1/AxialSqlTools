@@ -615,6 +615,105 @@ namespace AxialSqlTools
             return false;
         }
 
+        public static bool TryGetConnectionInfoForTextView(IVsTextView textView, out string server, out string database)
+        {
+            server = null;
+            database = null;
+            if (textView == null)
+                return false;
+
+            try
+            {
+                IntPtr targetHwnd = textView.GetWindowHandle();
+                if (targetHwnd == IntPtr.Zero)
+                    return false;
+
+                foreach (var doc in GetOpenDocumentTabInfos())
+                {
+                    if (doc.Frame == null || !FrameContainsHwnd(doc.Frame, targetHwnd))
+                        continue;
+                    return TryGetConnectionInfo(doc.Frame, out server, out database);
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
+        }
+
+        private static bool FrameContainsHwnd(IVsWindowFrame frame, IntPtr targetHwnd)
+        {
+            if (frame.GetProperty((int)__VSFPROPID.VSFPROPID_DocView, out object docView) != VSConstants.S_OK
+                || docView == null)
+            {
+                return false;
+            }
+
+            return ObjectContainsHwnd(docView, targetHwnd, new HashSet<object>(new ReferenceEqualityComparer()));
+        }
+
+        private static bool ObjectContainsHwnd(object obj, IntPtr targetHwnd, HashSet<object> visited)
+        {
+            if (obj == null || !visited.Add(obj))
+                return false;
+
+            if (obj is IVsTextView textView)
+            {
+                try
+                {
+                    if (textView.GetWindowHandle() == targetHwnd)
+                        return true;
+                }
+                catch
+                {
+                }
+            }
+
+            if (obj is Control control)
+            {
+                try
+                {
+                    if (control.Handle == targetHwnd)
+                        return true;
+                }
+                catch
+                {
+                }
+
+                foreach (Control child in control.Controls)
+                {
+                    if (ObjectContainsHwnd(child, targetHwnd, visited))
+                        return true;
+                }
+            }
+
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            Type type = obj.GetType();
+            if (IsSimpleProbeType(type))
+                return false;
+
+            foreach (FieldInfo field in type.GetFields(flags))
+            {
+                object value = null;
+                try { value = field.GetValue(obj); } catch { }
+                if (value != null && ObjectContainsHwnd(value, targetHwnd, visited))
+                    return true;
+            }
+
+            foreach (PropertyInfo prop in type.GetProperties(flags))
+            {
+                if (!prop.CanRead || prop.GetIndexParameters().Length > 0)
+                    continue;
+                object value = null;
+                try { value = prop.GetValue(obj); } catch { }
+                if (value != null && ObjectContainsHwnd(value, targetHwnd, visited))
+                    return true;
+            }
+
+            return false;
+        }
+
         private static bool TryGetConnectionInfo(IVsWindowFrame frame, out string server, out string database)
         {
             server = null;

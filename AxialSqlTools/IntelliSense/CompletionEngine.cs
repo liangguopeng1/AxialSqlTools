@@ -103,10 +103,25 @@ namespace AxialSqlTools
                     if (localOffset < 0) localOffset = 0;
 
                     var local = ExtractLocalSymbols(script);
-                    CollectAliases(script, localOffset, local);
+                    CollectAliases(script, localOffset, local, tokens);
 
                     string prefix;
-                    int caretTokenIndex = FindTokenIndexBefore(tokens, localOffset);
+                    if (TryGetMemberAccessPrefix(tokens, localOffset, out string memberPrefix))
+                    {
+                        string owner = GetOwnerBeforeDot(memberPrefix);
+                        if (!string.IsNullOrEmpty(owner) && !local.Aliases.ContainsKey(owner))
+                            CollectAliasesFromTokens(tokens, localOffset, local);
+
+                        result.Context = CompletionContext.MemberAccess;
+                        result.Prefix = memberPrefix;
+                        result.Items = BuildItems(CompletionContext.MemberAccess, memberPrefix, null, local, catalog, settings, connInfo);
+                        result.Items = FilterAndSort(result.Items, memberPrefix, settings, connInfo, null);
+                        result.ReplaceStartOffset = ComputeReplaceStartOffset(batchStart, localOffset, memberPrefix, null, tokens);
+                        result.ReplaceEndOffset = caretOffset;
+                        return result;
+                    }
+
+                    int caretTokenIndex = FindTokenIndexForPrefix(tokens, localOffset);
                     if (caretTokenIndex >= 0 && IsAtLineStartTypingKeyword(tokens, localOffset, caretTokenIndex))
                     {
                         prefix = ExtractPrefix(tokens, localOffset);
@@ -303,47 +318,317 @@ namespace AxialSqlTools
             }
 
             /// <summary>收集光标所在语句的 FROM 别名映射。</summary>
-            private void CollectAliases(TSqlScript script, int localOffset, LocalSymbols local)
+            private void CollectAliases(TSqlScript script, int localOffset, LocalSymbols local, List<TSqlParserToken> tokens)
             {
                 local.Aliases.Clear();
-                if (script == null) return;
-
-                foreach (var batch in script.Batches)
+                if (script != null)
                 {
-                    foreach (var stmt in batch.Statements)
+                    TSqlStatement target = null;
+                    int bestStart = -1;
+                    foreach (var batch in script.Batches)
                     {
-                        var from = GetFromClause(stmt);
-                        if (from == null) continue;
+                        foreach (var stmt in batch.Statements)
+                        {
+                            if (GetFromClause(stmt) == null) continue;
+                            if (stmt.StartOffset > localOffset) continue;
+                            if (stmt.StartOffset >= bestStart)
+                            {
+                                bestStart = stmt.StartOffset;
+                                target = stmt;
+                            }
+                        }
+                    }
 
-                        // 仅收集覆盖光标位置的语句（近似：token 区间）
-                        if (!StatementCoversOffset(stmt, localOffset)) continue;
-
+                    if (target != null)
+                    {
+                        var from = GetFromClause(target);
                         foreach (var tr in from.TableReferences ?? Enumerable.Empty<TableReference>())
                         {
                             CollectFromClause(tr, local);
                         }
                     }
                 }
+
+                if (tokens != null)
+                    CollectAliasesFromTokens(tokens, localOffset, local);
             }
 
-            private bool StatementCoversOffset(TSqlStatement stmt, int localOffset)
+            /// <summary>定位当前 SELECT 对应的 FROM（允许 FROM 在光标之后）。</summary>
+            private static int FindFromClauseTokenIndex(List<TSqlParserToken> tokens, int localOffset)
             {
-                try
+                int selectIdx = -1;
+                for (int i = 0; i < tokens.Count; i++)
                 {
-                    return localOffset >= stmt.StartOffset && localOffset <= stmt.StartOffset + stmt.FragmentLength + 1;
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset > localOffset) break;
+                    if (string.Equals(t.Text, "SELECT", StringComparison.OrdinalIgnoreCase))
+                        selectIdx = i;
                 }
-                catch
+                if (selectIdx >= 0)
                 {
-                    return true;
+                    for (int i = selectIdx + 1; i < tokens.Count; i++)
+                    {
+                        var t = tokens[i];
+                        if (t == null || IsInsignificantToken(t)) continue;
+                        string kw = t.Text?.ToUpperInvariant();
+                        if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
+                            || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT")
+                            return -1;
+                        if (string.Equals(t.Text, "FROM", StringComparison.OrdinalIgnoreCase))
+                            return i;
+                    }
                 }
+                int lastFrom = -1;
+                for (int i = 0; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t != null && t.Offset <= localOffset
+                        && string.Equals(t.Text, "FROM", StringComparison.OrdinalIgnoreCase))
+                        lastFrom = i;
+                }
+                return lastFrom;
+            }
+
+            private static int FindFromClauseScanEnd(List<TSqlParserToken> tokens, int fromIdx)
+            {
+                for (int i = fromIdx + 1; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    string kw = t.Text?.ToUpperInvariant();
+                    if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
+                        || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT"
+                        || kw == "JOIN" || kw == "INNER" || kw == "LEFT" || kw == "RIGHT"
+                        || kw == "FULL" || kw == "CROSS" || kw == "OUTER" || kw == ";")
+                    {
+                        return t.Offset;
+                    }
+                }
+                for (int i = tokens.Count - 1; i >= 0; i--)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    return t.Offset + t.Text.Length;
+                }
+                return int.MaxValue;
+            }
+
+            /// <summary>ScriptDom 未解析出别名时，从 FROM…WHERE 区间 token 推断（支持 [db]..[table] alias）。</summary>
+            private void CollectAliasesFromTokens(List<TSqlParserToken> tokens, int localOffset, LocalSymbols local)
+            {
+                int fromIdx = FindFromClauseTokenIndex(tokens, localOffset);
+                if (fromIdx < 0) return;
+                int scanEnd = FindFromClauseScanEnd(tokens, fromIdx);
+
+                var names = new List<string>();
+                for (int i = fromIdx + 1; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset >= scanEnd) break;
+                    string kw = t.Text?.ToUpperInvariant();
+                    if (kw == "WHERE" || kw == "JOIN" || kw == "INNER" || kw == "LEFT" || kw == "RIGHT"
+                        || kw == "FULL" || kw == "CROSS" || kw == "OUTER" || kw == "GROUP" || kw == "ORDER"
+                        || kw == "HAVING" || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT")
+                    {
+                        break;
+                    }
+                    if (t.TokenType == TSqlTokenType.Dot) continue;
+                    if (IsWordLikeToken(t) || IsPartialObjectNameToken(t) || IsIdentifierLike(t))
+                        names.Add(UnbracketIdentifier(t.Text));
+                }
+
+                if (names.Count < 2) return;
+
+                string alias = names[names.Count - 1];
+                if (IsSqlTableKeyword(alias)) return;
+
+                var tref = TryBuildTableRefFromAliasNames(names, tokens, fromIdx, scanEnd);
+                if (tref == null || string.IsNullOrEmpty(tref.Name)) return;
+                if (IsSqlTableKeyword(tref.Name)) return;
+
+                MergeAlias(local, alias, tref);
+                MergeAlias(local, tref.Name, tref);
+                if (!string.IsNullOrEmpty(tref.Schema))
+                    MergeAlias(local, tref.Schema + "." + tref.Name, tref);
+                if (!string.IsNullOrEmpty(tref.Database))
+                    MergeAlias(local, tref.Database + "." + tref.Schema + "." + tref.Name, tref);
+            }
+
+            private static void MergeAlias(LocalSymbols local, string key, TableRef tref)
+            {
+                if (string.IsNullOrEmpty(key) || tref == null) return;
+                TableRef existing;
+                if (!local.Aliases.TryGetValue(key, out existing))
+                {
+                    local.Aliases[key] = tref;
+                    return;
+                }
+                if (string.IsNullOrEmpty(existing.Database) && !string.IsNullOrEmpty(tref.Database))
+                    local.Aliases[key] = tref;
+            }
+
+            private static TableRef TryBuildTableRefFromAliasNames(
+                List<string> names, List<TSqlParserToken> tokens, int fromIdx, int scanEnd)
+            {
+                if (names == null || names.Count < 2) return null;
+                string table = names[names.Count - 2];
+                string database;
+                string schema;
+                if (TryFindDoubleDotRef(tokens, fromIdx, scanEnd, table, out database, out schema))
+                {
+                    var tref = new TableRef { Database = database, Schema = schema ?? "dbo", Name = table };
+                    NormalizeTableRef(tref);
+                    return tref;
+                }
+                if (names.Count == 2)
+                {
+                    var tref = new TableRef { Name = names[0] };
+                    NormalizeTableRef(tref);
+                    return tref;
+                }
+                if (names.Count == 3)
+                {
+                    var tref = new TableRef { Schema = names[0], Name = table };
+                    NormalizeTableRef(tref);
+                    return tref;
+                }
+                var qualified = new TableRef
+                {
+                    Database = names[names.Count - 4],
+                    Schema = names[names.Count - 3],
+                    Name = table
+                };
+                NormalizeTableRef(qualified);
+                return qualified;
+            }
+
+            /// <summary>在 FROM 区间查找 db..[schema.]table 模式（.. 后可有显式 schema）。</summary>
+            private static bool TryFindDoubleDotRef(
+                List<TSqlParserToken> tokens, int fromIdx, int scanEnd, string tableName,
+                out string database, out string schema)
+            {
+                database = null;
+                schema = null;
+                for (int i = fromIdx + 1; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset >= scanEnd) break;
+                    if (!IsPartialObjectNameToken(t) && !IsIdentifierLike(t) && !IsWordLikeToken(t))
+                        continue;
+                    string dbCandidate = UnbracketIdentifier(t.Text);
+                    int j = i + 1;
+                    int dotCount = 0;
+                    while (j < tokens.Count)
+                    {
+                        var nt = tokens[j];
+                        if (nt == null || IsInsignificantToken(nt)) { j++; continue; }
+                        if (nt.Offset >= scanEnd) break;
+                        if (nt.TokenType == TSqlTokenType.Dot) { dotCount++; j++; continue; }
+                        if (dotCount < 2) break;
+                        string ident = UnbracketIdentifier(nt.Text);
+                        if (string.Equals(ident, tableName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            database = dbCandidate;
+                            schema = "dbo";
+                            return true;
+                        }
+                        schema = ident;
+                        j++;
+                        while (j < tokens.Count)
+                        {
+                            var nt2 = tokens[j];
+                            if (nt2 == null || IsInsignificantToken(nt2)) { j++; continue; }
+                            if (nt2.Offset >= scanEnd) break;
+                            if (nt2.TokenType == TSqlTokenType.Dot) { j++; continue; }
+                            if (string.Equals(UnbracketIdentifier(nt2.Text), tableName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                database = dbCandidate;
+                                return true;
+                            }
+                            break;
+                        }
+                        break;
+                    }
+                }
+                return false;
+            }
+
+            private static bool IsSqlTableKeyword(string name)
+            {
+                if (string.IsNullOrEmpty(name)) return true;
+                switch (name.ToUpperInvariant())
+                {
+                    case "AS":
+                    case "ON":
+                    case "WITH":
+                    case "NOLOCK":
+                    case "READUNCOMMITTED":
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+
+            private static void NormalizeTableRef(TableRef tref)
+            {
+                if (tref == null) return;
+                if (!string.IsNullOrEmpty(tref.Database) && string.IsNullOrEmpty(tref.Schema))
+                    tref.Schema = "dbo";
             }
 
             private FromClause GetFromClause(TSqlStatement stmt)
             {
-                if (stmt is SelectStatement ss) return (ss.QueryExpression as QuerySpecification)?.FromClause;
+                if (stmt is SelectStatement ss)
+                {
+                    return (ss.QueryExpression as QuerySpecification)?.FromClause;
+                }
                 if (stmt is UpdateStatement us) return us.UpdateSpecification?.FromClause;
                 if (stmt is DeleteStatement ds) return ds.DeleteSpecification?.FromClause;
                 return null;
+            }
+
+            private static TableRef BuildTableRef(SchemaObjectName sobj)
+            {
+                if (sobj == null) return null;
+                var tref = new TableRef
+                {
+                    Database = sobj.DatabaseIdentifier?.Value,
+                    Schema = sobj.SchemaIdentifier?.Value,
+                    Name = sobj.BaseIdentifier?.Value ?? GetLastIdentifier(sobj)
+                };
+                if (string.IsNullOrEmpty(tref.Name))
+                {
+                    int count = sobj.Identifiers?.Count ?? 0;
+                    if (count == 0) return null;
+                    if (count == 1)
+                    {
+                        tref.Name = sobj.Identifiers[0].Value;
+                    }
+                    else if (count == 2)
+                    {
+                        if (!string.IsNullOrEmpty(sobj.DatabaseIdentifier?.Value))
+                        {
+                            tref.Database = sobj.DatabaseIdentifier.Value;
+                            tref.Name = sobj.Identifiers[1].Value;
+                        }
+                        else
+                        {
+                            tref.Schema = sobj.Identifiers[0].Value;
+                            tref.Name = sobj.Identifiers[1].Value;
+                        }
+                    }
+                    else
+                    {
+                        tref.Database = sobj.Identifiers[0].Value;
+                        tref.Schema = sobj.Identifiers[1].Value;
+                        tref.Name = sobj.Identifiers[count - 1].Value;
+                    }
+                }
+                NormalizeTableRef(tref);
+                return string.IsNullOrEmpty(tref.Name) ? null : tref;
             }
 
             private void CollectFromClause(TableReference tableRef, LocalSymbols local)
@@ -353,53 +638,36 @@ namespace AxialSqlTools
                 if (tableRef is NamedTableReference ntr)
                 {
                     var alias = ntr.Alias?.Value;
-                    var sobj = ntr.SchemaObject;
-                    var tref = new TableRef
-                    {
-                        Database = GetIndex(sobj, 0),
-                        Schema = GetIndex(sobj, 1),
-                        Name = GetIndex(sobj, sobj?.Identifiers.Count - 1 ?? 0)
-                    };
-                    if (tref.Name == null)
-                    {
-                        // 单段时 Name 应取第一个
-                        tref.Name = GetIndex(sobj, 0);
-                        tref.Schema = null;
-                        tref.Database = null;
-                    }
+                    var tref = BuildTableRef(ntr.SchemaObject);
+                    if (tref == null || string.IsNullOrEmpty(tref.Name)) return;
                     if (!string.IsNullOrEmpty(alias))
                     {
                         local.Aliases[alias] = tref;
                     }
-                    // 同时登记表名本身作为别名（支持 "dbo.t." 和 "t."）
-                    if (!string.IsNullOrEmpty(tref.Name))
+                    local.Aliases[tref.Name] = tref;
+                    if (!string.IsNullOrEmpty(tref.Schema))
                     {
-                        local.Aliases[tref.Name] = tref;
-                        // 三段名时也登记全名
-                        if (!string.IsNullOrEmpty(tref.Database))
-                        {
-                            local.Aliases[tref.Database + "." + tref.Schema + "." + tref.Name] = tref;
-                        }
+                        local.Aliases[tref.Schema + "." + tref.Name] = tref;
                     }
-                }
-                else if (tableRef is JoinTableReference jtr)
-                {
-                    CollectFromClause(jtr.FirstTableReference, local);
-                    CollectFromClause(jtr.SecondTableReference, local);
+                    if (!string.IsNullOrEmpty(tref.Database))
+                    {
+                        local.Aliases[tref.Database + "." + tref.Schema + "." + tref.Name] = tref;
+                    }
                 }
                 else if (tableRef is QualifiedJoin qj)
                 {
                     CollectFromClause(qj.FirstTableReference, local);
                     CollectFromClause(qj.SecondTableReference, local);
                 }
-            }
-
-            private static string GetIndex(SchemaObjectName sobj, int fromEnd)
-            {
-                if (sobj?.Identifiers == null || sobj.Identifiers.Count == 0) return null;
-                int count = sobj.Identifiers.Count;
-                if (fromEnd < 0 || fromEnd >= count) return null;
-                return sobj.Identifiers[fromEnd].Value;
+                else if (tableRef is UnqualifiedJoin uj)
+                {
+                    CollectFromClause(uj.FirstTableReference, local);
+                    CollectFromClause(uj.SecondTableReference, local);
+                }
+                else if (tableRef is JoinParenthesisTableReference pj)
+                {
+                    CollectFromClause(pj.Join, local);
+                }
             }
 
             #endregion
@@ -416,6 +684,69 @@ namespace AxialSqlTools
                 public int PartialStartOffset = -1;
             }
 
+            private bool TryGetMemberAccessPrefix(List<TSqlParserToken> tokens, int localOffset, out string prefix)
+            {
+                prefix = null;
+                int dotIdx = -1;
+                for (int i = tokens.Count - 1; i >= 0; i--)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset >= localOffset) continue;
+                    if (t.TokenType == TSqlTokenType.Dot)
+                    {
+                        dotIdx = i;
+                        break;
+                    }
+                }
+                if (dotIdx < 0) return false;
+
+                var ownerTok = PreviousSignificantToken(tokens, dotIdx);
+                if (ownerTok == null || !IsWordLikeToken(ownerTok)) return false;
+
+                int dotEnd = tokens[dotIdx].Offset + tokens[dotIdx].Text.Length;
+                string colPart = ExtractPartialWordAfter(tokens, dotEnd, localOffset);
+                prefix = ownerTok.Text + "." + colPart;
+                return true;
+            }
+
+            private static string ExtractPartialWordAfter(List<TSqlParserToken> tokens, int startOffset, int endOffset)
+            {
+                foreach (var t in tokens)
+                {
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset < startOffset) continue;
+                    if (t.Offset >= endOffset) break;
+                    if (!IsWordLikeToken(t)) continue;
+                    if (t.Offset + t.Text.Length <= endOffset)
+                        return t.Text;
+                    return t.Text.Substring(0, Math.Max(0, endOffset - t.Offset));
+                }
+                return string.Empty;
+            }
+
+            private TableColumnInfo ResolveTableRef(
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                MetadataCatalog catalog,
+                TableRef tref)
+            {
+                if (tref == null || string.IsNullOrEmpty(tref.Name)) return null;
+                MetadataCatalog target = catalog;
+                if (connInfo != null && !string.IsNullOrWhiteSpace(tref.Database))
+                {
+                    if (catalog == null || !string.Equals(catalog.Database, tref.Database, StringComparison.OrdinalIgnoreCase))
+                    {
+                        target = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, tref.Database);
+                    }
+                }
+                if (target != null)
+                {
+                    var found = target.FindTableOrView(tref.Schema, tref.Name);
+                    if (found != null) return found;
+                }
+                return MetadataCatalogService.Instance.GetTableColumns(connInfo, tref.Database, tref.Schema, tref.Name);
+            }
+
             private CompletionContext GetContext(List<TSqlParserToken> tokens, int localOffset, FromObjectNameContext fromName, out string prefix)
             {
                 prefix = ExtractPrefix(tokens, localOffset);
@@ -426,6 +757,12 @@ namespace AxialSqlTools
                     return CompletionContext.FromClause;
                 }
 
+                if (TryGetMemberAccessPrefix(tokens, localOffset, out string memberPrefix))
+                {
+                    prefix = memberPrefix;
+                    return CompletionContext.MemberAccess;
+                }
+
                 // 找光标前最近的非空白 token
                 int caretTokenIndex = FindTokenIndexBefore(tokens, localOffset);
                 if (caretTokenIndex < 0)
@@ -434,18 +771,6 @@ namespace AxialSqlTools
                 }
 
                 var prev = PreviousSignificantToken(tokens, caretTokenIndex);
-
-                // 成员访问：前一个 token 是 "."
-                if (prev != null && prev.TokenType == TSqlTokenType.Dot)
-                {
-                    // "." 前的标识符
-                    var beforeDot = PreviousSignificantToken(tokens, tokens.IndexOf(prev));
-                    if (beforeDot != null && IsIdentifierLike(beforeDot))
-                    {
-                        return CompletionContext.MemberAccess;
-                    }
-                    return CompletionContext.LocalMemberAccess;
-                }
 
                 // @ 触发本地变量
                 if (prev != null && prev.TokenType == TSqlTokenType.Variable)
@@ -474,8 +799,14 @@ namespace AxialSqlTools
                     case "FROM":
                     case "JOIN":
                     case "APPLY":
-                    case ",":
                         return CompletionContext.FromClause;
+                    case ",":
+                        {
+                            var commaCtx = TryGetSelectBeforeFromContext(tokens, localOffset);
+                            if (commaCtx == CompletionContext.SelectElements)
+                                return CompletionContext.SelectElements;
+                            return CompletionContext.FromClause;
+                        }
                     case "WHERE":
                     case "ON":
                     case "HAVING":
@@ -534,7 +865,7 @@ namespace AxialSqlTools
             {
                 if (caretTokenIndex < 0) return false;
                 var cur = tokens[caretTokenIndex];
-                if (!IsIdentifierLike(cur)) return false;
+                if (!IsWordLikeToken(cur)) return false;
                 if (cur.Offset + cur.Text.Length < localOffset) return false;
 
                 int lineStartOffset = GetLineStartOffset(tokens, cur.Offset);
@@ -562,7 +893,7 @@ namespace AxialSqlTools
             {
                 if (caretTokenIndex < 0) return false;
                 var cur = tokens[caretTokenIndex];
-                if (!IsIdentifierLike(cur)) return false;
+                if (!IsWordLikeToken(cur)) return false;
                 if (cur.Offset + cur.Text.Length < localOffset) return false;
 
                 for (int i = 0; i < caretTokenIndex; i++)
@@ -689,13 +1020,13 @@ namespace AxialSqlTools
                     afterDot = true;
                     i--;
                 }
-                else if (cur != null && IsIdentifierLike(cur) && cur.Offset + cur.Text.Length >= localOffset)
+                else if (cur != null && IsPartialObjectNameToken(cur) && cur.Offset + cur.Text.Length >= localOffset)
                 {
                     partial = cur.Text.Substring(0, Math.Max(0, localOffset - cur.Offset));
                     ctx.PartialStartOffset = cur.Offset;
                     i--;
                 }
-                else if (cur != null && IsIdentifierLike(cur))
+                else if (cur != null && IsPartialObjectNameToken(cur))
                 {
                     parts.Insert(0, UnbracketIdentifier(cur.Text));
                     i--;
@@ -717,7 +1048,7 @@ namespace AxialSqlTools
                             i--;
                             while (i >= 0 && IsInsignificantToken(tokens[i])) i--;
                         }
-                        if (i >= 0 && IsIdentifierLike(tokens[i]))
+                        if (i >= 0 && IsPartialObjectNameToken(tokens[i]))
                         {
                             parts.Insert(0, UnbracketIdentifier(tokens[i].Text));
                             i--;
@@ -726,7 +1057,7 @@ namespace AxialSqlTools
                         continue;
                     }
 
-                    if (IsIdentifierLike(tokens[i]))
+                    if (IsPartialObjectNameToken(tokens[i]))
                     {
                         parts.Insert(0, UnbracketIdentifier(tokens[i].Text));
                         i--;
@@ -773,7 +1104,7 @@ namespace AxialSqlTools
                     if (idx >= 0)
                     {
                         var t = tokens[idx];
-                        if (t != null && IsIdentifierLike(t) && t.Offset + t.Text.Length >= localOffset)
+                        if (t != null && IsPartialObjectNameToken(t) && t.Offset + t.Text.Length >= localOffset)
                             return batchStart + t.Offset;
                     }
                 }
@@ -787,18 +1118,50 @@ namespace AxialSqlTools
                 return "[" + name + "]";
             }
 
-            private string BuildTableInsertText(FromObjectNameContext fromName, DatabaseObjectInfo obj, ScriptFactoryAccess.ConnectionInfo connInfo)
+            private static string FormatIdentifier(string name, IntelliSenseSettings settings)
             {
-                string inner = obj.BracketedName;
-                string tableOnly = "[" + obj.Name + "]";
+                if (string.IsNullOrEmpty(name)) return name;
+                string bare = UnbracketIdentifier(name);
+                if (settings != null && !settings.bracketIdentifiers)
+                    return bare;
+                return BracketIdent(bare);
+            }
+
+            private static string FormatObjectInsert(DatabaseObjectInfo obj, IntelliSenseSettings settings)
+            {
+                if (obj == null) return string.Empty;
+                if (settings != null && !settings.bracketIdentifiers)
+                    return obj.QualifiedName;
+                return obj.BracketedName;
+            }
+
+            private static string FormatColumnInsert(string colName, IntelliSenseSettings settings)
+            {
+                return FormatIdentifier(colName, settings);
+            }
+
+            private string BuildTableInsertText(FromObjectNameContext fromName, DatabaseObjectInfo obj, ScriptFactoryAccess.ConnectionInfo connInfo, IntelliSenseSettings settings)
+            {
+                string inner = FormatObjectInsert(obj, settings);
+                string tableOnly = FormatIdentifier(obj.Name, settings);
                 if (fromName == null || !fromName.InFromClause || obj == null)
                     return inner;
 
                 int segCount = fromName.Segments?.Count ?? 0;
+                bool linkedServerContext = segCount > 0 && connInfo != null && IsLinkedServerName(connInfo, fromName.Segments[0]);
 
                 // 文档中已有库/架构前缀（.. 或 . 后），只插入对象名部分
                 if (fromName.AfterDot || fromName.PartialStartOffset >= 0)
                 {
+                    if (linkedServerContext)
+                    {
+                        if (segCount == 1)
+                            return FormatIdentifier(obj.Name, settings);
+                        if (fromName.UsesDoubleDot)
+                            return tableOnly;
+                        if (segCount >= 2)
+                            return tableOnly;
+                    }
                     // db.. 语法省略默认架构 dbo，只补表名
                     if (fromName.UsesDoubleDot)
                         return tableOnly;
@@ -825,16 +1188,16 @@ namespace AxialSqlTools
                 bool isDb = IsDatabaseName(connInfo, dbOrSchema);
 
                 if (isDb && fromName.UsesDoubleDot)
-                    return BracketIdent(dbOrSchema) + ".." + tableOnly;
+                    return FormatIdentifier(dbOrSchema, settings) + ".." + tableOnly;
 
                 if (isDb && segCount >= 2)
-                    return BracketIdent(dbOrSchema) + "." + BracketIdent(fromName.Segments[1]) + "." + tableOnly;
+                    return FormatIdentifier(dbOrSchema, settings) + "." + FormatIdentifier(fromName.Segments[1], settings) + "." + tableOnly;
 
                 if (isDb)
-                    return BracketIdent(dbOrSchema) + "." + inner;
+                    return FormatIdentifier(dbOrSchema, settings) + "." + inner;
 
                 if (segCount == 1)
-                    return BracketIdent(dbOrSchema) + "." + tableOnly;
+                    return FormatIdentifier(dbOrSchema, settings) + "." + tableOnly;
 
                 return inner;
             }
@@ -848,6 +1211,7 @@ namespace AxialSqlTools
             private bool IsDatabaseName(ScriptFactoryAccess.ConnectionInfo connInfo, string name)
             {
                 if (connInfo == null || string.IsNullOrEmpty(name)) return false;
+                if (IsLinkedServerName(connInfo, name)) return false;
                 try
                 {
                     var dbs = ScriptFactoryAccess.GetDatabases(connInfo);
@@ -859,18 +1223,41 @@ namespace AxialSqlTools
                 }
             }
 
+            private bool IsLinkedServerName(ScriptFactoryAccess.ConnectionInfo connInfo, string name)
+            {
+                return MetadataCatalogService.Instance.IsLinkedServerName(connInfo, name);
+            }
+
+            private bool IsLinkedServerDatabase(ScriptFactoryAccess.ConnectionInfo connInfo, string linkedServer, string database)
+            {
+                return MetadataCatalogService.Instance.IsLinkedServerDatabase(connInfo, linkedServer, database);
+            }
+
             private string ExtractPrefix(List<TSqlParserToken> tokens, int localOffset)
             {
-                int idx = FindTokenIndexBefore(tokens, localOffset);
+                int idx = FindTokenIndexForPrefix(tokens, localOffset);
                 if (idx < 0) return string.Empty;
                 var t = tokens[idx];
                 if (t == null) return string.Empty;
 
-                if (IsIdentifierLike(t) && t.Offset + t.Text.Length >= localOffset)
+                if (IsWordLikeToken(t) && t.Offset + t.Text.Length >= localOffset)
                 {
-                    return t.Text ?? string.Empty;
+                    return t.Text.Substring(0, Math.Max(0, localOffset - t.Offset));
                 }
                 return string.Empty;
+            }
+
+            /// <summary>取光标处正在输入的 token（含 IN/IF 等被解析为关键字的词）。</summary>
+            private int FindTokenIndexForPrefix(List<TSqlParserToken> tokens, int localOffset)
+            {
+                for (int i = tokens.Count - 1; i >= 0; i--)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset <= localOffset && t.Offset + t.Text.Length >= localOffset)
+                        return i;
+                }
+                return FindTokenIndexBefore(tokens, localOffset);
             }
 
             private int FindTokenIndexBefore(List<TSqlParserToken> tokens, int offset)
@@ -878,7 +1265,7 @@ namespace AxialSqlTools
                 for (int i = tokens.Count - 1; i >= 0; i--)
                 {
                     var t = tokens[i];
-                    if (t == null) continue;
+                    if (t == null || IsInsignificantToken(t)) continue;
                     if (t.Offset < offset)
                     {
                         return i;
@@ -909,6 +1296,37 @@ namespace AxialSqlTools
                 if (t == null) return false;
                 return t.TokenType == TSqlTokenType.Identifier ||
                        t.TokenType == TSqlTokenType.QuotedIdentifier;
+            }
+
+            /// <summary>FROM 四段名/IP 中可能被解析为 Integer 的片段（如 192）。</summary>
+            private static bool IsPartialObjectNameToken(TSqlParserToken t)
+            {
+                if (t == null) return false;
+                if (IsIdentifierLike(t)) return true;
+                return t.TokenType == TSqlTokenType.Integer || t.TokenType == TSqlTokenType.Real;
+            }
+
+            /// <summary>光标处正在输入的词（含 IN/IF 等被 ScriptDom 解析为关键字的 token）。</summary>
+            private static bool IsWordLikeToken(TSqlParserToken t)
+            {
+                if (t == null || string.IsNullOrEmpty(t.Text) || IsInsignificantToken(t)) return false;
+                if (IsPartialObjectNameToken(t)) return true;
+                foreach (char c in t.Text)
+                {
+                    if (!char.IsLetter(c) && c != '_') return false;
+                }
+                return true;
+            }
+
+            private static bool IsNumericOrIpPrefix(string prefix)
+            {
+                if (string.IsNullOrEmpty(prefix) || !char.IsDigit(prefix[0])) return false;
+                for (int i = 0; i < prefix.Length; i++)
+                {
+                    char c = prefix[i];
+                    if (!char.IsDigit(c) && c != '.') return false;
+                }
+                return true;
             }
 
             private bool SeenKeywordAfter(List<TSqlParserToken> tokens, int fromIndex, string keyword)
@@ -989,14 +1407,15 @@ namespace AxialSqlTools
                         {
                             AddKeywords(items, SelectClauseKeywords);
                         }
-                        AddColumnsAndFunctions(items, catalog, local, settings);
+                        AddColumnsAndFunctions(items, catalog, local, settings, connInfo);
                         break;
 
                     case CompletionContext.WhereClause:
                     case CompletionContext.OrderByGroupBy:
                     case CompletionContext.UpdateSet:
-                        AddColumnsFromFromAliases(items, catalog, local, settings);
-                        if (settings.includeKeywords) AddKeywords(items, OperatorKeywords);
+                        AddColumnsFromFromAliases(items, catalog, local, settings, connInfo);
+                        if (settings.includeKeywords && !string.IsNullOrEmpty(prefix))
+                            AddKeywords(items, OperatorKeywords);
                         break;
 
                     case CompletionContext.AfterExec:
@@ -1004,7 +1423,7 @@ namespace AxialSqlTools
                         break;
 
                     case CompletionContext.MemberAccess:
-                        AddMemberColumns(items, prefix, catalog, local, settings);
+                        AddMemberColumns(items, prefix, catalog, local, settings, connInfo);
                         break;
 
                     case CompletionContext.LocalMemberAccess:
@@ -1016,7 +1435,7 @@ namespace AxialSqlTools
                         break;
 
                     case CompletionContext.AfterUse:
-                        AddDatabases(items, connInfo);
+                        AddDatabases(items, connInfo, settings);
                         break;
                 }
 
@@ -1033,21 +1452,77 @@ namespace AxialSqlTools
                 if (fromName == null || !fromName.InFromClause)
                 {
                     AddTablesViewsAndRoutines(items, catalog, settings, includeTableFunctions: true);
-                    AddDatabases(items, connInfo);
+                    AddDatabases(items, connInfo, settings);
+                    AddLinkedServers(items, connInfo, settings);
                     return;
                 }
 
                 int segCount = fromName.Segments?.Count ?? 0;
+                if (segCount > 0 && IsLinkedServerName(connInfo, fromName.Segments[0]))
+                {
+                    string linkedServer = fromName.Segments[0];
+                    if (fromName.AfterDot)
+                    {
+                        if (segCount == 1)
+                        {
+                            AddLinkedServerDatabases(items, connInfo, linkedServer, fromName, settings);
+                            return;
+                        }
+                        if (segCount == 2)
+                        {
+                            var remote = MetadataCatalogService.Instance.GetOrBuildLinkedCatalog(connInfo, linkedServer, fromName.Segments[1]);
+                            AddTablesInSchema(items, remote, null, settings, fromName, connInfo, includeSystemObjects: false);
+                            return;
+                        }
+                        if (segCount == 3)
+                        {
+                            var remote = MetadataCatalogService.Instance.GetOrBuildLinkedCatalog(connInfo, linkedServer, fromName.Segments[1]);
+                            AddTablesInSchema(items, remote, fromName.Segments[2], settings, fromName, connInfo, includeSystemObjects: false);
+                            return;
+                        }
+                    }
+                    if (segCount == 1)
+                    {
+                        AddLinkedServerDatabases(items, connInfo, linkedServer, fromName, settings);
+                        return;
+                    }
+                    if (segCount == 2 && IsLinkedServerDatabase(connInfo, linkedServer, fromName.Segments[1]))
+                    {
+                        var remote = MetadataCatalogService.Instance.GetOrBuildLinkedCatalog(connInfo, linkedServer, fromName.Segments[1]);
+                        AddTablesInSchema(items, remote, null, settings, fromName, connInfo, includeSystemObjects: false);
+                        return;
+                    }
+                }
+
                 bool qualified = segCount > 0 || fromName.AfterDot;
                 if (segCount == 0)
                 {
+                    if (IsNumericOrIpPrefix(fromName.Partial))
+                    {
+                        AddLinkedServers(items, connInfo, settings, fromName.Partial);
+                        return;
+                    }
                     AddTablesViewsAndRoutines(items, catalog, settings, includeTableFunctions: true, fromName: fromName, connInfo: connInfo);
-                    AddDatabases(items, connInfo);
+                    AddDatabases(items, connInfo, settings);
+                    AddLinkedServers(items, connInfo, settings);
+                    return;
+                }
+
+                if (segCount == 1 && fromName.AfterDot && IsNumericOrIpPrefix(fromName.Segments[0])
+                    && !IsLinkedServerName(connInfo, fromName.Segments[0]))
+                {
+                    AddLinkedServers(items, connInfo, settings, fromName.Segments[0]);
                     return;
                 }
 
                 if (fromName.AfterDot)
                 {
+                    if (segCount == 1 && fromName.UsesDoubleDot && IsDatabaseName(connInfo, fromName.Segments[0]))
+                    {
+                        var remote = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, fromName.Segments[0]);
+                        AddTablesInSchema(items, remote, "dbo", settings, fromName, connInfo, includeSystemObjects: false);
+                        return;
+                    }
                     if (segCount == 1 && IsDatabaseName(connInfo, fromName.Segments[0]))
                     {
                         var remote = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, fromName.Segments[0]);
@@ -1072,6 +1547,13 @@ namespace AxialSqlTools
                     }
                 }
 
+                if (segCount == 1 && fromName.UsesDoubleDot && IsDatabaseName(connInfo, fromName.Segments[0]))
+                {
+                    var remote = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, fromName.Segments[0]);
+                    AddTablesInSchema(items, remote, "dbo", settings, fromName, connInfo, includeSystemObjects: false);
+                    return;
+                }
+
                 if (segCount == 1 && IsDatabaseName(connInfo, fromName.Segments[0]))
                 {
                     var remote = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, fromName.Segments[0]);
@@ -1094,7 +1576,7 @@ namespace AxialSqlTools
 
                 AddTablesViewsAndRoutines(items, catalog, settings, includeTableFunctions: true, fromName: fromName, connInfo: connInfo);
                 if (!qualified)
-                    AddDatabases(items, connInfo);
+                    AddDatabases(items, connInfo, settings);
             }
 
             private void AddSchemasForDatabase(List<CompletionItem> items, ScriptFactoryAccess.ConnectionInfo connInfo, string database)
@@ -1119,20 +1601,23 @@ namespace AxialSqlTools
             private void AddTablesInSchema(List<CompletionItem> items, MetadataCatalog catalog, string schema, IntelliSenseSettings settings, FromObjectNameContext fromName, ScriptFactoryAccess.ConnectionInfo connInfo, bool includeSystemObjects)
             {
                 if (catalog == null) return;
+                bool tableNameOnly = fromName != null && fromName.InFromClause && fromName.UsesDoubleDot;
                 foreach (var t in catalog.Tables)
                 {
                     if (string.IsNullOrEmpty(schema) || string.Equals(t.Schema, schema, StringComparison.OrdinalIgnoreCase))
                     {
-                        string insert = BuildTableInsertText(fromName, t, connInfo);
-                        items.Add(new CompletionItem(t.QualifiedName, insert, CompletionKind.Table, BuildTableDescription(t)));
+                        string insert = BuildTableInsertText(fromName, t, connInfo, settings);
+                        string display = tableNameOnly ? t.Name : t.QualifiedName;
+                        items.Add(new CompletionItem(display, insert, CompletionKind.Table, BuildTableDescription(t)));
                     }
                 }
                 foreach (var v in catalog.Views)
                 {
                     if (string.IsNullOrEmpty(schema) || string.Equals(v.Schema, schema, StringComparison.OrdinalIgnoreCase))
                     {
-                        string insert = BuildTableInsertText(fromName, v, connInfo);
-                        items.Add(new CompletionItem(v.QualifiedName, insert, CompletionKind.View, BuildTableDescription(v)));
+                        string insert = BuildTableInsertText(fromName, v, connInfo, settings);
+                        string display = tableNameOnly ? v.Name : v.QualifiedName;
+                        items.Add(new CompletionItem(display, insert, CompletionKind.View, BuildTableDescription(v)));
                     }
                 }
                 if (includeSystemObjects && settings.includeSystemObjects && string.IsNullOrEmpty(schema))
@@ -1177,13 +1662,13 @@ namespace AxialSqlTools
                 if (catalog == null) return;
                 foreach (var s in catalog.Synonyms)
                 {
-                    items.Add(new CompletionItem(s.QualifiedName, s.BracketedName, CompletionKind.Synonym, "同义词"));
+                    items.Add(new CompletionItem(s.QualifiedName, FormatObjectInsert(s, settings), CompletionKind.Synonym, "同义词"));
                 }
                 if (includeTableFunctions)
                 {
                     foreach (var f in catalog.TableFunctions)
                     {
-                        string insert = fromName != null ? BuildTableInsertText(fromName, f, connInfo) : f.BracketedName;
+                        string insert = fromName != null ? BuildTableInsertText(fromName, f, connInfo, settings) : FormatObjectInsert(f, settings);
                         items.Add(new CompletionItem(f.QualifiedName, insert, CompletionKind.TableFunction,
                             BuildRoutineDescription(f)));
                     }
@@ -1193,15 +1678,20 @@ namespace AxialSqlTools
             private void AddTablesAndViews(List<CompletionItem> items, MetadataCatalog catalog, IntelliSenseSettings settings, FromObjectNameContext fromName = null, ScriptFactoryAccess.ConnectionInfo connInfo = null)
             {
                 if (catalog == null) return;
+                if (connInfo != null && !string.IsNullOrWhiteSpace(connInfo.Database)
+                    && !string.Equals(catalog.Database, connInfo.Database, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
                 foreach (var t in catalog.Tables)
                 {
-                    string insert = fromName != null ? BuildTableInsertText(fromName, t, connInfo) : t.BracketedName;
+                    string insert = fromName != null ? BuildTableInsertText(fromName, t, connInfo, settings) : FormatObjectInsert(t, settings);
                     items.Add(new CompletionItem(t.QualifiedName, insert, CompletionKind.Table,
                         BuildTableDescription(t)));
                 }
                 foreach (var v in catalog.Views)
                 {
-                    string insert = fromName != null ? BuildTableInsertText(fromName, v, connInfo) : v.BracketedName;
+                    string insert = fromName != null ? BuildTableInsertText(fromName, v, connInfo, settings) : FormatObjectInsert(v, settings);
                     items.Add(new CompletionItem(v.QualifiedName, insert, CompletionKind.View,
                         BuildTableDescription(v)));
                 }
@@ -1211,10 +1701,10 @@ namespace AxialSqlTools
                 }
             }
 
-            private void AddColumnsAndFunctions(List<CompletionItem> items, MetadataCatalog catalog, LocalSymbols local, IntelliSenseSettings settings)
+            private void AddColumnsAndFunctions(List<CompletionItem> items, MetadataCatalog catalog, LocalSymbols local, IntelliSenseSettings settings, ScriptFactoryAccess.ConnectionInfo connInfo)
             {
                 // 列：来自 FROM 别名表 + CTE + 临时表 + 表变量
-                AddColumnsFromFromAliases(items, catalog, local, settings);
+                AddColumnsFromFromAliases(items, catalog, local, settings, connInfo);
                 AddLocalColumns(items, local, settings);
                 // 星号
                 items.Add(new CompletionItem("*", "*", CompletionKind.Column, "所有列"));
@@ -1229,20 +1719,21 @@ namespace AxialSqlTools
                 }
             }
 
-            private void AddColumnsFromFromAliases(List<CompletionItem> items, MetadataCatalog catalog, LocalSymbols local, IntelliSenseSettings settings)
+            private void AddColumnsFromFromAliases(List<CompletionItem> items, MetadataCatalog catalog, LocalSymbols local, IntelliSenseSettings settings, ScriptFactoryAccess.ConnectionInfo connInfo)
             {
-                if (catalog == null) return;
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var kv in local.Aliases)
                 {
                     var tref = kv.Value;
-                    var tcol = catalog.FindTableOrView(tref.Schema, tref.Name);
-                    if (tcol != null)
+                    if (tref == null || string.IsNullOrEmpty(tref.Name)) continue;
+                    string key = (tref.Database ?? string.Empty) + "|" + (tref.Schema ?? string.Empty) + "|" + tref.Name;
+                    if (!seen.Add(key)) continue;
+                    var tcol = ResolveTableRef(connInfo, catalog, tref);
+                    if (tcol == null) continue;
+                    foreach (var col in tcol.Columns)
                     {
-                        foreach (var col in tcol.Columns)
-                        {
-                            items.Add(new CompletionItem(col.Name, col.BracketedName, CompletionKind.Column,
-                                BuildColumnDescription(col)));
-                        }
+                        items.Add(new CompletionItem(col.Name, FormatColumnInsert(col.Name, settings), CompletionKind.Column,
+                            BuildColumnDescription(col)));
                     }
                 }
             }
@@ -1253,7 +1744,7 @@ namespace AxialSqlTools
                 {
                     foreach (var col in cte.ColumnNames)
                     {
-                        items.Add(new CompletionItem(col, "[" + col + "]", CompletionKind.Column, "CTE 列: " + cte.Name));
+                        items.Add(new CompletionItem(col, FormatColumnInsert(col, settings), CompletionKind.Column, "CTE 列: " + cte.Name));
                     }
                     if (cte.ColumnNames.Count == 0)
                     {
@@ -1266,7 +1757,7 @@ namespace AxialSqlTools
                     {
                         foreach (var col in tt.ColumnNames)
                         {
-                            items.Add(new CompletionItem(col, "[" + col + "]", CompletionKind.Column, "临时表列: " + tt.Name));
+                            items.Add(new CompletionItem(col, FormatColumnInsert(col, settings), CompletionKind.Column, "临时表列: " + tt.Name));
                         }
                     }
                 }
@@ -1276,7 +1767,7 @@ namespace AxialSqlTools
                     {
                         foreach (var col in tv.ColumnNames)
                         {
-                            items.Add(new CompletionItem(col, "[" + col + "]", CompletionKind.Column, "表变量列: " + tv.Name));
+                            items.Add(new CompletionItem(col, FormatColumnInsert(col, settings), CompletionKind.Column, "表变量列: " + tv.Name));
                         }
                     }
                 }
@@ -1287,12 +1778,12 @@ namespace AxialSqlTools
                 if (catalog == null) return;
                 foreach (var p in catalog.Procedures)
                 {
-                    items.Add(new CompletionItem(p.QualifiedName, p.BracketedName, CompletionKind.Procedure,
+                    items.Add(new CompletionItem(p.QualifiedName, FormatObjectInsert(p, settings), CompletionKind.Procedure,
                         BuildRoutineDescription(p)));
                 }
                 foreach (var f in catalog.ScalarFunctions)
                 {
-                    items.Add(new CompletionItem(f.QualifiedName, f.BracketedName, CompletionKind.ScalarFunction,
+                    items.Add(new CompletionItem(f.QualifiedName, FormatObjectInsert(f, settings), CompletionKind.ScalarFunction,
                         BuildRoutineDescription(f)));
                 }
                 if (settings.includeSystemObjects)
@@ -1307,9 +1798,9 @@ namespace AxialSqlTools
                 }
             }
 
-            private void AddMemberColumns(List<CompletionItem> items, string prefix, MetadataCatalog catalog, LocalSymbols local, IntelliSenseSettings settings)
+            private void AddMemberColumns(List<CompletionItem> items, string prefix, MetadataCatalog catalog, LocalSymbols local, IntelliSenseSettings settings, ScriptFactoryAccess.ConnectionInfo connInfo)
             {
-                // prefix 形如 "alias." 或 "dbo." 或 "t."，取 "." 前的标识符
+                // prefix 形如 "alias." 或 "alias.col"，取 "." 前的标识符
                 string owner = GetOwnerBeforeDot(prefix);
                 if (string.IsNullOrEmpty(owner)) return;
 
@@ -1319,23 +1810,23 @@ namespace AxialSqlTools
                     return;
                 }
 
-                if (catalog == null) return;
-
                 // 别名映射
                 TableRef tref;
                 if (local.Aliases.TryGetValue(owner, out tref))
                 {
-                    var tcol = catalog.FindTableOrView(tref.Schema, tref.Name);
+                    var tcol = ResolveTableRef(connInfo, catalog, tref);
                     if (tcol != null)
                     {
                         foreach (var col in tcol.Columns)
                         {
-                            items.Add(new CompletionItem(col.Name, col.BracketedName, CompletionKind.Column,
+                            items.Add(new CompletionItem(col.Name, FormatColumnInsert(col.Name, settings), CompletionKind.Column,
                                 BuildColumnDescription(col)));
                         }
                     }
                     return;
                 }
+
+                if (catalog == null) return;
 
                 // schema 名 → 列出该 schema 下表
                 var tablesOfSchema = new List<(TableColumnInfo Obj, CompletionKind Kind)>();
@@ -1345,7 +1836,7 @@ namespace AxialSqlTools
                 {
                     foreach (var entry in tablesOfSchema)
                     {
-                        items.Add(new CompletionItem(entry.Obj.Name, entry.Obj.BracketedName, entry.Kind, BuildTableDescription(entry.Obj)));
+                        items.Add(new CompletionItem(entry.Obj.Name, FormatObjectInsert(entry.Obj, settings), entry.Kind, BuildTableDescription(entry.Obj)));
                     }
                     return;
                 }
@@ -1366,7 +1857,7 @@ namespace AxialSqlTools
                 {
                     foreach (var col in cte.ColumnNames)
                     {
-                        items.Add(new CompletionItem(col, "[" + col + "]", CompletionKind.Column, "CTE 列: " + cte.Name));
+                        items.Add(new CompletionItem(col, FormatColumnInsert(col, settings), CompletionKind.Column, "CTE 列: " + cte.Name));
                     }
                     return true;
                 }
@@ -1378,7 +1869,7 @@ namespace AxialSqlTools
                     {
                         foreach (var col in tt.ColumnNames)
                         {
-                            items.Add(new CompletionItem(col, "[" + col + "]", CompletionKind.Column, "临时表列: " + tt.Name));
+                            items.Add(new CompletionItem(col, FormatColumnInsert(col, settings), CompletionKind.Column, "临时表列: " + tt.Name));
                         }
                         return true;
                     }
@@ -1391,7 +1882,7 @@ namespace AxialSqlTools
                     {
                         foreach (var col in tv.ColumnNames)
                         {
-                            items.Add(new CompletionItem(col, "[" + col + "]", CompletionKind.Column, "表变量列: " + tv.Name));
+                            items.Add(new CompletionItem(col, FormatColumnInsert(col, settings), CompletionKind.Column, "表变量列: " + tv.Name));
                         }
                         return true;
                     }
@@ -1412,7 +1903,7 @@ namespace AxialSqlTools
                 }
             }
 
-            private void AddDatabases(List<CompletionItem> items, ScriptFactoryAccess.ConnectionInfo connInfo)
+            private void AddDatabases(List<CompletionItem> items, ScriptFactoryAccess.ConnectionInfo connInfo, IntelliSenseSettings settings)
             {
                 if (connInfo == null) return;
                 try
@@ -1420,13 +1911,47 @@ namespace AxialSqlTools
                     var dbs = ScriptFactoryAccess.GetDatabases(connInfo);
                     foreach (var db in dbs)
                     {
-                        items.Add(new CompletionItem(db, "[" + db + "]", CompletionKind.Database, "数据库"));
+                        items.Add(new CompletionItem(db, FormatIdentifier(db, settings), CompletionKind.Database, "数据库"));
                     }
                 }
                 catch
                 {
                     // 取库列表失败 → 静默
                 }
+            }
+
+            private void AddLinkedServers(List<CompletionItem> items, ScriptFactoryAccess.ConnectionInfo connInfo, IntelliSenseSettings settings, string prefixFilter = null)
+            {
+                if (connInfo == null) return;
+                foreach (var server in MetadataCatalogService.Instance.GetLinkedServers(connInfo))
+                {
+                    if (!string.IsNullOrEmpty(prefixFilter)
+                        && !server.StartsWith(prefixFilter, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    items.Add(new CompletionItem(server, FormatIdentifier(server, settings), CompletionKind.Database, "链接服务器"));
+                }
+            }
+
+            private void AddLinkedServerDatabases(
+                List<CompletionItem> items,
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string linkedServer,
+                FromObjectNameContext fromName,
+                IntelliSenseSettings settings)
+            {
+                if (connInfo == null || string.IsNullOrEmpty(linkedServer)) return;
+                foreach (var db in MetadataCatalogService.Instance.GetLinkedServerDatabases(connInfo, linkedServer))
+                {
+                    string insert = BuildLinkedServerDatabaseInsertText(fromName, db, settings);
+                    items.Add(new CompletionItem(db, insert, CompletionKind.Database, "链接服务器数据库 (" + linkedServer + ")"));
+                }
+            }
+
+            private string BuildLinkedServerDatabaseInsertText(FromObjectNameContext fromName, string database, IntelliSenseSettings settings)
+            {
+                return FormatIdentifier(database, settings);
             }
 
             private void AddSystemObjects(List<CompletionItem> items)
@@ -1487,7 +2012,9 @@ namespace AxialSqlTools
             {
                 switch (kind)
                 {
-                    case CompletionKind.Snippet: return -2;
+                    case CompletionKind.Column: return -3;
+                    case CompletionKind.Keyword: return -2;
+                    case CompletionKind.Snippet: return -1;
                     case CompletionKind.Table: return 0;
                     case CompletionKind.View: return 1;
                     case CompletionKind.Synonym: return 2;
@@ -1496,7 +2023,6 @@ namespace AxialSqlTools
                     case CompletionKind.Procedure: return 5;
                     case CompletionKind.ScalarFunction: return 6;
                     case CompletionKind.Database: return 8;
-                    case CompletionKind.Keyword: return 9;
                     default: return 10;
                 }
             }
@@ -1519,7 +2045,13 @@ namespace AxialSqlTools
             private static int GetMatchScore(CompletionItem item, string filterPrefix)
             {
                 if (string.IsNullOrEmpty(filterPrefix)) return 0;
-                string name = item?.DisplayText ?? string.Empty;
+                string displayText = item?.DisplayText ?? string.Empty;
+                if (IsNumericOrIpPrefix(filterPrefix))
+                {
+                    if (displayText.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 100;
+                    return 0;
+                }
+                string name = displayText;
                 if (item != null && item.Kind == CompletionKind.Snippet &&
                     !string.IsNullOrEmpty(item.SnippetPrefix))
                 {
@@ -1534,9 +2066,13 @@ namespace AxialSqlTools
 
                 if (name.Equals(filterPrefix, StringComparison.OrdinalIgnoreCase))
                 {
-                    return item != null && item.Kind == CompletionKind.Snippet ? 120 : 100;
+                    return item != null && item.Kind == CompletionKind.Snippet ? 110 : 100;
                 }
                 if (name.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 100;
+                // 片段/关键字/内建函数只做前缀匹配，避免 pr 命中 DATEPART 等缩写误匹配
+                if (item != null && (item.Kind == CompletionKind.Snippet || item.Kind == CompletionKind.Keyword
+                    || item.Kind == CompletionKind.ScalarFunction))
+                    return 0;
                 if (name.IndexOf(filterPrefix, StringComparison.OrdinalIgnoreCase) >= 0) return 80;
 
                 string collapsedName = CollapseForMatch(name);
@@ -1690,7 +2226,7 @@ namespace AxialSqlTools
             {
                 "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP",
                 "EXEC", "USE", "DECLARE", "SET", "IF", "BEGIN", "END", "TRUNCATE", "MERGE",
-                "GO"
+                "INNER JOIN", "GO"
             };
 
             public static readonly string[] CreateObjectKeywords =

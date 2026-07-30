@@ -386,6 +386,13 @@ namespace AxialSqlTools.IntelliSense
                 return;
             }
 
+            // 自动触发时，当前行光标前无有效输入则不弹框（Ctrl+Space 仍可手动触发）
+            if (!force && IsCaretAtEmptyCompletionContext())
+            {
+                CloseSession();
+                return;
+            }
+
             try
             {
                 string text = GetFullText();
@@ -404,12 +411,6 @@ namespace AxialSqlTools.IntelliSense
                 var result = _engine.GetCompletion(text, caret, catalog, settings, connInfo);
                 _replaceStartOffset = result.ReplaceStartOffset;
                 _replaceEndOffset = result.ReplaceEndOffset;
-
-                if (editingRefresh && string.IsNullOrEmpty(result.Prefix) && IsCaretAtEmptyCompletionContext())
-                {
-                    CloseSession();
-                    return;
-                }
 
                 if (result.IsEmpty)
                 {
@@ -717,7 +718,7 @@ namespace AxialSqlTools.IntelliSense
         {
             try
             {
-                return ScriptFactoryAccess.GetCurrentConnectionInfo();
+                return ScriptFactoryAccess.GetCurrentConnectionInfoForEditor(_textView);
             }
             catch
             {

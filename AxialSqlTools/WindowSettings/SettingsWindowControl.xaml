@@ -179,6 +179,12 @@
                                       Content="包含系统对象（sys.*, INFORMATION_SCHEMA.*, sp_*）"/>
                             <TextBlock Margin="22,2,0,0" Opacity="0.75" FontSize="11" Text="生效：实时"/>
                         </StackPanel>
+                        <StackPanel Margin="5,0,5,4"
+                                    IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
+                            <CheckBox x:Name="IntelliSenseBracketIdentifiers"
+                                      Content="补全插入文本使用方括号 []"/>
+                            <TextBlock Margin="22,2,0,0" Opacity="0.75" FontSize="11" Text="生效：实时"/>
+                        </StackPanel>
                         <StackPanel Margin="5,8,5,4"
                                     IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
                             <StackPanel Orientation="Horizontal">

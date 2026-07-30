@@ -472,6 +472,7 @@ as select 1;
                 IntelliSenseHoverTooltip.IsChecked = isettings.hoverTooltipEnabled;
                 IntelliSenseIncludeKeywords.IsChecked = isettings.includeKeywords;
                 IntelliSenseIncludeSystemObjects.IsChecked = isettings.includeSystemObjects;
+                IntelliSenseBracketIdentifiers.IsChecked = isettings.bracketIdentifiers;
                 IntelliSenseAutoTriggerDelay.Text = isettings.autoTriggerDelayMs.ToString();
                 IntelliSenseHoverDelay.Text = isettings.hoverTooltipDelayMs.ToString();
                 IntelliSenseMaxItems.Text = isettings.maxCompletionItems.ToString();
@@ -498,6 +499,7 @@ as select 1;
                 hoverTooltipEnabled = IntelliSenseHoverTooltip.IsChecked.GetValueOrDefault(),
                 includeKeywords = IntelliSenseIncludeKeywords.IsChecked.GetValueOrDefault(),
                 includeSystemObjects = IntelliSenseIncludeSystemObjects.IsChecked.GetValueOrDefault(),
+                bracketIdentifiers = IntelliSenseBracketIdentifiers.IsChecked.GetValueOrDefault(),
                 autoTriggerDelayMs = int.TryParse(IntelliSenseAutoTriggerDelay.Text, out var d1) ? d1 : 200,
                 hoverTooltipDelayMs = int.TryParse(IntelliSenseHoverDelay.Text, out var d2) ? d2 : 500,
                 maxCompletionItems = int.TryParse(IntelliSenseMaxItems.Text, out var mi) ? mi : 50
