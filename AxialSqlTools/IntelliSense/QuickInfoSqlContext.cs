@@ -1,0 +1,544 @@
+using Microsoft.SqlServer.TransactSql.ScriptDom;
+using System;
+using System.Collections.Generic;
+
+namespace AxialSqlTools.IntelliSense
+{
+    /// <summary>从光标位置解析悬停 token 与 FROM/JOIN 表上下文。</summary>
+    internal static class QuickInfoSqlContext
+    {
+        public sealed class HoverToken
+        {
+            public string Name;
+            public string Owner;
+            public bool HasOwner;
+        }
+
+        private sealed class TableSegment
+        {
+            public TableRef Ref;
+            public string Alias;
+            public int StartOffset;
+            public int EndOffset;
+            public HashSet<string> NameTokens;
+        }
+
+        public static HoverToken TryGetHoverToken(List<TSqlParserToken> tokens, int offset)
+        {
+            if (tokens == null || tokens.Count == 0) return null;
+            int idx = FindTokenIndexAt(tokens, offset);
+            if (idx < 0) return null;
+            var tok = tokens[idx];
+            if (!IsHoverableToken(tok))
+            {
+                tok = PreviousHoverableToken(tokens, idx);
+                if (tok == null) return null;
+                idx = IndexOfToken(tokens, tok);
+            }
+            string name = Unbracket(tok.Text);
+            if (string.IsNullOrEmpty(name)) return null;
+            var result = new HoverToken { Name = name };
+            var prev = PreviousSignificant(tokens, idx);
+            if (prev != null && prev.TokenType == TSqlTokenType.Dot)
+            {
+                var ownerTok = PreviousSignificant(tokens, IndexOfToken(tokens, prev));
+                // db..table：owner 是第二个点，再往前取库名不当作列所属别名
+                if (ownerTok != null && ownerTok.TokenType == TSqlTokenType.Dot)
+                    return result;
+                if (ownerTok != null && IsWordLike(ownerTok))
+                {
+                    result.Owner = Unbracket(ownerTok.Text);
+                    result.HasOwner = !string.IsNullOrEmpty(result.Owner);
+                }
+            }
+            return result;
+        }
+
+        /// <summary>解析光标所在（或最近）FROM/JOIN 表引用；优先命中悬停位置所在表段。</summary>
+        public static TableRef TryResolveFromTable(List<TSqlParserToken> tokens, int offset)
+        {
+            var segments = CollectTableSegments(tokens, offset);
+            if (segments == null || segments.Count == 0) return null;
+            foreach (var seg in segments)
+            {
+                if (offset >= seg.StartOffset && offset <= seg.EndOffset)
+                    return seg.Ref;
+            }
+            return segments[0].Ref;
+        }
+
+        /// <summary>按悬停词在 FROM/JOIN 中定位表（支持 db.schema.table / db..table / JOIN 表）。</summary>
+        public static TableRef TryResolveTableByHoverName(List<TSqlParserToken> tokens, int offset, string hoverName)
+        {
+            if (string.IsNullOrEmpty(hoverName)) return null;
+            var segments = CollectTableSegments(tokens, offset);
+            if (segments == null || segments.Count == 0) return null;
+            foreach (var seg in segments)
+            {
+                if (offset >= seg.StartOffset && offset <= seg.EndOffset)
+                {
+                    if (seg.NameTokens != null && seg.NameTokens.Contains(hoverName))
+                        return seg.Ref;
+                    if (string.Equals(seg.Ref?.Name, hoverName, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(seg.Alias, hoverName, StringComparison.OrdinalIgnoreCase))
+                        return seg.Ref;
+                }
+            }
+            foreach (var seg in segments)
+            {
+                if (string.Equals(seg.Ref?.Name, hoverName, StringComparison.OrdinalIgnoreCase))
+                    return seg.Ref;
+                if (string.Equals(seg.Alias, hoverName, StringComparison.OrdinalIgnoreCase))
+                    return seg.Ref;
+            }
+            return null;
+        }
+
+        /// <summary>按别名解析表引用（含 JOIN 别名）。</summary>
+        public static TableRef TryResolveAlias(List<TSqlParserToken> tokens, int offset, string alias)
+        {
+            if (string.IsNullOrEmpty(alias)) return null;
+            var segments = CollectTableSegments(tokens, offset);
+            if (segments == null) return null;
+            foreach (var seg in segments)
+            {
+                if (string.Equals(seg.Alias, alias, StringComparison.OrdinalIgnoreCase))
+                    return seg.Ref;
+                if (string.Equals(seg.Ref?.Name, alias, StringComparison.OrdinalIgnoreCase))
+                    return seg.Ref;
+            }
+            return null;
+        }
+
+        private static List<TableSegment> CollectTableSegments(List<TSqlParserToken> tokens, int offset)
+        {
+            int fromIdx = FindFromClauseTokenIndex(tokens, offset);
+            if (fromIdx < 0) return null;
+            int regionEnd = FindFromRegionEnd(tokens, fromIdx);
+            var segments = new List<TableSegment>();
+            int i = fromIdx + 1;
+            while (i < tokens.Count)
+            {
+                while (i < tokens.Count)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificant(t)) { i++; continue; }
+                    if (t.Offset >= regionEnd) return segments;
+                    string kw = t.Text?.ToUpperInvariant();
+                    if (IsJoinKeyword(kw)) { i++; continue; }
+                    if (kw == "ON")
+                    {
+                        i++;
+                        while (i < tokens.Count)
+                        {
+                            var ot = tokens[i];
+                            if (ot == null || IsInsignificant(ot)) { i++; continue; }
+                            if (ot.Offset >= regionEnd) return segments;
+                            string okw = ot.Text?.ToUpperInvariant();
+                            if (IsJoinKeyword(okw)) break;
+                            i++;
+                        }
+                        continue;
+                    }
+                    if (kw == "AS") { i++; continue; }
+                    break;
+                }
+                if (i >= tokens.Count) break;
+
+                int segStartIdx = i;
+                int segStartOffset = tokens[i]?.Offset ?? 0;
+                var names = new List<string>();
+                var nameSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                while (i < tokens.Count)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificant(t)) { i++; continue; }
+                    if (t.Offset >= regionEnd) break;
+                    string kw = t.Text?.ToUpperInvariant();
+                    if (IsJoinKeyword(kw) || kw == "ON" || kw == "AS") break;
+                    if (t.TokenType == TSqlTokenType.Dot) { i++; continue; }
+                    if (IsWordLike(t) || IsPartialObjectName(t))
+                    {
+                        string n = Unbracket(t.Text);
+                        names.Add(n);
+                        nameSet.Add(n);
+                    }
+                    i++;
+                }
+                int segEndOffset = i < tokens.Count && tokens[i] != null
+                    ? tokens[i].Offset
+                    : regionEnd;
+                if (i > segStartIdx)
+                {
+                    var lastTok = tokens[i - 1];
+                    if (lastTok != null && !IsInsignificant(lastTok))
+                        segEndOffset = Math.Max(segEndOffset, lastTok.Offset + lastTok.Text.Length);
+                }
+
+                var parsed = ParseTableSegment(names, tokens, segStartIdx, segEndOffset);
+                if (parsed != null)
+                {
+                    segments.Add(new TableSegment
+                    {
+                        Ref = parsed.Item1,
+                        Alias = parsed.Item2,
+                        StartOffset = segStartOffset,
+                        EndOffset = segEndOffset,
+                        NameTokens = nameSet
+                    });
+                }
+            }
+            return segments;
+        }
+
+        private static Tuple<TableRef, string> ParseTableSegment(
+            List<string> names, List<TSqlParserToken> tokens, int segStartIdx, int scanEnd)
+        {
+            if (names == null || names.Count == 0) return null;
+            int fromIdx = Math.Max(0, segStartIdx - 1);
+
+            if (names.Count == 1)
+            {
+                if (IsSqlKeyword(names[0])) return null;
+                var bare = new TableRef { Name = names[0] };
+                NormalizeTableRef(bare);
+                return Tuple.Create(bare, (string)null);
+            }
+
+            // db.schema.table alias → 4 段
+            if (names.Count >= 4)
+            {
+                var tref = new TableRef
+                {
+                    Database = names[names.Count - 4],
+                    Schema = names[names.Count - 3],
+                    Name = names[names.Count - 2]
+                };
+                NormalizeTableRef(tref);
+                string alias4 = names[names.Count - 1];
+                if (IsSqlKeyword(alias4)) alias4 = null;
+                return Tuple.Create(tref, alias4);
+            }
+
+            // db.schema.table（无别名）或 schema.table alias 或 db..table alias
+            if (names.Count == 3)
+            {
+                string database;
+                string schema;
+                if (TryFindDoubleDotRef(tokens, fromIdx, scanEnd, names[1], out database, out schema))
+                {
+                    var tref = new TableRef { Database = database, Schema = schema ?? "dbo", Name = names[1] };
+                    NormalizeTableRef(tref);
+                    string alias = IsSqlKeyword(names[2]) ? null : names[2];
+                    return Tuple.Create(tref, alias);
+                }
+                // db.schema.table（第三段是表名，无别名）—— 中间段常为 dbo
+                if (IsLikelySchemaName(names[1]))
+                {
+                    var threePart = new TableRef
+                    {
+                        Database = names[0],
+                        Schema = names[1],
+                        Name = names[2]
+                    };
+                    NormalizeTableRef(threePart);
+                    return Tuple.Create(threePart, (string)null);
+                }
+                // schema.table alias
+                var schemaAlias = new TableRef { Schema = names[0], Name = names[1] };
+                NormalizeTableRef(schemaAlias);
+                string a = IsSqlKeyword(names[2]) ? null : names[2];
+                return Tuple.Create(schemaAlias, a);
+            }
+
+            // db..table 或 schema.table 或 table alias
+            if (names.Count == 2)
+            {
+                string database;
+                string schema;
+                if (TryFindDoubleDotRef(tokens, fromIdx, scanEnd, names[1], out database, out schema))
+                {
+                    var tref = new TableRef { Database = database, Schema = schema ?? "dbo", Name = names[1] };
+                    NormalizeTableRef(tref);
+                    return Tuple.Create(tref, (string)null);
+                }
+                if (TryFindDoubleDotRef(tokens, fromIdx, scanEnd, names[0], out database, out schema))
+                {
+                    var tref = new TableRef { Database = database, Schema = schema ?? "dbo", Name = names[0] };
+                    NormalizeTableRef(tref);
+                    string alias = IsSqlKeyword(names[1]) ? null : names[1];
+                    return Tuple.Create(tref, alias);
+                }
+                // table alias（无限定）
+                if (!IsLikelySchemaName(names[0]) || IsSqlKeyword(names[1]))
+                {
+                    // 更常见：table alias
+                    var tableAlias = new TableRef { Name = names[0] };
+                    NormalizeTableRef(tableAlias);
+                    string alias = IsSqlKeyword(names[1]) ? null : names[1];
+                    return Tuple.Create(tableAlias, alias);
+                }
+                var schemaTable = new TableRef { Schema = names[0], Name = names[1] };
+                NormalizeTableRef(schemaTable);
+                return Tuple.Create(schemaTable, (string)null);
+            }
+
+            return null;
+        }
+
+        private static bool IsLikelySchemaName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            switch (name.ToUpperInvariant())
+            {
+                case "DBO":
+                case "SYS":
+                case "GUEST":
+                case "INFORMATION_SCHEMA":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static int FindFromClauseTokenIndex(List<TSqlParserToken> tokens, int offset)
+        {
+            int selectIdx = -1;
+            for (int i = 0; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (t == null || IsInsignificant(t)) continue;
+                if (t.Offset > offset) break;
+                if (string.Equals(t.Text, "SELECT", StringComparison.OrdinalIgnoreCase))
+                    selectIdx = i;
+            }
+            if (selectIdx >= 0)
+            {
+                for (int i = selectIdx + 1; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificant(t)) continue;
+                    string kw = t.Text?.ToUpperInvariant();
+                    if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
+                        || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT")
+                        return -1;
+                    if (string.Equals(t.Text, "FROM", StringComparison.OrdinalIgnoreCase))
+                        return i;
+                }
+            }
+            int lastFrom = -1;
+            for (int i = 0; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (t != null && t.Offset <= offset
+                    && string.Equals(t.Text, "FROM", StringComparison.OrdinalIgnoreCase))
+                    lastFrom = i;
+            }
+            return lastFrom;
+        }
+
+        private static int FindFromRegionEnd(List<TSqlParserToken> tokens, int fromIdx)
+        {
+            for (int i = fromIdx + 1; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (t == null || IsInsignificant(t)) continue;
+                string kw = t.Text?.ToUpperInvariant();
+                if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
+                    || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT" || kw == ";")
+                    return t.Offset;
+            }
+            for (int i = tokens.Count - 1; i >= 0; i--)
+            {
+                var t = tokens[i];
+                if (t == null || IsInsignificant(t)) continue;
+                return t.Offset + t.Text.Length;
+            }
+            return int.MaxValue;
+        }
+
+        private static bool IsJoinKeyword(string kw)
+        {
+            if (string.IsNullOrEmpty(kw)) return false;
+            switch (kw)
+            {
+                case "JOIN":
+                case "INNER":
+                case "LEFT":
+                case "RIGHT":
+                case "FULL":
+                case "CROSS":
+                case "OUTER":
+                case ",":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static bool TryFindDoubleDotRef(
+            List<TSqlParserToken> tokens, int fromIdx, int scanEnd, string tableName,
+            out string database, out string schema)
+        {
+            database = null;
+            schema = null;
+            for (int i = fromIdx + 1; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (t == null || IsInsignificant(t)) continue;
+                if (t.Offset >= scanEnd) break;
+                if (!IsPartialObjectName(t) && !IsWordLike(t)) continue;
+                string dbCandidate = Unbracket(t.Text);
+                int j = i + 1;
+                int dotCount = 0;
+                while (j < tokens.Count)
+                {
+                    var nt = tokens[j];
+                    if (nt == null || IsInsignificant(nt)) { j++; continue; }
+                    if (nt.Offset >= scanEnd) break;
+                    if (nt.TokenType == TSqlTokenType.Dot) { dotCount++; j++; continue; }
+                    if (dotCount < 2) break;
+                    string ident = Unbracket(nt.Text);
+                    if (string.Equals(ident, tableName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        database = dbCandidate;
+                        schema = "dbo";
+                        return true;
+                    }
+                    schema = ident;
+                    j++;
+                    while (j < tokens.Count)
+                    {
+                        var nt2 = tokens[j];
+                        if (nt2 == null || IsInsignificant(nt2)) { j++; continue; }
+                        if (nt2.Offset >= scanEnd) break;
+                        if (nt2.TokenType == TSqlTokenType.Dot) { j++; continue; }
+                        if (string.Equals(Unbracket(nt2.Text), tableName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            database = dbCandidate;
+                            return true;
+                        }
+                        break;
+                    }
+                    break;
+                }
+            }
+            return false;
+        }
+
+        private static void NormalizeTableRef(TableRef tref)
+        {
+            if (tref == null) return;
+            if (!string.IsNullOrEmpty(tref.Database) && string.IsNullOrEmpty(tref.Schema))
+                tref.Schema = "dbo";
+        }
+
+        private static bool IsSqlKeyword(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return true;
+            switch (name.ToUpperInvariant())
+            {
+                case "AS": case "ON": case "WITH": case "NOLOCK": case "READUNCOMMITTED":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static int FindTokenIndexAt(List<TSqlParserToken> tokens, int offset)
+        {
+            for (int i = 0; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (t == null || IsInsignificant(t)) continue;
+                if (offset >= t.Offset && offset <= t.Offset + t.Text.Length)
+                    return i;
+            }
+            for (int i = tokens.Count - 1; i >= 0; i--)
+            {
+                var t = tokens[i];
+                if (t == null || IsInsignificant(t)) continue;
+                if (t.Offset < offset) return i;
+            }
+            return -1;
+        }
+
+        private static int IndexOfToken(List<TSqlParserToken> tokens, TSqlParserToken token)
+        {
+            if (tokens == null || token == null) return -1;
+            for (int i = 0; i < tokens.Count; i++)
+            {
+                if (ReferenceEquals(tokens[i], token)) return i;
+            }
+            return -1;
+        }
+
+        private static TSqlParserToken PreviousSignificant(List<TSqlParserToken> tokens, int fromIndex)
+        {
+            for (int i = fromIndex - 1; i >= 0; i--)
+            {
+                var t = tokens[i];
+                if (t == null || IsInsignificant(t)) continue;
+                return t;
+            }
+            return null;
+        }
+
+        private static bool IsInsignificant(TSqlParserToken t)
+        {
+            if (t == null) return true;
+            var type = t.TokenType;
+            return type == TSqlTokenType.WhiteSpace ||
+                   type == TSqlTokenType.MultilineComment ||
+                   type == TSqlTokenType.SingleLineComment ||
+                   type == TSqlTokenType.EndOfFile;
+        }
+
+        private static bool IsHoverableToken(TSqlParserToken t)
+        {
+            return IsIdentifierToken(t) || IsWordLike(t);
+        }
+
+        private static TSqlParserToken PreviousHoverableToken(List<TSqlParserToken> tokens, int fromIndex)
+        {
+            for (int i = fromIndex - 1; i >= 0; i--)
+            {
+                var t = tokens[i];
+                if (t == null || IsInsignificant(t)) continue;
+                if (IsHoverableToken(t)) return t;
+                if (t.TokenType != TSqlTokenType.Dot) break;
+            }
+            return null;
+        }
+
+        private static bool IsIdentifierToken(TSqlParserToken t)
+        {
+            if (t == null) return false;
+            return t.TokenType == TSqlTokenType.Identifier || t.TokenType == TSqlTokenType.QuotedIdentifier;
+        }
+
+        private static bool IsPartialObjectName(TSqlParserToken t)
+        {
+            if (t == null) return false;
+            if (IsIdentifierToken(t)) return true;
+            return t.TokenType == TSqlTokenType.Integer || t.TokenType == TSqlTokenType.Real;
+        }
+
+        private static bool IsWordLike(TSqlParserToken t)
+        {
+            if (t == null || string.IsNullOrEmpty(t.Text) || IsInsignificant(t)) return false;
+            if (IsPartialObjectName(t)) return true;
+            foreach (char c in t.Text)
+            {
+                if (!char.IsLetter(c) && c != '_') return false;
+            }
+            return true;
+        }
+
+        private static string Unbracket(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return string.Empty;
+            return text.Trim('[', ']', '"');
+        }
+    }
+}
