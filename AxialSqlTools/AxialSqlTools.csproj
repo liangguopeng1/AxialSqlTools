@@ -170,6 +170,9 @@
       <DependentUpon>CompletionListWindow.xaml</DependentUpon>
     </Compile>
     <Compile Include="IntelliSense\QuickInfoProvider.cs" />
+    <Compile Include="IntelliSense\QuickInfoData.cs" />
+    <Compile Include="IntelliSense\QuickInfoDdlBuilder.cs" />
+    <Compile Include="IntelliSense\QuickInfoSqlContext.cs" />
     <Compile Include="IntelliSense\QuickInfoTooltip.cs" />
     <Compile Include="IntelliSense\IntelliSenseTextViewExtension.cs" />
     <Compile Include="IntelliSense\IntelliSenseDisableHelper.cs" />

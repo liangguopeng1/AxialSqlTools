@@ -1,47 +1,81 @@
 using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.OLE.Interop;
-using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.TextManager.Interop;
+using NLog;
 using System;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Windows.Forms;
 using System.Windows.Threading;
 using static Microsoft.VisualStudio.VSConstants;
 
 namespace AxialSqlTools.IntelliSense
 {
     /// <summary>
-    /// 悬停 ToolTip 监听。通过编辑器 HWND 的 NativeWindow subclass + DispatcherTimer 检测停留。
-    /// 鼠标 client 坐标 → 行列（GetPointOfLineColumn 反查）→ token；屏幕坐标锚定弹框。
+    /// 悬停 ToolTip：仅用 DispatcherTimer + Win32 轮询，不子类化编辑器 HWND
+    ///（AssignHandle 在 Ctrl+N 新建标签时会导致 SSMS 卡死退出）。
     /// </summary>
-    public class IntelliSenseTextViewExtension : NativeWindow, IDisposable
+    public class IntelliSenseTextViewExtension : IDisposable
     {
-        private const int MoveCloseThreshold = 20;
-        private const int HoverMoveThreshold = 3;
+        private static readonly ILogger _logger = LogManager.GetCurrentClassLogger();
+        private const int MoveCloseThreshold = 24;
+        private const int HoverMoveThreshold = 4;
+        private const int VK_LBUTTON = 0x01;
 
         private readonly IVsTextView _textView;
         private readonly QuickInfoProvider _provider = new QuickInfoProvider();
         private DispatcherTimer _hoverTimer;
-        private DateTime _lastMoveTime;
-        private Point _lastMovePos;
+        private DateTime _lastMoveTime = DateTime.MinValue;
+        private Point _lastMovePos = new Point(-1, -1);
         private Point _tooltipAnchorPos;
-        private bool _focusHookActive;
+        private IntPtr _editorHwnd;
         private bool _tracking;
         private bool _tooltipShowing;
+        private bool _prevLeftDown;
+        private bool _editorHadFocus = true;
+        private string _lastLoggedWord;
+        private DateTime _lastDiagLog = DateTime.MinValue;
 
-        /// <summary>编辑器 HWND 失去焦点（wParam = 获得焦点的 HWND）。</summary>
         public event Action<IntPtr> EditorFocusLost;
-
-        /// <summary>用户在编辑器内按下鼠标键（点击其他位置时应关闭补全）。</summary>
         public event Action EditorPointerDown;
-
-        /// <summary>若返回 true，焦点转移到该 HWND 时不触发 EditorFocusLost（如补全弹框）。</summary>
         public Func<IntPtr, bool> ShouldIgnoreFocusTarget { get; set; }
 
         [DllImport("user32.dll")]
-        private static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+        private static extern bool GetCursorPos(out NativePoint lpPoint);
+
+        [DllImport("user32.dll")]
+        private static extern bool ScreenToClient(IntPtr hWnd, ref NativePoint lpPoint);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr WindowFromPoint(NativePoint point);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsChild(IntPtr hWndParent, IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetParent(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+
+        [DllImport("user32.dll")]
+        private static extern short GetAsyncKeyState(int vKey);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetFocus();
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativePoint
+        {
+            public int x;
+            public int y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RECT
+        {
+            public int Left, Top, Right, Bottom;
+        }
 
         public IntelliSenseTextViewExtension(IVsTextView textView)
         {
@@ -51,158 +85,392 @@ namespace AxialSqlTools.IntelliSense
         public void Attach()
         {
             var settings = UiSettingsStore.GetIntelliSenseSettings();
-            if (!settings.enabled) return;
+            if (!settings.enabled)
+            {
+                _logger.Info("QuickInfo Attach skipped: IntelliSense disabled");
+                return;
+            }
 
             try
             {
-                IntPtr hwnd = _textView.GetWindowHandle();
-                if (hwnd == IntPtr.Zero) return;
-
-                if (Handle == IntPtr.Zero)
-                    AssignHandle(hwnd);
-                _focusHookActive = true;
-
-                if (!settings.hoverTooltipEnabled) return;
-
                 _tracking = true;
-                _lastMoveTime = DateTime.Now;
+                _lastMoveTime = DateTime.UtcNow;
+                TryResolveEditorHwnd();
+                EnsureHoverTimer();
+                _logger.Info("QuickInfo Attach ok hwnd=0x{0:X}", _editorHwnd.ToInt64());
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "QuickInfo Attach failed");
+            }
+        }
 
-                int delay = settings.hoverTooltipDelayMs > 0 ? settings.hoverTooltipDelayMs : 500;
-                _hoverTimer = new DispatcherTimer(DispatcherPriority.Background)
-                {
-                    Interval = TimeSpan.FromMilliseconds(Math.Max(100, delay / 2))
-                };
-                _hoverTimer.Tick += OnHoverTick;
-                _hoverTimer.Start();
+        /// <summary>只记录 HWND，不 AssignHandle / 不子类化。</summary>
+        public bool TryResolveEditorHwnd()
+        {
+            try
+            {
+                if (_editorHwnd != IntPtr.Zero) return true;
+                IntPtr hwnd = _textView?.GetWindowHandle() ?? IntPtr.Zero;
+                if (hwnd == IntPtr.Zero) return false;
+                _editorHwnd = hwnd;
+                _logger.Info("QuickInfo HWND resolved 0x{0:X}", hwnd.ToInt64());
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "QuickInfo TryResolveEditorHwnd failed");
+                return false;
+            }
+        }
+
+        public void EnsureHoverTimer()
+        {
+            if (_hoverTimer != null)
+            {
+                if (_editorHwnd == IntPtr.Zero)
+                    TryResolveEditorHwnd();
+                return;
+            }
+            var settings = UiSettingsStore.GetIntelliSenseSettings();
+            if (!settings.enabled) return;
+            TryResolveEditorHwnd();
+            int delay = settings.hoverTooltipDelayMs > 0 ? settings.hoverTooltipDelayMs : 500;
+            var dispatcher = GetUiDispatcher();
+            _hoverTimer = new DispatcherTimer(DispatcherPriority.Background, dispatcher)
+            {
+                Interval = TimeSpan.FromMilliseconds(Math.Max(50, Math.Min(150, delay / 4)))
+            };
+            _hoverTimer.Tick += OnHoverTick;
+            _hoverTimer.Start();
+            _logger.Info("QuickInfo hover timer started delay={0}ms interval={1}ms", delay, _hoverTimer.Interval.TotalMilliseconds);
+        }
+
+        private static Dispatcher GetUiDispatcher()
+        {
+            try
+            {
+                if (System.Windows.Application.Current?.Dispatcher != null)
+                    return System.Windows.Application.Current.Dispatcher;
             }
             catch
             {
             }
-        }
-
-        protected override void WndProc(ref Message m)
-        {
-            base.WndProc(ref m);
-
-            const int WM_KILLFOCUS = 0x0008;
-            const int WM_ACTIVATE = 0x0006;
-            const int WA_INACTIVE = 0;
-
-            if (m.Msg == WM_ACTIVATE && _focusHookActive)
-            {
-                int state = m.WParam.ToInt32() & 0xFFFF;
-                if (state == WA_INACTIVE)
-                    EditorFocusLost?.Invoke(IntPtr.Zero);
-            }
-
-            if (m.Msg == WM_KILLFOCUS && _focusHookActive)
-            {
-                IntPtr newFocus = m.WParam;
-                if (ShouldIgnoreFocusTarget == null || !ShouldIgnoreFocusTarget(newFocus))
-                    EditorFocusLost?.Invoke(newFocus);
-            }
-
-            if (_focusHookActive)
-            {
-                const int WM_LBUTTONDOWN = 0x0201;
-                const int WM_RBUTTONDOWN = 0x0204;
-                const int WM_MBUTTONDOWN = 0x0207;
-                if (m.Msg == WM_LBUTTONDOWN || m.Msg == WM_RBUTTONDOWN || m.Msg == WM_MBUTTONDOWN)
-                    EditorPointerDown?.Invoke();
-            }
-
-            if (!_tracking) return;
-
-            const int WM_MOUSEMOVE = 0x0200;
-            if (m.Msg == WM_MOUSEMOVE)
-            {
-                int lParam = m.LParam.ToInt32();
-                int x = (short)(lParam & 0xFFFF);
-                int y = (short)((lParam >> 16) & 0xFFFF);
-                var newPos = new Point(x, y);
-                int dx = Math.Abs(newPos.X - _lastMovePos.X);
-                int dy = Math.Abs(newPos.Y - _lastMovePos.Y);
-                if (dx <= HoverMoveThreshold && dy <= HoverMoveThreshold) return;
-
-                _lastMovePos = newPos;
-                _lastMoveTime = DateTime.Now;
-
-                if (_tooltipShowing)
-                {
-                    int anchorDx = Math.Abs(newPos.X - _tooltipAnchorPos.X);
-                    int anchorDy = Math.Abs(newPos.Y - _tooltipAnchorPos.Y);
-                    if (anchorDx > MoveCloseThreshold || anchorDy > MoveCloseThreshold)
-                    {
-                        _tooltipShowing = false;
-                        QuickInfoTooltip.Close();
-                    }
-                }
-            }
+            return Dispatcher.CurrentDispatcher;
         }
 
         private void OnHoverTick(object sender, EventArgs e)
         {
-            ThreadHelper.ThrowIfNotOnUIThread();
-
-            var settings = UiSettingsStore.GetIntelliSenseSettings();
-            if (!settings.enabled || !settings.hoverTooltipEnabled) return;
-
-            int threshold = settings.hoverTooltipDelayMs > 0 ? settings.hoverTooltipDelayMs : 500;
-            if ((DateTime.Now - _lastMoveTime).TotalMilliseconds < threshold) return;
-
-            if (_tooltipShowing && QuickInfoTooltip.IsOpen)
+            try
             {
-                int dx = Math.Abs(_lastMovePos.X - _tooltipAnchorPos.X);
-                int dy = Math.Abs(_lastMovePos.Y - _tooltipAnchorPos.Y);
-                if (dx <= HoverMoveThreshold && dy <= HoverMoveThreshold) return;
+                if (_editorHwnd == IntPtr.Zero)
+                    TryResolveEditorHwnd();
+
+                // 切到其他应用：强制关弹框（忽略钉住）；timer 可能仍跑，或 Application.Deactivated 已关
+                if (QuickInfoTooltip.IsOpen && !QuickInfoTooltip.IsSsmsForeground())
+                {
+                    _tooltipShowing = false;
+                    QuickInfoTooltip.Close();
+                    return;
+                }
+
+                PollEditorPointerAndFocus();
+
+                if (QuickInfoTooltip.IsOpen)
+                    QuickInfoTooltip.PollOutsideClick();
+
+                if (!_tracking) return;
+
+                // 用「鼠标是否在本编辑器上」做门闩，不用 GetFocus（SSMS 焦点常落在子控件，会误判导致永不弹框）
+                var settings = UiSettingsStore.GetIntelliSenseSettings();
+                if (!settings.enabled || !settings.hoverTooltipEnabled)
+                {
+                    CloseTooltip();
+                    return;
+                }
+
+                if (!TryUpdateCursorFromScreen())
+                {
+                    // 鼠标不在本编辑器：只关自己打开的弹框，别关其他标签的
+                    if (!QuickInfoTooltip.ShouldKeepOpen)
+                        CloseTooltip();
+                    return;
+                }
+
+                if (QuickInfoTooltip.ShouldKeepOpen)
+                    return;
+
+                if (IntelliSenseKeyHandler.AnySessionOpen())
+                {
+                    CloseTooltip();
+                    return;
+                }
+
+                // 本视图已稳定显示：不要每 tick 重算/重绘
+                if (_tooltipShowing && QuickInfoTooltip.IsOwnedBy(this) && QuickInfoTooltip.IsOpen)
+                {
+                    int dx = Math.Abs(_lastMovePos.X - _tooltipAnchorPos.X);
+                    int dy = Math.Abs(_lastMovePos.Y - _tooltipAnchorPos.Y);
+                    if (dx <= MoveCloseThreshold && dy <= MoveCloseThreshold)
+                        return;
+                }
+
+                int threshold = settings.hoverTooltipDelayMs > 0 ? settings.hoverTooltipDelayMs : 500;
+                if ((DateTime.UtcNow - _lastMoveTime).TotalMilliseconds < threshold) return;
+
+                TryShowQuickInfo();
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "QuickInfo OnHoverTick failed");
+            }
+        }
+
+        /// <summary>轮询替代 WndProc：检测编辑器内左键按下与焦点离开。</summary>
+        private void PollEditorPointerAndFocus()
+        {
+            bool leftDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+            if (leftDown && !_prevLeftDown)
+            {
+                NativePoint pt;
+                if (GetCursorPos(out pt))
+                {
+                    IntPtr hwndAtPoint = WindowFromPoint(pt);
+                    IntPtr tipHwnd = QuickInfoTooltip.GetWindowHandle();
+                    bool onTip = tipHwnd != IntPtr.Zero && (hwndAtPoint == tipHwnd || IsChild(tipHwnd, hwndAtPoint));
+                    if (!onTip && _editorHwnd != IntPtr.Zero && IsRelatedHwnd(_editorHwnd, hwndAtPoint))
+                        EditorPointerDown?.Invoke();
+                }
+            }
+            _prevLeftDown = leftDown;
+
+            IntPtr focus = GetFocus();
+            bool editorFocused = _editorHwnd != IntPtr.Zero && focus != IntPtr.Zero && IsRelatedHwnd(_editorHwnd, focus);
+            if (!editorFocused && _editorHadFocus)
+            {
+                if (ShouldIgnoreFocusTarget == null || !ShouldIgnoreFocusTarget(focus))
+                {
+                    IntPtr tipHwnd = QuickInfoTooltip.GetWindowHandle();
+                    if (tipHwnd == IntPtr.Zero || (focus != tipHwnd && !IsChild(tipHwnd, focus)))
+                        EditorFocusLost?.Invoke(focus);
+                }
+            }
+            _editorHadFocus = editorFocused;
+        }
+
+        private void NoteMove(Point clientPos)
+        {
+            int dx = Math.Abs(clientPos.X - _lastMovePos.X);
+            int dy = Math.Abs(clientPos.Y - _lastMovePos.Y);
+            if (dx <= HoverMoveThreshold && dy <= HoverMoveThreshold) return;
+            _lastMovePos = clientPos;
+            _lastMoveTime = DateTime.UtcNow;
+            if (_tooltipShowing)
+            {
+                if (QuickInfoTooltip.ShouldKeepOpen) return;
+                int anchorDx = Math.Abs(clientPos.X - _tooltipAnchorPos.X);
+                int anchorDy = Math.Abs(clientPos.Y - _tooltipAnchorPos.Y);
+                if (anchorDx > MoveCloseThreshold || anchorDy > MoveCloseThreshold)
+                    CloseTooltip();
+            }
+        }
+
+        private bool TryUpdateCursorFromScreen()
+        {
+            if (_editorHwnd == IntPtr.Zero)
+            {
+                _editorHwnd = _textView?.GetWindowHandle() ?? IntPtr.Zero;
+                if (_editorHwnd == IntPtr.Zero) return false;
             }
 
-            TryShowQuickInfo();
+            NativePoint screenPt;
+            if (!GetCursorPos(out screenPt)) return false;
+
+            IntPtr hwndAtPoint = WindowFromPoint(screenPt);
+            if (hwndAtPoint != IntPtr.Zero)
+            {
+                IntPtr tipHwnd = QuickInfoTooltip.GetWindowHandle();
+                if (tipHwnd != IntPtr.Zero && (hwndAtPoint == tipHwnd || IsChild(tipHwnd, hwndAtPoint)))
+                    return true;
+            }
+
+            NativePoint clientPt = screenPt;
+            if (!ScreenToClient(_editorHwnd, ref clientPt)) return false;
+            if (!GetClientRect(_editorHwnd, out RECT rc)) return false;
+            if (clientPt.x < rc.Left || clientPt.y < rc.Top || clientPt.x >= rc.Right || clientPt.y >= rc.Bottom)
+            {
+                if (hwndAtPoint == IntPtr.Zero || !IsRelatedHwnd(_editorHwnd, hwndAtPoint))
+                    return false;
+            }
+
+            NoteMove(new Point(clientPt.x, clientPt.y));
+            return true;
+        }
+
+        private static bool IsRelatedHwnd(IntPtr editorHwnd, IntPtr hwndAtPoint)
+        {
+            if (editorHwnd == IntPtr.Zero || hwndAtPoint == IntPtr.Zero) return false;
+            if (hwndAtPoint == editorHwnd) return true;
+            if (IsChild(editorHwnd, hwndAtPoint)) return true;
+            if (IsChild(hwndAtPoint, editorHwnd)) return true;
+            IntPtr p = hwndAtPoint;
+            for (int i = 0; i < 12 && p != IntPtr.Zero; i++)
+            {
+                if (p == editorHwnd) return true;
+                p = GetParent(p);
+            }
+            p = editorHwnd;
+            for (int i = 0; i < 12 && p != IntPtr.Zero; i++)
+            {
+                if (p == hwndAtPoint) return true;
+                p = GetParent(p);
+            }
+            return false;
         }
 
         private void TryShowQuickInfo()
         {
-            ThreadHelper.ThrowIfNotOnUIThread();
             if (_textView == null) return;
 
             try
             {
-                if (!TryGetLineColumnFromClientPoint(_lastMovePos.X, _lastMovePos.Y, out int line, out int col))
+                if (IntelliSenseKeyHandler.AnySessionOpen())
                 {
+                    CloseTooltip();
+                    return;
+                }
+
+                if (!TryGetHoverLineColumn(out int line, out int col))
+                {
+                    LogDiag("line/col resolve failed pos={0},{1}", _lastMovePos.X, _lastMovePos.Y);
+                    return;
+                }
+
+                if (!TryGetWordSpanAtLineColumn(line, col, out int wordStart, out string word))
+                {
+                    CloseTooltip();
                     return;
                 }
 
                 string text = GetFullText();
-                int offset = GetOffsetFromLineColumn(line, col);
+                int offset = GetOffsetFromLineColumn(line, wordStart + Math.Max(0, word.Length / 2));
                 if (offset < 0) return;
 
                 var connInfo = SafeGetCurrentConnection();
-                var catalog = connInfo != null
-                    ? MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo)
-                    : null;
-
-                var info = _provider.GetQuickInfo(text, offset, catalog);
-                if (string.IsNullOrEmpty(info))
+                MetadataCatalog catalog = null;
+                if (connInfo != null)
                 {
-                    if (_tooltipShowing)
+                    catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo);
+                    if (catalog == null)
                     {
-                        _tooltipShowing = false;
-                        QuickInfoTooltip.Close();
+                        MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo);
+                        CloseTooltip();
+                        return;
                     }
+                }
+
+                var info = _provider.GetQuickInfo(text, offset, catalog, connInfo);
+                if (info == null || info.IsEmpty)
+                    info = _provider.GetQuickInfoByWord(text, offset, word, catalog, connInfo);
+
+                if (info == null || info.IsEmpty)
+                {
+                    if (!string.Equals(_lastLoggedWord, word, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _lastLoggedWord = word;
+                        _logger.Info("QuickInfo no match word={0} db={1} catalogTables={2}",
+                            word,
+                            connInfo?.Database ?? "(null)",
+                            catalog?.Tables?.Count ?? -1);
+                    }
+                    CloseTooltip();
                     return;
                 }
 
                 IntPtr hwnd = _textView.GetWindowHandle();
-                var screenPt = new POINT { x = _lastMovePos.X, y = _lastMovePos.Y };
-                if (!ClientToScreen(hwnd, ref screenPt)) return;
+                NativePoint screenPt;
+                if (!GetCursorPos(out screenPt))
+                {
+                    screenPt.x = _lastMovePos.X;
+                    screenPt.y = _lastMovePos.Y;
+                }
 
-                QuickInfoTooltip.Show(info, screenPt.x, screenPt.y, hwnd);
+                QuickInfoTooltip.Show(info, screenPt.x, screenPt.y, hwnd, this);
                 _tooltipShowing = true;
                 _tooltipAnchorPos = _lastMovePos;
+                if (!string.Equals(_lastLoggedWord, word, StringComparison.OrdinalIgnoreCase))
+                {
+                    _lastLoggedWord = word;
+                    _logger.Info("QuickInfo shown for word={0}", word);
+                }
             }
-            catch
+            catch (Exception ex)
             {
+                _logger.Warn(ex, "QuickInfo TryShowQuickInfo failed");
             }
+        }
+
+        private void LogDiag(string format, params object[] args)
+        {
+            if ((DateTime.UtcNow - _lastDiagLog).TotalSeconds < 2) return;
+            _lastDiagLog = DateTime.UtcNow;
+            _logger.Debug(format, args);
+        }
+
+        private void CloseTooltip()
+        {
+            if (!_tooltipShowing && !QuickInfoTooltip.IsOwnedBy(this)) return;
+            _tooltipShowing = false;
+            QuickInfoTooltip.CloseIfOwnedBy(this);
+        }
+
+        private bool TryGetHoverLineColumn(out int line, out int col)
+        {
+            line = 0;
+            col = 0;
+            if (TryGetLineColumnFromClientPoint(_lastMovePos.X, _lastMovePos.Y, out line, out col))
+                return true;
+
+            NativePoint screenPt;
+            if (!GetCursorPos(out screenPt)) return false;
+            IntPtr hwndAtPoint = WindowFromPoint(screenPt);
+            if (hwndAtPoint == IntPtr.Zero) return false;
+            NativePoint clientPt = screenPt;
+            if (!ScreenToClient(hwndAtPoint, ref clientPt)) return false;
+            if (TryGetLineColumnFromClientPoint(clientPt.x, clientPt.y, out line, out col))
+                return true;
+            clientPt = screenPt;
+            if (_editorHwnd != IntPtr.Zero && ScreenToClient(_editorHwnd, ref clientPt))
+                return TryGetLineColumnFromClientPoint(clientPt.x, clientPt.y, out line, out col);
+            return false;
+        }
+
+        private bool TryGetWordSpanAtLineColumn(int line, int col, out int wordStart, out string word)
+        {
+            wordStart = 0;
+            word = string.Empty;
+            if (_textView.GetBuffer(out IVsTextLines textLines) != S_OK) return false;
+            textLines.GetLengthOfLine(line, out int lineLen);
+            if (lineLen <= 0) return false;
+            textLines.GetLineText(line, 0, line, lineLen, out string lineText);
+            if (string.IsNullOrEmpty(lineText)) return false;
+            int index = Math.Min(Math.Max(0, col), lineLen - 1);
+            if (!IsWordChar(lineText[index]) && col > 0 && col <= lineLen && IsWordChar(lineText[col - 1]))
+                index = col - 1;
+            if (!IsWordChar(lineText[index])) return false;
+            int start = index;
+            while (start > 0 && IsWordChar(lineText[start - 1])) start--;
+            int end = index + 1;
+            while (end < lineLen && IsWordChar(lineText[end])) end++;
+            word = lineText.Substring(start, end - start).Trim();
+            if (string.IsNullOrEmpty(word)) return false;
+            wordStart = start;
+            return true;
+        }
+
+        private static bool IsWordChar(char c)
+        {
+            return char.IsLetterOrDigit(c) || c == '_' || c == '@' || c == '#';
         }
 
         private bool TryGetLineColumnFromClientPoint(int clientX, int clientY, out int line, out int col)
@@ -213,11 +481,13 @@ namespace AxialSqlTools.IntelliSense
             textLines.GetLastLineIndex(out int lastLine, out _);
 
             int lo = 0, hi = lastLine, bestLine = 0;
+            bool anyPoint = false;
             while (lo <= hi)
             {
                 int mid = (lo + hi) / 2;
                 POINT[] pts = new POINT[1];
                 if (_textView.GetPointOfLineColumn(mid, 0, pts) != S_OK) return false;
+                anyPoint = true;
                 if (pts[0].y <= clientY)
                 {
                     bestLine = mid;
@@ -228,6 +498,7 @@ namespace AxialSqlTools.IntelliSense
                     hi = mid - 1;
                 }
             }
+            if (!anyPoint) return false;
             line = bestLine;
 
             textLines.GetLengthOfLine(line, out int lineLen);
@@ -280,23 +551,19 @@ namespace AxialSqlTools.IntelliSense
 
         private ScriptFactoryAccess.ConnectionInfo SafeGetCurrentConnection()
         {
-            try { return ScriptFactoryAccess.GetCurrentConnectionInfoForEditor(_textView); }
+            // 勿按 textView 反射 DocView：新标签首次输入会触发 WinForms.Handle 创建导致原生崩溃
+            try { return ScriptFactoryAccess.GetCurrentConnectionInfo(); }
             catch { return null; }
         }
 
         public void Detach()
         {
-            _focusHookActive = false;
             _tracking = false;
             _tooltipShowing = false;
             if (_hoverTimer != null)
             {
                 _hoverTimer.Stop();
                 _hoverTimer = null;
-            }
-            if (this.Handle != IntPtr.Zero)
-            {
-                ReleaseHandle();
             }
             QuickInfoTooltip.Close();
         }

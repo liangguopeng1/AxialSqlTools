@@ -111,9 +111,8 @@ namespace AxialSqlTools.IntelliSense
             try
             {
                 var helper = new WindowInteropHelper(this);
-                IntPtr ownerHwnd = editorHwnd != IntPtr.Zero
-                    ? editorHwnd
-                    : System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle;
+                // 不要把编辑器 HWND 设为 Owner：新标签编辑器窗口链未稳时会导致 SSMS 退出
+                IntPtr ownerHwnd = System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle;
                 if (ownerHwnd != IntPtr.Zero && helper.Owner != ownerHwnd)
                     helper.Owner = ownerHwnd;
             }
@@ -128,16 +127,13 @@ namespace AxialSqlTools.IntelliSense
             double dipY = deviceScreenY;
             try
             {
-                IntPtr dpiHwnd = editorHwnd != IntPtr.Zero ? editorHwnd : new WindowInteropHelper(this).Owner;
-                if (dpiHwnd != IntPtr.Zero)
+                // 只用本窗口的 PresentationSource 做 DPI，禁止 HwndSource.FromHwnd(编辑器 HWND)
+                var src = PresentationSource.FromVisual(this) as HwndSource;
+                if (src?.CompositionTarget != null)
                 {
-                    var src = HwndSource.FromHwnd(dpiHwnd);
-                    if (src?.CompositionTarget != null)
-                    {
-                        var m = src.CompositionTarget.TransformFromDevice;
-                        dipX = deviceScreenX * m.M11;
-                        dipY = deviceScreenY * m.M22;
-                    }
+                    var m = src.CompositionTarget.TransformFromDevice;
+                    dipX = deviceScreenX * m.M11;
+                    dipY = deviceScreenY * m.M22;
                 }
             }
             catch (Exception ex)

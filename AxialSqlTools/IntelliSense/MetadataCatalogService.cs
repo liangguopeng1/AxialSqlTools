@@ -27,6 +27,9 @@ namespace AxialSqlTools
             private readonly ConcurrentDictionary<string, MetadataCatalog> _cache =
                 new ConcurrentDictionary<string, MetadataCatalog>(StringComparer.OrdinalIgnoreCase);
 
+            private readonly ConcurrentDictionary<string, byte> _building =
+                new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+
             private readonly ConcurrentDictionary<string, List<string>> _linkedServerCache =
                 new ConcurrentDictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
@@ -55,6 +58,53 @@ namespace AxialSqlTools
                 return (localServer ?? string.Empty) + "|ls|" + (linkedServer ?? string.Empty);
             }
 
+            /// <summary>仅读缓存，不访问数据库（UI 线程安全、不阻塞）。</summary>
+            public MetadataCatalog GetCachedCatalog(ScriptFactoryAccess.ConnectionInfo connInfo, string dbOverride = null)
+            {
+                if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
+                    return null;
+                string database = string.IsNullOrWhiteSpace(dbOverride) ? (connInfo.Database ?? "master") : dbOverride;
+                if (string.IsNullOrWhiteSpace(database))
+                    database = "master";
+                string key = Key(connInfo.ServerName, database);
+                if (_cache.TryGetValue(key, out var cached) && cached != null && !cached.IsEmpty
+                    && string.Equals(cached.Database, database, StringComparison.OrdinalIgnoreCase))
+                    return cached;
+                return null;
+            }
+
+            /// <summary>后台预热目录；已有缓存或正在构建时直接返回。</summary>
+            public void EnsureCatalogBuilding(ScriptFactoryAccess.ConnectionInfo connInfo, string dbOverride = null)
+            {
+                if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
+                    return;
+                if (GetCachedCatalog(connInfo, dbOverride) != null)
+                    return;
+                string database = string.IsNullOrWhiteSpace(dbOverride) ? (connInfo.Database ?? "master") : dbOverride;
+                if (string.IsNullOrWhiteSpace(database))
+                    database = "master";
+                string key = Key(connInfo.ServerName, database);
+                if (!_building.TryAdd(key, 0))
+                    return;
+                System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    try
+                    {
+                        var catalog = BuildCatalog(connInfo, database);
+                        if (catalog != null)
+                            _cache[key] = catalog;
+                    }
+                    catch
+                    {
+                    }
+                    finally
+                    {
+                        byte removed;
+                        _building.TryRemove(key, out removed);
+                    }
+                });
+            }
+
             /// <summary>取或构建目录。connInfo 为当前活动连接；dbOverride 用于三段名跨库。</summary>
             public MetadataCatalog GetOrBuildCatalog(ScriptFactoryAccess.ConnectionInfo connInfo, string dbOverride = null)
             {
@@ -76,14 +126,29 @@ namespace AxialSqlTools
                     return cached;
                 }
 
-                _cache.TryRemove(key, out _);
+                // 已有后台构建时不在 UI 再同步连库（避免卡死）
+                if (_building.ContainsKey(key))
+                    return null;
 
-                var catalog = BuildCatalog(connInfo, database);
-                if (catalog != null)
+                if (!_building.TryAdd(key, 0))
+                    return null;
+
+                try
                 {
-                    _cache[key] = catalog;
+                    MetadataCatalog removedCatalog;
+                    _cache.TryRemove(key, out removedCatalog);
+                    var catalog = BuildCatalog(connInfo, database);
+                    if (catalog != null)
+                    {
+                        _cache[key] = catalog;
+                    }
+                    return catalog;
                 }
-                return catalog;
+                finally
+                {
+                    byte removedFlag;
+                    _building.TryRemove(key, out removedFlag);
+                }
             }
 
             /// <summary>按需加载单表列（catalog 未命中或跨库时的兜底）。</summary>
@@ -109,13 +174,19 @@ namespace AxialSqlTools
 
                 const string sql = @"
 SELECT c.name, t.name, c.max_length, c.precision, c.scale, c.is_nullable,
-       OBJECT_DEFINITION(c.default_object_id), ep.value
+       OBJECT_DEFINITION(c.default_object_id), ep.value, c.is_identity,
+       CASE WHEN pk.column_id IS NOT NULL THEN 1 ELSE 0 END
 FROM sys.columns c
 JOIN sys.types t ON c.user_type_id = t.user_type_id
 JOIN sys.objects o ON c.object_id = o.object_id
 JOIN sys.schemas s ON o.schema_id = s.schema_id
 LEFT JOIN sys.extended_properties ep
        ON ep.major_id = c.object_id AND ep.minor_id = c.column_id AND ep.name = 'MS_Description'
+LEFT JOIN (
+    SELECT ic.object_id, ic.column_id
+    FROM sys.index_columns ic
+    JOIN sys.indexes i ON ic.object_id = i.object_id AND ic.index_id = i.index_id AND i.is_primary_key = 1
+) pk ON pk.object_id = c.object_id AND pk.column_id = c.column_id
 WHERE s.name = @schema AND o.name = @table AND o.type IN ('U','V')
 ORDER BY c.column_id;";
 
@@ -147,7 +218,9 @@ ORDER BY c.column_id;";
                                             reader.IsDBNull(4) ? (byte)0 : reader.GetByte(4)),
                                         Nullable = !reader.IsDBNull(5) && reader.GetBoolean(5),
                                         DefaultValue = reader.IsDBNull(6) ? null : reader.GetString(6),
-                                        Description = reader.IsDBNull(7) ? null : reader.GetString(7)
+                                        Description = reader.IsDBNull(7) ? null : reader.GetString(7),
+                                        IsIdentity = !reader.IsDBNull(8) && reader.GetBoolean(8),
+                                        IsPrimaryKey = !reader.IsDBNull(9) && reader.GetInt32(9) == 1
                                     });
                                 }
                                 if (info != null)
@@ -430,6 +503,8 @@ ORDER BY d.name;";
                 string columns = QualifySys(fourPartPrefix, "sys.columns");
                 string types = QualifySys(fourPartPrefix, "sys.types");
                 string extProps = QualifySys(fourPartPrefix, "sys.extended_properties");
+                string indexColumns = QualifySys(fourPartPrefix, "sys.index_columns");
+                string indexes = QualifySys(fourPartPrefix, "sys.indexes");
                 string sql = $@"
 SELECT s.name AS schema_name,
        o.name AS object_name,
@@ -442,7 +517,9 @@ SELECT s.name AS schema_name,
        c.is_nullable,
        OBJECT_DEFINITION(c.default_object_id) AS default_value,
        ep_col.value AS column_description,
-       ep_obj.value AS object_description
+       ep_obj.value AS object_description,
+       c.is_identity,
+       CASE WHEN pk.column_id IS NOT NULL THEN 1 ELSE 0 END AS is_primary_key
 FROM {objects} o
 JOIN {schemas} s ON o.schema_id = s.schema_id
 JOIN {columns} c ON c.object_id = o.object_id
@@ -451,6 +528,11 @@ LEFT JOIN {extProps} ep_col
        ON ep_col.major_id = c.object_id AND ep_col.minor_id = c.column_id AND ep_col.name = 'MS_Description'
 LEFT JOIN {extProps} ep_obj
        ON ep_obj.major_id = o.object_id AND ep_obj.minor_id = 0 AND ep_obj.name = 'MS_Description'
+LEFT JOIN (
+    SELECT ic.object_id, ic.column_id
+    FROM {indexColumns} ic
+    JOIN {indexes} i ON ic.object_id = i.object_id AND ic.index_id = i.index_id AND i.is_primary_key = 1
+) pk ON pk.object_id = c.object_id AND pk.column_id = c.column_id
 WHERE o.type IN ('U','V') AND o.is_ms_shipped = 0
 ORDER BY s.name, o.name, c.column_id;";
 
@@ -474,6 +556,8 @@ ORDER BY s.name, o.name, c.column_id;";
                             string defaultValue = reader.IsDBNull(9) ? null : reader.GetString(9);
                             string colDesc = reader.IsDBNull(10) ? null : reader.GetString(10);
                             string objDesc = reader.IsDBNull(11) ? null : reader.GetString(11);
+                            bool isIdentity = !reader.IsDBNull(12) && reader.GetBoolean(12);
+                            bool isPrimaryKey = !reader.IsDBNull(13) && reader.GetInt32(13) == 1;
 
                             if (current == null ||
                                 !string.Equals(current.Schema, schema, StringComparison.OrdinalIgnoreCase) ||
@@ -501,7 +585,9 @@ ORDER BY s.name, o.name, c.column_id;";
                                 DataType = FormatDataType(typeName, maxLength, precision, scale),
                                 Nullable = nullable,
                                 DefaultValue = defaultValue,
-                                Description = colDesc
+                                Description = colDesc,
+                                IsIdentity = isIdentity,
+                                IsPrimaryKey = isPrimaryKey
                             });
                         }
                     }
@@ -509,6 +595,77 @@ ORDER BY s.name, o.name, c.column_id;";
                 catch
                 {
                     // 表/视图失败不阻塞其余加载
+                }
+
+                LoadIndexes(conn, catalog, fourPartPrefix);
+            }
+
+            private void LoadIndexes(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null)
+            {
+                string objects = QualifySys(fourPartPrefix, "sys.objects");
+                string schemas = QualifySys(fourPartPrefix, "sys.schemas");
+                string indexes = QualifySys(fourPartPrefix, "sys.indexes");
+                string indexColumns = QualifySys(fourPartPrefix, "sys.index_columns");
+                string columns = QualifySys(fourPartPrefix, "sys.columns");
+                string sql = $@"
+SELECT s.name AS schema_name,
+       o.name AS object_name,
+       i.name AS index_name,
+       i.is_unique,
+       i.is_primary_key,
+       c.name AS column_name,
+       ic.key_ordinal
+FROM {objects} o
+JOIN {schemas} s ON o.schema_id = s.schema_id
+JOIN {indexes} i ON i.object_id = o.object_id AND i.type > 0 AND i.is_hypothetical = 0
+JOIN {indexColumns} ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0
+JOIN {columns} c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+WHERE o.type IN ('U','V') AND o.is_ms_shipped = 0 AND i.name IS NOT NULL
+ORDER BY s.name, o.name, i.index_id, ic.key_ordinal;";
+
+                try
+                {
+                    using (var cmd = Cmd(conn, sql))
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        IndexInfo current = null;
+                        string curSchema = null;
+                        string curTable = null;
+                        string curIndex = null;
+                        while (reader.Read())
+                        {
+                            string schema = reader.IsDBNull(0) ? null : reader.GetString(0);
+                            string table = reader.IsDBNull(1) ? null : reader.GetString(1);
+                            string indexName = reader.IsDBNull(2) ? null : reader.GetString(2);
+                            bool isUnique = !reader.IsDBNull(3) && reader.GetBoolean(3);
+                            bool isPk = !reader.IsDBNull(4) && reader.GetBoolean(4);
+                            string colName = reader.IsDBNull(5) ? null : reader.GetString(5);
+                            if (string.IsNullOrEmpty(indexName) || string.IsNullOrEmpty(colName)) continue;
+
+                            if (current == null ||
+                                !string.Equals(curSchema, schema, StringComparison.OrdinalIgnoreCase) ||
+                                !string.Equals(curTable, table, StringComparison.OrdinalIgnoreCase) ||
+                                !string.Equals(curIndex, indexName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                var tableInfo = catalog.FindTableOrView(schema, table);
+                                if (tableInfo == null) continue;
+                                current = new IndexInfo
+                                {
+                                    Name = indexName,
+                                    IsUnique = isUnique,
+                                    IsPrimaryKey = isPk
+                                };
+                                tableInfo.Indexes.Add(current);
+                                curSchema = schema;
+                                curTable = table;
+                                curIndex = indexName;
+                            }
+                            current.Columns.Add(colName);
+                        }
+                    }
+                }
+                catch
+                {
                 }
             }
 

@@ -504,6 +504,7 @@ as select 1;
                 hoverTooltipDelayMs = int.TryParse(IntelliSenseHoverDelay.Text, out var d2) ? d2 : 500,
                 maxCompletionItems = int.TryParse(IntelliSenseMaxItems.Text, out var mi) ? mi : 50
             });
+            AxialSqlTools.IntelliSense.IntelliSenseKeyHandler.EnsureAllHoverTimers();
             bool ssmsIntelliSenseEnabled = !axialEnabled;
             if (!IntelliSense.IntelliSenseDisableHelper.TrySetSsmsIntelliSenseEnabled(ssmsIntelliSenseEnabled, out string ssmsError))
             {

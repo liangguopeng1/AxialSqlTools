@@ -1,25 +1,27 @@
 using Microsoft.SqlServer.TransactSql.ScriptDom;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
+using System.Text.RegularExpressions;
 
 namespace AxialSqlTools.IntelliSense
 {
     /// <summary>
-    /// 悬停信息：定位光标 token，匹配元数据对象，返回描述文本。
-    /// 复用 MetadataCatalogService 缓存。任何失败返回 null（不弹 ToolTip）。
+    /// 悬停信息：定位 token、解析 FROM 上下文、匹配元数据，返回结构化 ToolTip 内容。
     /// </summary>
     public class QuickInfoProvider
     {
         private readonly TSql170Parser _parser = new TSql170Parser(true);
 
-        public string GetQuickInfo(string fullText, int caretOffset, MetadataCatalog catalog)
+        public QuickInfoData GetQuickInfo(
+            string fullText,
+            int caretOffset,
+            MetadataCatalog catalog,
+            ScriptFactoryAccess.ConnectionInfo connInfo)
         {
-            if (string.IsNullOrEmpty(fullText) || catalog == null || caretOffset < 0)
-            {
+            if (string.IsNullOrEmpty(fullText) || caretOffset < 0)
                 return null;
-            }
 
             try
             {
@@ -30,51 +32,118 @@ namespace AxialSqlTools.IntelliSense
                 }
                 if (script == null) return null;
 
-                var tokens = script.ScriptTokenStream;
-                if (tokens == null) return null;
+                var tokens = script.ScriptTokenStream?.ToList();
+                if (tokens == null || tokens.Count == 0) return null;
 
-                // 找光标所在/紧邻的标识符 token
-                TSqlParserToken identToken = null;
-                for (int i = 0; i < tokens.Count; i++)
+                var hover = QuickInfoSqlContext.TryGetHoverToken(tokens, caretOffset);
+                if (hover == null || string.IsNullOrEmpty(hover.Name)) return null;
+
+                string dataSource = FormatDataSource(connInfo);
+                string defaultDb = connInfo?.Database ?? catalog?.Database;
+
+                // 优先按悬停词命中 FROM/JOIN 中的表（支持 db.schema.table / db..table / JOIN 表）
+                var hoverTableRef = QuickInfoSqlContext.TryResolveTableByHoverName(tokens, caretOffset, hover.Name);
+                if (hoverTableRef != null && !hover.HasOwner)
                 {
-                    var t = tokens[i];
-                    if (t == null) continue;
-                    if (caretOffset >= t.Offset && caretOffset <= t.Offset + t.Text.Length &&
-                        (t.TokenType == TSqlTokenType.Identifier || t.TokenType == TSqlTokenType.QuotedIdentifier))
-                    {
-                        identToken = t;
-                        break;
-                    }
+                    var ht = ResolveTable(connInfo, catalog, hoverTableRef);
+                    if (ht != null)
+                        return BuildTableQuickInfo(dataSource, defaultDb, hoverTableRef, ht);
                 }
-                if (identToken == null) return null;
-
-                // 查前一个 token 是否 "."，组成 schema.name
-                string name = identToken.Text;
-                string schema = null;
-                for (int i = tokens.IndexOf(identToken) - 1; i >= 0; i--)
+                if (hoverTableRef != null && hover.HasOwner
+                    && string.Equals(hoverTableRef.Name, hover.Name, StringComparison.OrdinalIgnoreCase))
                 {
-                    var t = tokens[i];
-                    if (t == null) continue;
-                    if (t.TokenType == TSqlTokenType.WhiteSpace) continue;
-                    if (t.TokenType == TSqlTokenType.Dot)
+                    var schemaQualified = new TableRef
                     {
-                        // 再往前找 schema 标识符
-                        for (int j = i - 1; j >= 0; j--)
+                        Database = hoverTableRef.Database,
+                        Schema = string.IsNullOrEmpty(hoverTableRef.Schema) ? hover.Owner : hoverTableRef.Schema,
+                        Name = hover.Name
+                    };
+                    var ht = ResolveTable(connInfo, catalog, schemaQualified);
+                    if (ht != null)
+                        return BuildTableQuickInfo(dataSource, defaultDb, schemaQualified, ht);
+                }
+
+                var fromRef = hoverTableRef ?? QuickInfoSqlContext.TryResolveFromTable(tokens, caretOffset);
+
+                if (hover.HasOwner)
+                {
+                    var aliasRef = QuickInfoSqlContext.TryResolveAlias(tokens, caretOffset, hover.Owner)
+                                   ?? ResolveAliasOwner(hover.Owner, tokens, caretOffset, fromRef);
+                    if (aliasRef != null)
+                    {
+                        var table = ResolveTable(connInfo, catalog, aliasRef);
+                        if (table != null)
                         {
-                            var s = tokens[j];
-                            if (s == null) continue;
-                            if (s.TokenType == TSqlTokenType.WhiteSpace) continue;
-                            if (s.TokenType == TSqlTokenType.Identifier || s.TokenType == TSqlTokenType.QuotedIdentifier)
-                            {
-                                schema = s.Text;
-                            }
-                            break;
+                            var col = FindColumn(table, hover.Name);
+                            if (col != null)
+                                return BuildColumnQuickInfo(dataSource, defaultDb, aliasRef, table, col);
                         }
                     }
-                    break;
+                    // dbo.TableName / schema.TableName
+                    var schemaTable = ResolveTable(connInfo, catalog, new TableRef
+                    {
+                        Schema = hover.Owner,
+                        Name = hover.Name,
+                        Database = fromRef?.Database ?? hoverTableRef?.Database
+                    });
+                    if (schemaTable != null)
+                        return BuildTableQuickInfo(dataSource, defaultDb,
+                            new TableRef
+                            {
+                                Database = fromRef?.Database ?? hoverTableRef?.Database,
+                                Schema = schemaTable.Schema,
+                                Name = schemaTable.Name
+                            }, schemaTable);
                 }
 
-                return LookupObject(catalog, schema, name);
+                var directTable = ResolveTable(connInfo, catalog, new TableRef
+                {
+                    Name = hover.Name,
+                    Schema = fromRef?.Schema,
+                    Database = fromRef?.Database
+                });
+                if (directTable != null && string.Equals(directTable.Name, hover.Name, StringComparison.OrdinalIgnoreCase))
+                    return BuildTableQuickInfo(dataSource, defaultDb, ResolveTableRef(fromRef, directTable), directTable);
+
+                TableColumnInfo contextTable = null;
+                TableRef contextRef = null;
+                if (fromRef != null)
+                {
+                    contextTable = ResolveTable(connInfo, catalog, fromRef);
+                    contextRef = fromRef;
+                }
+                if (contextTable != null)
+                {
+                    var col = FindColumn(contextTable, hover.Name);
+                    if (col != null)
+                        return BuildColumnQuickInfo(dataSource, defaultDb, contextRef, contextTable, col);
+                }
+
+                if (catalog != null)
+                {
+                    var tcol = catalog.FindTableOrView(null, hover.Name);
+                    if (tcol != null)
+                        return BuildTableQuickInfo(dataSource, catalog.Database, new TableRef
+                        {
+                            Database = catalog.Database,
+                            Schema = tcol.Schema,
+                            Name = tcol.Name
+                        }, tcol);
+
+                    foreach (var t in catalog.Tables.Concat(catalog.Views))
+                    {
+                        var col = FindColumn(t, hover.Name);
+                        if (col != null)
+                            return BuildColumnQuickInfo(dataSource, defaultDb, new TableRef
+                            {
+                                Database = catalog.Database,
+                                Schema = t.Schema,
+                                Name = t.Name
+                            }, t, col);
+                    }
+                }
+
+                return null;
             }
             catch
             {
@@ -82,105 +151,266 @@ namespace AxialSqlTools.IntelliSense
             }
         }
 
-        private string LookupObject(MetadataCatalog catalog, string schema, string name)
+        private static readonly Regex FromClauseRegex = new Regex(
+            @"\bFROM\s+(?:\[?(?<db>[^\s\.\[\]]+)\]?\s*\.\s*(?:\.(?:\[?(?<schema>[^\s\.\[\]]+)\]?\s*\.)?)?|\[?(?<schema2>[^\s\.\[\]]+)\]?\s*\.\s*)?\[?(?<table>[^\s\.\[\],]+)\]?",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+        /// <summary>ScriptDOM 未命中时，用行内词 + FROM/元数据目录兜底。</summary>
+        public QuickInfoData GetQuickInfoByWord(
+            string fullText,
+            int caretOffset,
+            string hoverWord,
+            MetadataCatalog catalog,
+            ScriptFactoryAccess.ConnectionInfo connInfo)
         {
-            if (string.IsNullOrEmpty(name)) return null;
-            string cleanName = name.Trim('[', ']');
-
-            // 表 / 视图
-            var tcol = catalog.FindTableOrView(schema, cleanName);
-            if (tcol != null)
+            if (string.IsNullOrEmpty(hoverWord)) return null;
+            try
             {
-                return BuildTableDescription(tcol);
-            }
-
-            // 例程
-            var routines = catalog.Procedures.Concat(catalog.ScalarFunctions).Concat(catalog.TableFunctions);
-            foreach (var r in routines)
-            {
-                if (string.Equals(r.Name, cleanName, StringComparison.OrdinalIgnoreCase) &&
-                    (string.IsNullOrEmpty(schema) || string.Equals(r.Schema, schema, StringComparison.OrdinalIgnoreCase)))
+                string cleanWord = hoverWord.Trim('[', ']', '"');
+                if (string.IsNullOrEmpty(cleanWord)) return null;
+                string dataSource = FormatDataSource(connInfo);
+                string defaultDb = connInfo?.Database ?? catalog?.Database;
+                TableRef fromRef = null;
+                if (!string.IsNullOrEmpty(fullText))
                 {
-                    return BuildRoutineDescription(r);
-                }
-            }
-
-            // 列：在所有表/视图里找
-            foreach (var t in catalog.Tables.Concat(catalog.Views))
-            {
-                foreach (var c in t.Columns)
-                {
-                    if (string.Equals(c.Name, cleanName, StringComparison.OrdinalIgnoreCase))
+                    try
                     {
-                        return BuildColumnDescription(t, c);
+                        using (var reader = new StringReader(fullText))
+                        {
+                            var script = _parser.Parse(reader, out var errors) as TSqlScript;
+                            var tokens = script?.ScriptTokenStream?.ToList();
+                            if (tokens != null)
+                                fromRef = QuickInfoSqlContext.TryResolveTableByHoverName(tokens, caretOffset, cleanWord)
+                                          ?? QuickInfoSqlContext.TryResolveFromTable(tokens, caretOffset);
+                        }
+                    }
+                    catch
+                    {
+                    }
+                    if (fromRef == null)
+                        fromRef = TryParseFromClause(fullText);
+                }
+
+                var asTable = ResolveTable(connInfo, catalog, new TableRef
+                {
+                    Name = cleanWord,
+                    Schema = fromRef?.Schema,
+                    Database = fromRef?.Database
+                });
+                if (asTable != null && string.Equals(asTable.Name, cleanWord, StringComparison.OrdinalIgnoreCase))
+                    return BuildTableQuickInfo(dataSource, defaultDb, ResolveTableRef(fromRef, asTable), asTable);
+
+                if (catalog != null)
+                {
+                    var named = catalog.FindTableOrView(null, cleanWord);
+                    if (named != null)
+                        return BuildTableQuickInfo(dataSource, catalog.Database, new TableRef
+                        {
+                            Database = catalog.Database,
+                            Schema = named.Schema,
+                            Name = named.Name
+                        }, named);
+                }
+
+                if (fromRef != null)
+                {
+                    var contextTable = ResolveTable(connInfo, catalog, fromRef);
+                    if (contextTable != null)
+                    {
+                        var col = FindColumn(contextTable, cleanWord);
+                        if (col != null)
+                            return BuildColumnQuickInfo(dataSource, defaultDb, fromRef, contextTable, col);
                     }
                 }
-            }
 
+                if (catalog != null)
+                {
+                    foreach (var t in catalog.Tables.Concat(catalog.Views))
+                    {
+                        var col = FindColumn(t, cleanWord);
+                        if (col != null)
+                            return BuildColumnQuickInfo(dataSource, defaultDb, new TableRef
+                            {
+                                Database = catalog.Database,
+                                Schema = t.Schema,
+                                Name = t.Name
+                            }, t, col);
+                    }
+                }
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static TableRef TryParseFromClause(string sql)
+        {
+            if (string.IsNullOrEmpty(sql)) return null;
+            var m = FromClauseRegex.Match(sql);
+            if (!m.Success) return null;
+            string table = m.Groups["table"].Value;
+            if (string.IsNullOrEmpty(table)) return null;
+            string db = m.Groups["db"].Success ? m.Groups["db"].Value : null;
+            string schema = m.Groups["schema"].Success ? m.Groups["schema"].Value
+                : (m.Groups["schema2"].Success ? m.Groups["schema2"].Value : null);
+            var tref = new TableRef
+            {
+                Database = db,
+                Schema = schema,
+                Name = table
+            };
+            if (!string.IsNullOrEmpty(tref.Database) && string.IsNullOrEmpty(tref.Schema))
+                tref.Schema = "dbo";
+            return tref;
+        }
+
+        private static TableRef ResolveAliasOwner(
+            string owner,
+            List<TSqlParserToken> tokens,
+            int offset,
+            TableRef fromRef)
+        {
+            if (fromRef == null || string.IsNullOrEmpty(owner)) return null;
+            int fromIdx = -1;
+            for (int i = 0; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (t != null && t.Offset <= offset
+                    && string.Equals(t.Text, "FROM", StringComparison.OrdinalIgnoreCase))
+                    fromIdx = i;
+            }
+            if (fromIdx < 0) return fromRef;
+            int scanEnd = int.MaxValue;
+            for (int i = fromIdx + 1; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (t == null) continue;
+                string kw = t.Text?.ToUpperInvariant();
+                if (kw == "WHERE" || kw == "JOIN" || kw == "GROUP" || kw == "ORDER") { scanEnd = t.Offset; break; }
+            }
+            var names = new List<string>();
+            for (int i = fromIdx + 1; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (t == null || t.Offset >= scanEnd) break;
+                if (t.TokenType == TSqlTokenType.Dot) continue;
+                if (t.TokenType == TSqlTokenType.Identifier || t.TokenType == TSqlTokenType.QuotedIdentifier
+                    || t.TokenType == TSqlTokenType.Integer)
+                    names.Add(t.Text.Trim('[', ']', '"'));
+            }
+            if (names.Count >= 2 && string.Equals(names[names.Count - 1], owner, StringComparison.OrdinalIgnoreCase))
+            {
+                string tableName = names[names.Count - 2];
+                if (names.Count == 2 && fromRef != null && string.Equals(fromRef.Name, tableName, StringComparison.OrdinalIgnoreCase))
+                    return fromRef;
+                if (fromRef != null && string.Equals(fromRef.Name, tableName, StringComparison.OrdinalIgnoreCase))
+                    return fromRef;
+                return new TableRef
+                {
+                    Database = fromRef?.Database,
+                    Schema = fromRef?.Schema,
+                    Name = tableName
+                };
+            }
+            if (string.Equals(fromRef.Name, owner, StringComparison.OrdinalIgnoreCase))
+                return fromRef;
             return null;
         }
 
-        private static string BuildTableDescription(TableColumnInfo t)
+        private static TableRef ResolveTableRef(TableRef fromRef, TableColumnInfo table)
         {
-            var sb = new StringBuilder();
-            sb.AppendLine(t.QualifiedName);
-            if (!string.IsNullOrEmpty(t.Description))
+            if (table == null) return fromRef;
+            return new TableRef
             {
-                sb.AppendLine();
-                sb.AppendLine(t.Description);
-            }
-            if (t.Columns != null && t.Columns.Count > 0)
-            {
-                sb.AppendLine();
-                sb.AppendLine("列:");
-                foreach (var c in t.Columns)
-                {
-                    sb.Append("  ").Append(c.Name).Append(" ").AppendLine(c.DataType);
-                }
-            }
-            return sb.ToString();
+                Database = fromRef?.Database,
+                Schema = table.Schema,
+                Name = table.Name
+            };
         }
 
-        private static string BuildColumnDescription(TableColumnInfo t, ColumnInfo c)
+        private TableColumnInfo ResolveTable(
+            ScriptFactoryAccess.ConnectionInfo connInfo,
+            MetadataCatalog catalog,
+            TableRef tref)
         {
-            var sb = new StringBuilder();
-            sb.Append(c.Name).Append(" ").Append(c.DataType);
-            sb.Append(c.Nullable ? " NULL" : " NOT NULL");
-            if (!string.IsNullOrEmpty(c.DefaultValue))
+            if (tref == null || string.IsNullOrEmpty(tref.Name)) return null;
+            MetadataCatalog target = catalog;
+            if (connInfo != null && !string.IsNullOrWhiteSpace(tref.Database))
             {
-                sb.Append(" DEFAULT ").Append(c.DefaultValue);
-            }
-            sb.AppendLine();
-            sb.Append("所属: ").AppendLine(t.QualifiedName);
-            if (!string.IsNullOrEmpty(c.Description))
-            {
-                sb.AppendLine();
-                sb.Append(c.Description);
-            }
-            return sb.ToString();
-        }
-
-        private static string BuildRoutineDescription(RoutineInfo r)
-        {
-            var sb = new StringBuilder();
-            sb.Append(r.Kind == RoutineKind.Procedure ? "存储过程: " : "函数: ");
-            sb.AppendLine(r.QualifiedName);
-            if (r.Parameters != null && r.Parameters.Count > 0)
-            {
-                sb.AppendLine("参数:");
-                foreach (var p in r.Parameters)
+                if (catalog == null || !string.Equals(catalog.Database, tref.Database, StringComparison.OrdinalIgnoreCase))
                 {
-                    sb.Append("  ").Append(p.Name).Append(" ").Append(p.DataType);
-                    if (p.IsOutput) sb.Append(" OUTPUT");
-                    sb.AppendLine();
+                    target = MetadataCatalogService.Instance.GetCachedCatalog(connInfo, tref.Database);
+                    if (target == null)
+                    {
+                        MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, tref.Database);
+                        return null;
+                    }
                 }
             }
-            if (!string.IsNullOrEmpty(r.Description))
+            if (target != null)
             {
-                sb.AppendLine();
-                sb.Append(r.Description);
+                var found = target.FindTableOrView(tref.Schema, tref.Name);
+                if (found != null) return found;
             }
-            return sb.ToString();
+            return null;
+        }
+
+        private static ColumnInfo FindColumn(TableColumnInfo table, string name)
+        {
+            if (table?.Columns == null || string.IsNullOrEmpty(name)) return null;
+            return table.Columns.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static string FormatDataSource(ScriptFactoryAccess.ConnectionInfo connInfo)
+        {
+            if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
+                return string.Empty;
+            string server = connInfo.ServerName.Trim();
+            if (!server.StartsWith("@", StringComparison.Ordinal) && !server.Contains("\\"))
+                return "@" + server;
+            return server;
+        }
+
+        private QuickInfoData BuildTableQuickInfo(string dataSource, string defaultDb, TableRef tref, TableColumnInfo table)
+        {
+            var data = new QuickInfoData();
+            string db = tref?.Database ?? defaultDb;
+            AddHeaderLine(data, "数据源", dataSource);
+            AddHeaderLine(data, "数据库", db);
+            AddHeaderLine(data, "架构", table?.Schema ?? tref?.Schema ?? "dbo");
+            AddHeaderLine(data, "表", table?.Name ?? tref?.Name);
+            if (!string.IsNullOrEmpty(table?.Description))
+                data.Description = table.Description;
+            data.DdlText = QuickInfoDdlBuilder.BuildCreateTable(table);
+            return data.IsEmpty ? null : data;
+        }
+
+        private QuickInfoData BuildColumnQuickInfo(
+            string dataSource,
+            string defaultDb,
+            TableRef tref,
+            TableColumnInfo table,
+            ColumnInfo col)
+        {
+            var data = new QuickInfoData();
+            string db = tref?.Database ?? defaultDb;
+            AddHeaderLine(data, "数据源", dataSource);
+            AddHeaderLine(data, "数据库", db);
+            AddHeaderLine(data, "架构", table?.Schema ?? tref?.Schema ?? "dbo");
+            AddHeaderLine(data, "表", table?.Name ?? tref?.Name);
+            AddHeaderLine(data, "列", col?.Name);
+            if (!string.IsNullOrEmpty(col?.Description))
+                data.Description = col.Description;
+            data.DdlText = QuickInfoDdlBuilder.BuildColumnDdl(table, col);
+            return data.IsEmpty ? null : data;
+        }
+
+        private static void AddHeaderLine(QuickInfoData data, string label, string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return;
+            data.HeaderLines.Add(label + ": " + value);
         }
     }
 }

@@ -37,6 +37,20 @@ namespace AxialSqlTools.IntelliSense
             }
         }
 
+        public static void EnsureAllHoverTimers()
+        {
+            for (int i = ActiveHandlers.Count - 1; i >= 0; i--)
+            {
+                try
+                {
+                    ActiveHandlers[i]?.EnsureHoverTimer();
+                }
+                catch
+                {
+                }
+            }
+        }
+
         public static bool AnySessionOpen()
         {
             for (int i = ActiveHandlers.Count - 1; i >= 0; i--)
@@ -48,10 +62,16 @@ namespace AxialSqlTools.IntelliSense
             return false;
         }
 
+        public void EnsureHoverTimer()
+        {
+            // 勿每次调用 Attach：按键路径会反复进来，重绑 HWND 易导致 SSMS 卡死
+            _textViewExtension?.EnsureHoverTimer();
+        }
+
         private readonly AxialSqlToolsPackage _package;
         private readonly IVsTextView _textView;
         private readonly CompletionEngine _engine = new CompletionEngine();
-        private readonly CompletionListWindow _window;
+        private CompletionListWindow _window;
         private readonly DispatcherTimer _debounceTimer;
         private readonly DispatcherTimer _externalFocusCloseTimer;
         private readonly DispatcherTimer _sessionWatchdogTimer;
@@ -88,12 +108,13 @@ namespace AxialSqlTools.IntelliSense
         {
             _package = package;
             _textView = textView;
-            _window = new CompletionListWindow();
-            _window.CommitClicked += (s, e) => TryCommitSelected();
+            // CompletionListWindow 延到首次弹框再建，避免新标签首次按键同步创建多个 WPF Window
 
             var settings = UiSettingsStore.GetIntelliSenseSettings();
             int delay = settings.autoTriggerDelayMs > 0 ? settings.autoTriggerDelayMs : 200;
-            _debounceTimer = new DispatcherTimer(DispatcherPriority.Background)
+            var dispatcher = System.Windows.Application.Current?.Dispatcher
+                ?? Dispatcher.CurrentDispatcher;
+            _debounceTimer = new DispatcherTimer(DispatcherPriority.Background, dispatcher)
             {
                 Interval = TimeSpan.FromMilliseconds(delay)
             };
@@ -103,7 +124,7 @@ namespace AxialSqlTools.IntelliSense
                 TriggerCompletion(false);
             };
 
-            _externalFocusCloseTimer = new DispatcherTimer(DispatcherPriority.Background)
+            _externalFocusCloseTimer = new DispatcherTimer(DispatcherPriority.Background, dispatcher)
             {
                 Interval = TimeSpan.FromMilliseconds(150)
             };
@@ -116,12 +137,12 @@ namespace AxialSqlTools.IntelliSense
                     CloseSession();
                     return;
                 }
-                if (EditorHasFocus() || IsCompletionPopupFocus(GetFocus())) return;
+                if (EditorHasFocus() || IsPopupFocus(GetFocus())) return;
                 if (IsWithinAcceptGrace()) return;
                 CloseSession();
             };
 
-            _sessionWatchdogTimer = new DispatcherTimer(DispatcherPriority.Background)
+            _sessionWatchdogTimer = new DispatcherTimer(DispatcherPriority.Background, dispatcher)
             {
                 Interval = TimeSpan.FromMilliseconds(200)
             };
@@ -148,16 +169,45 @@ namespace AxialSqlTools.IntelliSense
 
             // 悬停 ToolTip + 编辑器失焦关闭（独立于补全 session 的 ToolTip 部分）
             _textViewExtension = new IntelliSenseTextViewExtension(textView);
-            _textViewExtension.ShouldIgnoreFocusTarget = IsCompletionPopupFocus;
+            _textViewExtension.ShouldIgnoreFocusTarget = hwnd => IsPopupFocus(hwnd);
             _textViewExtension.EditorFocusLost += OnEditorFocusLost;
             _textViewExtension.EditorPointerDown += OnEditorPointerDown;
-            _textViewExtension.Attach();
             ActiveHandlers.Add(this);
+            // 延后 Attach：始终挂上悬停定时器（不再因 GetFocus 误判而永久跳过）
+            try
+            {
+                dispatcher.BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        _textViewExtension?.Attach();
+                        LogManager.Flush();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warn(ex, "Deferred QuickInfo Attach failed");
+                        LogManager.Flush();
+                    }
+                }), DispatcherPriority.ApplicationIdle);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "Schedule QuickInfo Attach failed");
+                try { _textViewExtension.Attach(); } catch { }
+            }
+        }
+
+        private CompletionListWindow EnsureCompletionWindow()
+        {
+            if (_window != null) return _window;
+            _window = new CompletionListWindow();
+            _window.CommitClicked += (s, e) => TryCommitSelected();
+            return _window;
         }
 
         private bool IsCompletionPopupFocus(IntPtr hwnd)
         {
-            if (hwnd == IntPtr.Zero || !_window.IsOpen) return false;
+            if (hwnd == IntPtr.Zero || _window == null || !_window.IsOpen) return false;
             try
             {
                 var helper = new WindowInteropHelper(_window);
@@ -168,6 +218,25 @@ namespace AxialSqlTools.IntelliSense
             {
                 return false;
             }
+        }
+
+        private static bool IsQuickInfoPopupFocus(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero || !QuickInfoTooltip.IsOpen) return false;
+            try
+            {
+                IntPtr popupHwnd = QuickInfoTooltip.GetWindowHandle();
+                return popupHwnd != IntPtr.Zero && (hwnd == popupHwnd || IsChild(popupHwnd, hwnd));
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool IsPopupFocus(IntPtr hwnd)
+        {
+            return IsCompletionPopupFocus(hwnd) || IsQuickInfoPopupFocus(hwnd);
         }
 
         private bool EditorHasFocus()
@@ -231,6 +300,10 @@ namespace AxialSqlTools.IntelliSense
 
         private void OnEditorPointerDown()
         {
+            // 编辑器收到按下 = 点了编辑器（不是弹框）→ 关闭悬停弹框
+            if (QuickInfoTooltip.IsOpen)
+                QuickInfoTooltip.CloseFromOutsideClick();
+
             if (!_sessionOpen) return;
             Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() =>
             {
@@ -240,7 +313,7 @@ namespace AxialSqlTools.IntelliSense
 
         private void OnEditorFocusLost(IntPtr newFocusHwnd)
         {
-            if (IsCompletionPopupFocus(newFocusHwnd)) return;
+            if (IsPopupFocus(newFocusHwnd)) return;
             if (_sessionOpen)
             {
                 if (!IsSsmsForeground())
@@ -255,7 +328,15 @@ namespace AxialSqlTools.IntelliSense
             Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() =>
             {
                 if (_sessionOpen) return;
-                if (EditorHasFocus() || IsCompletionPopupFocus(GetFocus())) return;
+                if (EditorHasFocus() || IsPopupFocus(GetFocus())) return;
+                if (QuickInfoTooltip.IsPinned)
+                {
+                    // 钉住后：焦点落到弹框外才关闭
+                    if (!IsPopupFocus(GetFocus()))
+                        QuickInfoTooltip.CloseFromOutsideClick();
+                    return;
+                }
+                if (QuickInfoTooltip.ShouldKeepOpen) return;
                 QuickInfoTooltip.Close();
             }), DispatcherPriority.Input);
         }
@@ -281,22 +362,22 @@ namespace AxialSqlTools.IntelliSense
                 switch ((VSStd2KCmdID)nCmdID)
                 {
                     case VSStd2KCmdID.UP:
-                        _window.Move(-1);
+                        _window?.Move(-1);
                         return true;
                     case VSStd2KCmdID.DOWN:
-                        _window.Move(1);
+                        _window?.Move(1);
                         return true;
                     case VSStd2KCmdID.PAGEUP:
-                        _window.MovePage(-1);
+                        _window?.MovePage(-1);
                         return true;
                     case VSStd2KCmdID.PAGEDN:
-                        _window.MovePage(1);
+                        _window?.MovePage(1);
                         return true;
                     case VSStd2KCmdID.HOME:
-                        _window.SelectFirst();
+                        _window?.SelectFirst();
                         return true;
                     case VSStd2KCmdID.END:
-                        _window.SelectLast();
+                        _window?.SelectLast();
                         return true;
                     case VSStd2KCmdID.COMPLETEWORD:
                     case VSStd2KCmdID.SHOWMEMBERLIST:
@@ -309,7 +390,11 @@ namespace AxialSqlTools.IntelliSense
                     case VSStd2KCmdID.CANCEL:
                         // SSMS 内建 IntelliSense 超时会自动发 CANCEL，仅用户按 Esc 时关闭
                         if (Keyboard.IsKeyDown(Key.Escape))
+                        {
                             CloseSession();
+                            if (QuickInfoTooltip.IsOpen)
+                                QuickInfoTooltip.Close();
+                        }
                         return true;
                     default:
                         return false;
@@ -358,7 +443,7 @@ namespace AxialSqlTools.IntelliSense
                     return;
                 }
                 if (IsWithinAcceptGrace()) return;
-                Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => TriggerCompletion(false)),
+                Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => TriggerCompletion(false, editingRefresh: true)),
                     DispatcherPriority.Background);
             }
             else
@@ -372,6 +457,8 @@ namespace AxialSqlTools.IntelliSense
         public void TriggerCompletion(bool force, bool editingRefresh = false)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
+            _logger.Info("TriggerCompletion force={0} refresh={1}", force, editingRefresh);
+            LogManager.Flush();
 
             if (!force && EditorSelectionHelper.HasTextSelection(_textView))
             {
@@ -395,6 +482,8 @@ namespace AxialSqlTools.IntelliSense
 
             try
             {
+                _logger.Info("TriggerCompletion: read text");
+                LogManager.Flush();
                 string text = GetFullText();
                 int caret = GetCaretOffset();
                 if (caret < 0)
@@ -403,22 +492,42 @@ namespace AxialSqlTools.IntelliSense
                     return;
                 }
 
+                _logger.Info("TriggerCompletion: connection");
+                LogManager.Flush();
                 var connInfo = SafeGetCurrentConnection();
-                var catalog = connInfo != null
-                    ? MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo)
-                    : null;
+                // 自动触发：只用缓存，后台预热，避免新标签首次输入时 UI 同步连库卡死
+                MetadataCatalog catalog = null;
+                if (connInfo != null)
+                {
+                    catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo);
+                    if (catalog == null)
+                    {
+                        MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo);
+                        if (force)
+                            catalog = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo);
+                    }
+                }
 
+                _logger.Info("TriggerCompletion: engine caret={0} textLen={1} db={2}", caret, text?.Length ?? 0, connInfo?.Database);
+                LogManager.Flush();
                 var result = _engine.GetCompletion(text, caret, catalog, settings, connInfo);
                 _replaceStartOffset = result.ReplaceStartOffset;
                 _replaceEndOffset = result.ReplaceEndOffset;
 
                 if (result.IsEmpty)
                 {
-                    if (force || editingRefresh)
+                    // 候选为空时必须关掉旧弹框，否则会残留上一语句的列提示
+                    if (force || editingRefresh || _sessionOpen)
                         CloseSession();
                     return;
                 }
 
+                // 补全弹框打开时关闭悬停注释框，避免叠在一起
+                if (QuickInfoTooltip.IsOpen)
+                    QuickInfoTooltip.Close();
+
+                _logger.Info("TriggerCompletion: show items={0}", result.Items.Count);
+                LogManager.Flush();
                 var pt = GetCaretScreenPoint();
                 if (!pt.HasValue)
                 {
@@ -428,10 +537,11 @@ namespace AxialSqlTools.IntelliSense
                 }
 
                 IntPtr hwnd = _textView.GetWindowHandle();
+                var window = EnsureCompletionWindow();
                 if (_sessionOpen)
                 {
-                    _window.UpdateItems(result.Items);
-                    _window.RepositionAt(pt.Value.x, pt.Value.y, hwnd);
+                    window.UpdateItems(result.Items);
+                    window.RepositionAt(pt.Value.x, pt.Value.y, hwnd);
                     if (editingRefresh)
                     {
                         _sessionOpenedAt = DateTime.UtcNow;
@@ -443,13 +553,17 @@ namespace AxialSqlTools.IntelliSense
                 {
                     _sessionOpen = true;
                     _sessionOpenedAt = DateTime.UtcNow;
-                    _window.ShowAt(pt.Value.x, pt.Value.y, result.Items, hwnd);
+                    window.ShowAt(pt.Value.x, pt.Value.y, result.Items, hwnd);
                     UpdateSessionCaretAnchor();
                     EnsureSessionWatchdogRunning();
                 }
+                _logger.Info("TriggerCompletion: done");
+                LogManager.Flush();
             }
-            catch
+            catch (Exception ex)
             {
+                _logger.Error(ex, "TriggerCompletion failed");
+                LogManager.Flush();
                 CloseSession();
             }
         }
@@ -462,7 +576,7 @@ namespace AxialSqlTools.IntelliSense
 
         public void CommitSelected()
         {
-            var item = _window.GetSelected();
+            var item = _window?.GetSelected();
             CloseSession();
             if (item == null) return;
             try
@@ -544,7 +658,7 @@ namespace AxialSqlTools.IntelliSense
             _debounceTimer?.Stop();
             _externalFocusCloseTimer?.Stop();
             _sessionWatchdogTimer?.Stop();
-            _window.HidePopup();
+            _window?.HidePopup();
         }
 
         private void UpdateSessionCaretAnchor()
@@ -718,7 +832,9 @@ namespace AxialSqlTools.IntelliSense
         {
             try
             {
-                return ScriptFactoryAccess.GetCurrentConnectionInfoForEditor(_textView);
+                // 禁止传入 textView：TryGetConnectionInfoForTextView 会反射遍历 DocView/WinForms.Handle，
+                // 新标签首次按键时极易导致 SSMS 原生崩溃（无托管异常日志）。
+                return ScriptFactoryAccess.GetCurrentConnectionInfo();
             }
             catch
             {

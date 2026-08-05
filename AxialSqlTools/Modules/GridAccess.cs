@@ -674,7 +674,8 @@ namespace AxialSqlTools
             {
                 try
                 {
-                    if (control.Handle == targetHwnd)
+                    // 禁止访问未创建的 Handle（会强制 CreateHandle，新标签期间易崩溃）
+                    if (control.IsHandleCreated && control.Handle == targetHwnd)
                         return true;
                 }
                 catch

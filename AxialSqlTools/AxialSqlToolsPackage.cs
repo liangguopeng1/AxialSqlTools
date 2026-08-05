@@ -136,7 +136,9 @@ namespace AxialSqlTools
                           // Optionally, configure archive settings, etc.
                           ArchiveFileName = Path.Combine(logDirectory, "archive/log.{###}.txt"),
                           ArchiveAboveSize = 1024 * 1024 * 5, // 5 MB, for example
-                          MaxArchiveFiles = 5
+                          MaxArchiveFiles = 5,
+                          KeepFileOpen = false,
+                          AutoFlush = true
                       };
 
                       // Add the file target to the builder
@@ -641,32 +643,31 @@ namespace AxialSqlTools
             }
 
             // IntelliSense 必须独立于 snippets 可用：任一启用即挂载 KeypressCommandFilter
+            // 仅挂轻量 Filter；KeyHandler/WPF 延后到首次按键。
+            // 注册本身也延后到 ApplicationIdle，避开 Ctrl+N 激活瞬间的编辑器创建窗口期。
             if (SettingsManager.GetUseSnippets() || UiSettingsStore.GetIntelliSenseEnabled())
             {
+                var activated = GotFocus;
                 try
                 {
-                    // snippet processor
-                    var DocData = GridAccess.GetProperty(GotFocus.Object, "DocData");
-                    if (DocData != null)
+                    var dispatcher = System.Windows.Application.Current?.Dispatcher
+                        ?? Dispatcher.CurrentDispatcher;
+                    dispatcher.BeginInvoke(new Action(() =>
                     {
-                        var txtMgr = (IVsTextManager)GridAccess.GetProperty(DocData, "TextManager");
-
-                        IVsTextView textView;
-                        if (txtMgr != null && txtMgr.GetActiveView(0, null, out textView) == VSConstants.S_OK)
+                        try
                         {
-                            // Prevent duplicate filters on the same text view
-                            if (!_registeredTextViews.Contains(textView))
-                            {
-                                _registeredTextViews.Add(textView);
-                                var CommandFilter = new KeypressCommandFilter(this, textView);
-                                CommandFilter.AddToChain();
-                            }
+                            TryRegisterIntelliSenseOnActivated(activated);
                         }
-                    }
+                        catch (Exception ex)
+                        {
+                            _logger.Error(ex, "Deferred IntelliSense register failed");
+                        }
+                    }), DispatcherPriority.ApplicationIdle);
                 }
                 catch (Exception ex)
                 {
                     _logger.Error(ex, "An exception occurred");
+                    try { TryRegisterIntelliSenseOnActivated(GotFocus); } catch { }
                 }
             }
 
@@ -685,6 +686,35 @@ namespace AxialSqlTools
                 _logger.Error(ex, "An exception occurred applying connection color");
             }
 
+        }
+
+        private void TryRegisterIntelliSenseOnActivated(EnvDTE.Window gotFocus)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (gotFocus == null) return;
+            if (!SettingsManager.GetUseSnippets() && !UiSettingsStore.GetIntelliSenseEnabled()) return;
+            try
+            {
+                object winObj = null;
+                try { winObj = gotFocus.Object; } catch { return; }
+                if (winObj == null) return;
+                var DocData = GridAccess.GetProperty(winObj, "DocData");
+                if (DocData == null) return;
+                var txtMgr = (IVsTextManager)GridAccess.GetProperty(DocData, "TextManager");
+                if (txtMgr == null) return;
+                IVsTextView textView;
+                if (txtMgr.GetActiveView(0, null, out textView) != VSConstants.S_OK || textView == null)
+                    return;
+                if (_registeredTextViews.Contains(textView))
+                    return;
+                _registeredTextViews.Add(textView);
+                var CommandFilter = new KeypressCommandFilter(this, textView);
+                CommandFilter.AddToChain();
+            }
+            catch (Exception ex)
+            {
+                _logger?.Error(ex, "TryRegisterIntelliSenseOnActivated failed");
+            }
         }
 
         private static bool ShouldCloseIntelliSensePopups(EnvDTE.Window gotFocus, EnvDTE.Window lostFocus)
@@ -734,6 +764,10 @@ namespace AxialSqlTools
             {
                 _logger.Error(ex, "An exception occurred");
             }
+
+            // 注意：不要在 WindowCreated 里挂 IntelliSense/AssignHandle。
+            // Ctrl+N 新建标签时窗口尚未完全就绪，同步挂载会导致 SSMS 卡死退出。
+            // 挂载统一在 WindowActivated 中完成。
         }
 
         private static void AttachStatisticsExecutionCompletedHandler(object sqlResultsControl)

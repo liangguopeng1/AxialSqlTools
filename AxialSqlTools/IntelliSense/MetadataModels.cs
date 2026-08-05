@@ -84,10 +84,19 @@ namespace AxialSqlTools
                 : "[" + Schema + "].[" + Name + "]";
         }
 
-        /// <summary>表/视图，带列。</summary>
+        /// <summary>表/视图，带列与索引。</summary>
         public class TableColumnInfo : DatabaseObjectInfo
         {
             public List<ColumnInfo> Columns { get; set; } = new List<ColumnInfo>();
+            public List<IndexInfo> Indexes { get; set; } = new List<IndexInfo>();
+        }
+
+        public class IndexInfo
+        {
+            public string Name { get; set; }
+            public bool IsUnique { get; set; }
+            public bool IsPrimaryKey { get; set; }
+            public List<string> Columns { get; set; } = new List<string>();
         }
 
         public class ColumnInfo
@@ -97,6 +106,8 @@ namespace AxialSqlTools
             public bool Nullable { get; set; }
             public string DefaultValue { get; set; }
             public string Description { get; set; } // MS_Description
+            public bool IsIdentity { get; set; }
+            public bool IsPrimaryKey { get; set; }
 
             public string BracketedName => "[" + Name + "]";
         }

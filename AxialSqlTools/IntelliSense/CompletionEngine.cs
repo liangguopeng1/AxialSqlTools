@@ -736,7 +736,8 @@ namespace AxialSqlTools
                 {
                     if (catalog == null || !string.Equals(catalog.Database, tref.Database, StringComparison.OrdinalIgnoreCase))
                     {
-                        target = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, tref.Database);
+                        target = GetCatalogNonBlocking(connInfo, tref.Database);
+                        if (target == null) return null;
                     }
                 }
                 if (target != null)
@@ -744,7 +745,17 @@ namespace AxialSqlTools
                     var found = target.FindTableOrView(tref.Schema, tref.Name);
                     if (found != null) return found;
                 }
-                return MetadataCatalogService.Instance.GetTableColumns(connInfo, tref.Database, tref.Schema, tref.Name);
+                return null;
+            }
+
+            /// <summary>补全用：只读缓存，未命中则后台构建，避免 UI 同步连库卡死。</summary>
+            private static MetadataCatalog GetCatalogNonBlocking(
+                ScriptFactoryAccess.ConnectionInfo connInfo, string database = null)
+            {
+                var cached = MetadataCatalogService.Instance.GetCachedCatalog(connInfo, database);
+                if (cached != null) return cached;
+                MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, database);
+                return null;
             }
 
             private CompletionContext GetContext(List<TSqlParserToken> tokens, int localOffset, FromObjectNameContext fromName, out string prefix)
@@ -1100,13 +1111,19 @@ namespace AxialSqlTools
 
                 if (!string.IsNullOrEmpty(prefix))
                 {
-                    int idx = FindTokenIndexBefore(tokens, localOffset);
+                    int idx = FindTokenIndexForPrefix(tokens, localOffset);
+                    if (idx < 0)
+                        idx = FindTokenIndexBefore(tokens, localOffset);
                     if (idx >= 0)
                     {
                         var t = tokens[idx];
-                        if (t != null && IsPartialObjectNameToken(t) && t.Offset + t.Text.Length >= localOffset)
+                        // 含 IN 等关键字 token，否则 in + INNER JOIN 会变成 inINNER JOIN
+                        if (t != null && IsWordLikeToken(t) && t.Offset + t.Text.Length >= localOffset
+                            && t.Offset <= localOffset)
                             return batchStart + t.Offset;
                     }
+                    if (localOffset >= prefix.Length)
+                        return batchStart + localOffset - prefix.Length;
                 }
                 return batchStart + localOffset;
             }
@@ -1381,7 +1398,11 @@ namespace AxialSqlTools
                 {
                     case CompletionContext.BatchStart:
                         AddSnippets(items, prefix);
-                        if (settings.includeKeywords) AddKeywords(items, TopLevelKeywords);
+                        if (settings.includeKeywords)
+                        {
+                            AddKeywords(items, TopLevelKeywords);
+                            AddKeywords(items, AfterFromKeywords);
+                        }
                         break;
 
                     case CompletionContext.AfterCreate:
@@ -1394,6 +1415,8 @@ namespace AxialSqlTools
 
                     case CompletionContext.FromClause:
                         AddFromClauseItems(items, fromName, catalog, settings, connInfo);
+                        if (settings.includeKeywords && ShouldSuggestAfterFromKeywords(fromName, prefix))
+                            AddKeywords(items, AfterFromKeywords);
                         break;
 
                     case CompletionContext.InsertTarget:
@@ -1519,13 +1542,13 @@ namespace AxialSqlTools
                 {
                     if (segCount == 1 && fromName.UsesDoubleDot && IsDatabaseName(connInfo, fromName.Segments[0]))
                     {
-                        var remote = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, fromName.Segments[0]);
+                        var remote = GetCatalogNonBlocking(connInfo, fromName.Segments[0]);
                         AddTablesInSchema(items, remote, "dbo", settings, fromName, connInfo, includeSystemObjects: false);
                         return;
                     }
                     if (segCount == 1 && IsDatabaseName(connInfo, fromName.Segments[0]))
                     {
-                        var remote = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, fromName.Segments[0]);
+                        var remote = GetCatalogNonBlocking(connInfo, fromName.Segments[0]);
                         AddTablesInSchema(items, remote, null, settings, fromName, connInfo, includeSystemObjects: false);
                         return;
                     }
@@ -1536,7 +1559,7 @@ namespace AxialSqlTools
                     }
                     if (segCount == 2 && IsDatabaseName(connInfo, fromName.Segments[0]))
                     {
-                        var remote = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, fromName.Segments[0]);
+                        var remote = GetCatalogNonBlocking(connInfo, fromName.Segments[0]);
                         AddTablesInSchema(items, remote, fromName.Segments[1], settings, fromName, connInfo, includeSystemObjects: false);
                         return;
                     }
@@ -1549,21 +1572,21 @@ namespace AxialSqlTools
 
                 if (segCount == 1 && fromName.UsesDoubleDot && IsDatabaseName(connInfo, fromName.Segments[0]))
                 {
-                    var remote = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, fromName.Segments[0]);
+                    var remote = GetCatalogNonBlocking(connInfo, fromName.Segments[0]);
                     AddTablesInSchema(items, remote, "dbo", settings, fromName, connInfo, includeSystemObjects: false);
                     return;
                 }
 
                 if (segCount == 1 && IsDatabaseName(connInfo, fromName.Segments[0]))
                 {
-                    var remote = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, fromName.Segments[0]);
+                    var remote = GetCatalogNonBlocking(connInfo, fromName.Segments[0]);
                     AddTablesInSchema(items, remote, null, settings, fromName, connInfo, includeSystemObjects: false);
                     return;
                 }
 
                 if (segCount == 2 && IsDatabaseName(connInfo, fromName.Segments[0]))
                 {
-                    var remote = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, fromName.Segments[0]);
+                    var remote = GetCatalogNonBlocking(connInfo, fromName.Segments[0]);
                     AddTablesInSchema(items, remote, fromName.Segments[1], settings, fromName, connInfo, includeSystemObjects: false);
                     return;
                 }
@@ -1581,7 +1604,7 @@ namespace AxialSqlTools
 
             private void AddSchemasForDatabase(List<CompletionItem> items, ScriptFactoryAccess.ConnectionInfo connInfo, string database)
             {
-                var cat = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, database);
+                var cat = GetCatalogNonBlocking(connInfo, database);
                 if (cat == null) return;
                 var schemas = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var t in cat.Tables)
@@ -2225,8 +2248,17 @@ namespace AxialSqlTools
             public static readonly string[] TopLevelKeywords =
             {
                 "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP",
-                "EXEC", "USE", "DECLARE", "SET", "IF", "BEGIN", "END", "TRUNCATE", "MERGE",
-                "INNER JOIN", "GO"
+                "EXEC", "USE", "DECLARE", "SET", "IF", "BEGIN", "END", "TRUNCATE", "MERGE", "GO"
+            };
+
+            /// <summary>FROM 表之后常见子句/连接关键字。</summary>
+            public static readonly string[] AfterFromKeywords =
+            {
+                "INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "FULL JOIN", "CROSS JOIN", "JOIN",
+                "LEFT OUTER JOIN", "RIGHT OUTER JOIN", "FULL OUTER JOIN",
+                "CROSS APPLY", "OUTER APPLY",
+                "WHERE", "GROUP BY", "ORDER BY", "HAVING",
+                "UNION", "UNION ALL", "EXCEPT", "INTERSECT"
             };
 
             public static readonly string[] CreateObjectKeywords =
@@ -2243,6 +2275,13 @@ namespace AxialSqlTools
             {
                 "AND", "OR", "NOT", "IN", "BETWEEN", "LIKE", "IS", "NULL", "EXISTS", "CASE", "WHEN", "THEN", "ELSE", "END"
             };
+
+            private static bool ShouldSuggestAfterFromKeywords(FromObjectNameContext fromName, string prefix)
+            {
+                if (fromName != null && fromName.AfterDot) return false;
+                if (fromName != null && fromName.Segments != null && fromName.Segments.Count > 0) return false;
+                return !string.IsNullOrEmpty(prefix);
+            }
 
             public static readonly string[] BuiltInFunctions =
             {
