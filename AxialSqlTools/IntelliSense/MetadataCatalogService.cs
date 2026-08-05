@@ -519,7 +519,8 @@ SELECT s.name AS schema_name,
        ep_col.value AS column_description,
        ep_obj.value AS object_description,
        c.is_identity,
-       CASE WHEN pk.column_id IS NOT NULL THEN 1 ELSE 0 END AS is_primary_key
+       CASE WHEN pk.column_id IS NOT NULL THEN 1 ELSE 0 END AS is_primary_key,
+       CASE WHEN o.type = 'V' THEN OBJECT_DEFINITION(o.object_id) ELSE NULL END AS view_definition
 FROM {objects} o
 JOIN {schemas} s ON o.schema_id = s.schema_id
 JOIN {columns} c ON c.object_id = o.object_id
@@ -558,18 +559,22 @@ ORDER BY s.name, o.name, c.column_id;";
                             string objDesc = reader.IsDBNull(11) ? null : reader.GetString(11);
                             bool isIdentity = !reader.IsDBNull(12) && reader.GetBoolean(12);
                             bool isPrimaryKey = !reader.IsDBNull(13) && reader.GetInt32(13) == 1;
+                            string viewDef = reader.FieldCount > 14 && !reader.IsDBNull(14) ? reader.GetString(14) : null;
 
                             if (current == null ||
                                 !string.Equals(current.Schema, schema, StringComparison.OrdinalIgnoreCase) ||
                                 !string.Equals(current.Name, name, StringComparison.OrdinalIgnoreCase))
                             {
+                                bool isView = string.Equals(type?.Trim(), "V", StringComparison.OrdinalIgnoreCase);
                                 current = new TableColumnInfo
                                 {
                                     Schema = schema,
                                     Name = name,
-                                    Description = objDesc
+                                    Description = objDesc,
+                                    IsView = isView,
+                                    Definition = isView ? viewDef : null
                                 };
-                                if (string.Equals(type, "V", StringComparison.OrdinalIgnoreCase))
+                                if (isView)
                                 {
                                     catalog.Views.Add(current);
                                 }

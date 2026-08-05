@@ -321,39 +321,37 @@ namespace AxialSqlTools
             private void CollectAliases(TSqlScript script, int localOffset, LocalSymbols local, List<TSqlParserToken> tokens)
             {
                 local.Aliases.Clear();
+                TSqlStatement target = null;
                 if (script != null)
                 {
-                    TSqlStatement target = null;
-                    int bestStart = -1;
                     foreach (var batch in script.Batches)
                     {
                         foreach (var stmt in batch.Statements)
                         {
                             if (GetFromClause(stmt) == null) continue;
-                            if (stmt.StartOffset > localOffset) continue;
-                            if (stmt.StartOffset >= bestStart)
-                            {
-                                bestStart = stmt.StartOffset;
-                                target = stmt;
-                            }
-                        }
-                    }
-
-                    if (target != null)
-                    {
-                        var from = GetFromClause(target);
-                        foreach (var tr in from.TableReferences ?? Enumerable.Empty<TableReference>())
-                        {
-                            CollectFromClause(tr, local);
+                            int start = stmt.StartOffset;
+                            int end = start + Math.Max(0, stmt.FragmentLength);
+                            // 光标必须落在本语句内，禁止回退到上一句
+                            if (localOffset < start || localOffset > end) continue;
+                            target = stmt;
                         }
                     }
                 }
-
+                if (target != null)
+                {
+                    var from = GetFromClause(target);
+                    foreach (var tr in from.TableReferences ?? Enumerable.Empty<TableReference>())
+                    {
+                        CollectFromClause(tr, local);
+                    }
+                    return;
+                }
+                // 当前语句未完整解析（如 where and）：仅用 token 推断，绝不沿用上一句
                 if (tokens != null)
                     CollectAliasesFromTokens(tokens, localOffset, local);
             }
 
-            /// <summary>定位当前 SELECT 对应的 FROM（允许 FROM 在光标之后）。</summary>
+            /// <summary>定位当前 SELECT 对应的 FROM（允许 FROM 在光标之后；不跨 ; 语句）。</summary>
             private static int FindFromClauseTokenIndex(List<TSqlParserToken> tokens, int localOffset)
             {
                 int selectIdx = -1;
@@ -362,7 +360,13 @@ namespace AxialSqlTools
                     var t = tokens[i];
                     if (t == null || IsInsignificantToken(t)) continue;
                     if (t.Offset > localOffset) break;
-                    if (string.Equals(t.Text, "SELECT", StringComparison.OrdinalIgnoreCase))
+                    string text = t.Text?.ToUpperInvariant();
+                    if (text == ";" || text == "GO")
+                    {
+                        selectIdx = -1;
+                        continue;
+                    }
+                    if (text == "SELECT")
                         selectIdx = i;
                 }
                 if (selectIdx >= 0)
@@ -372,6 +376,7 @@ namespace AxialSqlTools
                         var t = tokens[i];
                         if (t == null || IsInsignificantToken(t)) continue;
                         string kw = t.Text?.ToUpperInvariant();
+                        if (kw == ";" || kw == "GO") break;
                         if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
                             || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT")
                             return -1;
@@ -383,8 +388,15 @@ namespace AxialSqlTools
                 for (int i = 0; i < tokens.Count; i++)
                 {
                     var t = tokens[i];
-                    if (t != null && t.Offset <= localOffset
-                        && string.Equals(t.Text, "FROM", StringComparison.OrdinalIgnoreCase))
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset > localOffset) break;
+                    string text = t.Text?.ToUpperInvariant();
+                    if (text == ";" || text == "GO")
+                    {
+                        lastFrom = -1;
+                        continue;
+                    }
+                    if (text == "FROM")
                         lastFrom = i;
                 }
                 return lastFrom;
@@ -414,14 +426,18 @@ namespace AxialSqlTools
                 return int.MaxValue;
             }
 
-            /// <summary>ScriptDom 未解析出别名时，从 FROM…WHERE 区间 token 推断（支持 [db]..[table] alias）。</summary>
+            /// <summary>从当前语句 FROM…WHERE 区间推断表引用（支持 db..table、无别名、有别名）。</summary>
             private void CollectAliasesFromTokens(List<TSqlParserToken> tokens, int localOffset, LocalSymbols local)
             {
                 int fromIdx = FindFromClauseTokenIndex(tokens, localOffset);
                 if (fromIdx < 0) return;
                 int scanEnd = FindFromClauseScanEnd(tokens, fromIdx);
-
-                var names = new List<string>();
+                string database = null;
+                string schema = null;
+                string table = null;
+                string alias = null;
+                int dotRun = 0;
+                int partCount = 0;
                 for (int i = fromIdx + 1; i < tokens.Count; i++)
                 {
                     var t = tokens[i];
@@ -430,30 +446,72 @@ namespace AxialSqlTools
                     string kw = t.Text?.ToUpperInvariant();
                     if (kw == "WHERE" || kw == "JOIN" || kw == "INNER" || kw == "LEFT" || kw == "RIGHT"
                         || kw == "FULL" || kw == "CROSS" || kw == "OUTER" || kw == "GROUP" || kw == "ORDER"
-                        || kw == "HAVING" || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT")
+                        || kw == "HAVING" || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT"
+                        || kw == "ON" || kw == "AS" || kw == ";")
                     {
                         break;
                     }
-                    if (t.TokenType == TSqlTokenType.Dot) continue;
-                    if (IsWordLikeToken(t) || IsPartialObjectNameToken(t) || IsIdentifierLike(t))
-                        names.Add(UnbracketIdentifier(t.Text));
+                    if (t.TokenType == TSqlTokenType.Dot)
+                    {
+                        dotRun++;
+                        continue;
+                    }
+                    if (!(IsWordLikeToken(t) || IsPartialObjectNameToken(t) || IsIdentifierLike(t)))
+                        continue;
+                    string name = UnbracketIdentifier(t.Text);
+                    if (IsSqlTableKeyword(name)) continue;
+                    if (table != null && dotRun == 0)
+                    {
+                        // 表名后的独立标识符 = 别名（无点号连接）
+                        alias = name;
+                        break;
+                    }
+                    if (dotRun >= 2 && partCount == 1)
+                    {
+                        // db..table 或 db..schema.table
+                        database = table;
+                        schema = "dbo";
+                        table = name;
+                        partCount = 2;
+                        dotRun = 0;
+                        continue;
+                    }
+                    if (dotRun >= 1 && partCount >= 1)
+                    {
+                        if (partCount == 1)
+                        {
+                            schema = table;
+                            table = name;
+                            partCount = 2;
+                        }
+                        else if (partCount == 2 && database == null)
+                        {
+                            database = schema;
+                            schema = table;
+                            table = name;
+                            partCount = 3;
+                        }
+                        else
+                        {
+                            table = name;
+                        }
+                        dotRun = 0;
+                        continue;
+                    }
+                    table = name;
+                    partCount = 1;
+                    dotRun = 0;
                 }
-
-                if (names.Count < 2) return;
-
-                string alias = names[names.Count - 1];
-                if (IsSqlTableKeyword(alias)) return;
-
-                var tref = TryBuildTableRefFromAliasNames(names, tokens, fromIdx, scanEnd);
-                if (tref == null || string.IsNullOrEmpty(tref.Name)) return;
-                if (IsSqlTableKeyword(tref.Name)) return;
-
-                MergeAlias(local, alias, tref);
+                if (string.IsNullOrEmpty(table) || IsSqlTableKeyword(table)) return;
+                var tref = new TableRef { Database = database, Schema = schema, Name = table };
+                NormalizeTableRef(tref);
+                if (!string.IsNullOrEmpty(alias) && !IsSqlTableKeyword(alias))
+                    MergeAlias(local, alias, tref);
                 MergeAlias(local, tref.Name, tref);
                 if (!string.IsNullOrEmpty(tref.Schema))
                     MergeAlias(local, tref.Schema + "." + tref.Name, tref);
                 if (!string.IsNullOrEmpty(tref.Database))
-                    MergeAlias(local, tref.Database + "." + tref.Schema + "." + tref.Name, tref);
+                    MergeAlias(local, tref.Database + "." + (tref.Schema ?? "dbo") + "." + tref.Name, tref);
             }
 
             private static void MergeAlias(LocalSymbols local, string key, TableRef tref)
@@ -467,93 +525,6 @@ namespace AxialSqlTools
                 }
                 if (string.IsNullOrEmpty(existing.Database) && !string.IsNullOrEmpty(tref.Database))
                     local.Aliases[key] = tref;
-            }
-
-            private static TableRef TryBuildTableRefFromAliasNames(
-                List<string> names, List<TSqlParserToken> tokens, int fromIdx, int scanEnd)
-            {
-                if (names == null || names.Count < 2) return null;
-                string table = names[names.Count - 2];
-                string database;
-                string schema;
-                if (TryFindDoubleDotRef(tokens, fromIdx, scanEnd, table, out database, out schema))
-                {
-                    var tref = new TableRef { Database = database, Schema = schema ?? "dbo", Name = table };
-                    NormalizeTableRef(tref);
-                    return tref;
-                }
-                if (names.Count == 2)
-                {
-                    var tref = new TableRef { Name = names[0] };
-                    NormalizeTableRef(tref);
-                    return tref;
-                }
-                if (names.Count == 3)
-                {
-                    var tref = new TableRef { Schema = names[0], Name = table };
-                    NormalizeTableRef(tref);
-                    return tref;
-                }
-                var qualified = new TableRef
-                {
-                    Database = names[names.Count - 4],
-                    Schema = names[names.Count - 3],
-                    Name = table
-                };
-                NormalizeTableRef(qualified);
-                return qualified;
-            }
-
-            /// <summary>在 FROM 区间查找 db..[schema.]table 模式（.. 后可有显式 schema）。</summary>
-            private static bool TryFindDoubleDotRef(
-                List<TSqlParserToken> tokens, int fromIdx, int scanEnd, string tableName,
-                out string database, out string schema)
-            {
-                database = null;
-                schema = null;
-                for (int i = fromIdx + 1; i < tokens.Count; i++)
-                {
-                    var t = tokens[i];
-                    if (t == null || IsInsignificantToken(t)) continue;
-                    if (t.Offset >= scanEnd) break;
-                    if (!IsPartialObjectNameToken(t) && !IsIdentifierLike(t) && !IsWordLikeToken(t))
-                        continue;
-                    string dbCandidate = UnbracketIdentifier(t.Text);
-                    int j = i + 1;
-                    int dotCount = 0;
-                    while (j < tokens.Count)
-                    {
-                        var nt = tokens[j];
-                        if (nt == null || IsInsignificantToken(nt)) { j++; continue; }
-                        if (nt.Offset >= scanEnd) break;
-                        if (nt.TokenType == TSqlTokenType.Dot) { dotCount++; j++; continue; }
-                        if (dotCount < 2) break;
-                        string ident = UnbracketIdentifier(nt.Text);
-                        if (string.Equals(ident, tableName, StringComparison.OrdinalIgnoreCase))
-                        {
-                            database = dbCandidate;
-                            schema = "dbo";
-                            return true;
-                        }
-                        schema = ident;
-                        j++;
-                        while (j < tokens.Count)
-                        {
-                            var nt2 = tokens[j];
-                            if (nt2 == null || IsInsignificantToken(nt2)) { j++; continue; }
-                            if (nt2.Offset >= scanEnd) break;
-                            if (nt2.TokenType == TSqlTokenType.Dot) { j++; continue; }
-                            if (string.Equals(UnbracketIdentifier(nt2.Text), tableName, StringComparison.OrdinalIgnoreCase))
-                            {
-                                database = dbCandidate;
-                                return true;
-                            }
-                            break;
-                        }
-                        break;
-                    }
-                }
-                return false;
             }
 
             private static bool IsSqlTableKeyword(string name)
@@ -773,6 +744,10 @@ namespace AxialSqlTools
                     prefix = memberPrefix;
                     return CompletionContext.MemberAccess;
                 }
+
+                // 等号/比较符右侧尚未输入内容：不提示（等值待填字面量）
+                if (string.IsNullOrEmpty(prefix) && IsImmediatelyAfterComparisonOperator(tokens, localOffset))
+                    return CompletionContext.Unknown;
 
                 // 找光标前最近的非空白 token
                 int caretTokenIndex = FindTokenIndexBefore(tokens, localOffset);
@@ -1250,6 +1225,31 @@ namespace AxialSqlTools
                 return MetadataCatalogService.Instance.IsLinkedServerDatabase(connInfo, linkedServer, database);
             }
 
+            /// <summary>光标紧跟在 = / &lt;&gt; / != 等比较运算符之后（右侧尚无标识符）。</summary>
+            private bool IsImmediatelyAfterComparisonOperator(List<TSqlParserToken> tokens, int localOffset)
+            {
+                int idx = FindTokenIndexBefore(tokens, localOffset);
+                if (idx < 0) return false;
+                var t = tokens[idx];
+                if (t == null || string.IsNullOrEmpty(t.Text)) return false;
+                // 已在输入词则不算「等号后空」
+                if (IsWordLikeToken(t) || IsIdentifierLike(t) || IsPartialObjectNameToken(t))
+                    return false;
+                switch (t.Text)
+                {
+                    case "=":
+                    case "<>":
+                    case "!=":
+                    case "<":
+                    case ">":
+                    case "<=":
+                    case ">=":
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+
             private string ExtractPrefix(List<TSqlParserToken> tokens, int localOffset)
             {
                 int idx = FindTokenIndexForPrefix(tokens, localOffset);
@@ -1474,9 +1474,9 @@ namespace AxialSqlTools
             {
                 if (fromName == null || !fromName.InFromClause)
                 {
-                    AddTablesViewsAndRoutines(items, catalog, settings, includeTableFunctions: true);
                     AddDatabases(items, connInfo, settings);
                     AddLinkedServers(items, connInfo, settings);
+                    AddTablesViewsAndRoutines(items, catalog, settings, includeTableFunctions: true);
                     return;
                 }
 
@@ -1525,9 +1525,10 @@ namespace AxialSqlTools
                         AddLinkedServers(items, connInfo, settings, fromName.Partial);
                         return;
                     }
-                    AddTablesViewsAndRoutines(items, catalog, settings, includeTableFunctions: true, fromName: fromName, connInfo: connInfo);
+                    // 数据库优先加入，避免被表列表占满 maxCompletionItems
                     AddDatabases(items, connInfo, settings);
                     AddLinkedServers(items, connInfo, settings);
+                    AddTablesViewsAndRoutines(items, catalog, settings, includeTableFunctions: true, fromName: fromName, connInfo: connInfo);
                     return;
                 }
 
@@ -2036,16 +2037,16 @@ namespace AxialSqlTools
                 switch (kind)
                 {
                     case CompletionKind.Column: return -3;
-                    case CompletionKind.Keyword: return -2;
-                    case CompletionKind.Snippet: return -1;
-                    case CompletionKind.Table: return 0;
-                    case CompletionKind.View: return 1;
-                    case CompletionKind.Synonym: return 2;
-                    case CompletionKind.TableFunction: return 3;
-                    case CompletionKind.Schema: return 4;
-                    case CompletionKind.Procedure: return 5;
-                    case CompletionKind.ScalarFunction: return 6;
-                    case CompletionKind.Database: return 8;
+                    case CompletionKind.Database: return -2;
+                    case CompletionKind.Keyword: return -1;
+                    case CompletionKind.Snippet: return 0;
+                    case CompletionKind.Table: return 1;
+                    case CompletionKind.View: return 2;
+                    case CompletionKind.Synonym: return 3;
+                    case CompletionKind.TableFunction: return 4;
+                    case CompletionKind.Schema: return 5;
+                    case CompletionKind.Procedure: return 6;
+                    case CompletionKind.ScalarFunction: return 7;
                     default: return 10;
                 }
             }
@@ -2192,7 +2193,7 @@ namespace AxialSqlTools
             private static string BuildTableDescription(TableColumnInfo t)
             {
                 var sb = new StringBuilder();
-                sb.Append("表/视图: ").AppendLine(t.QualifiedName);
+                sb.Append(t.IsView ? "视图: " : "表: ").AppendLine(t.QualifiedName);
                 if (!string.IsNullOrEmpty(t.Description))
                 {
                     sb.AppendLine().AppendLine(t.Description);

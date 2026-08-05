@@ -26,6 +26,7 @@ namespace AxialSqlTools.IntelliSense
         private static Window _window;
         private static Border _outerBorder;
         private static ScrollViewer _scrollViewer;
+        private static StackPanel _contentStack;
         private static TextBox _headerBox;
         private static TextBox _ddlBox;
         private static Grid _rootGrid;
@@ -186,12 +187,12 @@ namespace AxialSqlTools.IntelliSense
         {
             _headerBox = CreateSelectableBox(false);
             _ddlBox = CreateSelectableBox(true);
-            var stack = new StackPanel();
-            stack.Children.Add(_headerBox);
-            stack.Children.Add(_ddlBox);
+            _contentStack = new StackPanel();
+            _contentStack.Children.Add(_headerBox);
+            _contentStack.Children.Add(_ddlBox);
             _scrollViewer = new ScrollViewer
             {
-                Content = stack,
+                Content = _contentStack,
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
                 Padding = new Thickness(0),
@@ -274,13 +275,11 @@ namespace AxialSqlTools.IntelliSense
             _window.SourceInitialized += OnWindowSourceInitialized;
             _window.SizeChanged += (s, e) =>
             {
-                if (!_isOpen) return;
-                if (_isResizing || _isPinned)
-                {
-                    _userResized = true;
-                    _savedWidth = _window.ActualWidth > 0 ? _window.ActualWidth : _window.Width;
-                    _savedHeight = _window.ActualHeight > 0 ? _window.ActualHeight : _window.Height;
-                }
+                // 仅用户拖拽缩放时锁定尺寸；自动 Measure / Pin 选中不要当成「用户已调大小」
+                if (!_isOpen || !_isResizing) return;
+                _userResized = true;
+                _savedWidth = _window.ActualWidth > 0 ? _window.ActualWidth : _window.Width;
+                _savedHeight = _window.ActualHeight > 0 ? _window.ActualHeight : _window.Height;
             };
             ApplyThemeColors();
             EnsureAppLifecycleHooks();
@@ -460,14 +459,14 @@ namespace AxialSqlTools.IntelliSense
             if (data == null || data.IsEmpty) return;
             EnsureAppLifecycleHooks();
             if (!IsSsmsForeground()) return;
-            if (_isOpen && _isPinned)
-                return;
+            // 钉住时仍允许换内容（列→表），仅相同内容时跳过
             string key = BuildContentKey(data);
             bool sameContent = _isOpen && string.Equals(_lastContentKey, key, StringComparison.Ordinal);
-            // 相同内容已显示：直接保持，禁止反复 Measure/Show 造成闪烁
             if (sameContent)
                 return;
 
+            // 换内容：必须重新按内容测算，忽略上次用户/自动尺寸
+            _userResized = false;
             _owner = owner ?? (object)ownerHwnd;
             ApplyThemeColors();
             var header = new StringBuilder();
@@ -560,15 +559,7 @@ namespace AxialSqlTools.IntelliSense
 
             if (!_userResized)
             {
-                _window.SizeToContent = SizeToContent.WidthAndHeight;
-                _window.Measure(new Size(DefaultMaxWidth, DefaultMaxHeight));
-                double desiredW = Math.Max(MinWidth, Math.Min(DefaultMaxWidth, _window.DesiredSize.Width + 8));
-                double desiredH = Math.Max(MinHeight, Math.Min(DefaultMaxHeight, _window.DesiredSize.Height + 8));
-                _window.SizeToContent = SizeToContent.Manual;
-                _window.Width = desiredW;
-                _window.Height = desiredH;
-                _savedWidth = desiredW;
-                _savedHeight = desiredH;
+                ApplyAutoSizeFromContent();
             }
             else
             {
@@ -609,6 +600,71 @@ namespace AxialSqlTools.IntelliSense
             {
                 try { _window.Show(); } catch { }
             }
+
+            // Show 后再强制一次尺寸（首次 Show 前 Actual 可能不准）
+            if (!_userResized)
+            {
+                ApplyAutoSizeFromContent();
+                _window.UpdateLayout();
+            }
+        }
+
+        /// <summary>
+        /// 直接测量 StackPanel 内容尺寸。ScrollViewer 的 DesiredSize 是视口而非内容，
+        /// 测 Window 会沿用旧小尺寸，导致列→表后弹框缩成最小。
+        /// </summary>
+        private static void ApplyAutoSizeFromContent()
+        {
+            const double chrome = 28; // border + padding + grip
+            double maxContentW = DefaultMaxWidth - chrome;
+            double maxContentH = DefaultMaxHeight - chrome;
+
+            var prevV = _scrollViewer.VerticalScrollBarVisibility;
+            var prevH = _scrollViewer.HorizontalScrollBarVisibility;
+            _scrollViewer.VerticalScrollBarVisibility = ScrollBarVisibility.Disabled;
+            _scrollViewer.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+            try
+            {
+                // 限定最大宽度让 TextWrapping 生效，高度不限以便算出全文高度
+                _headerBox.MaxWidth = maxContentW;
+                _ddlBox.MaxWidth = maxContentW;
+                _contentStack.InvalidateMeasure();
+                _contentStack.Measure(new Size(maxContentW, double.PositiveInfinity));
+                double contentW = Math.Ceiling(_contentStack.DesiredSize.Width);
+                double contentH = Math.Ceiling(_contentStack.DesiredSize.Height);
+                // 兜底：按行数估高，避免 TextBox 偶发 DesiredSize 过小
+                int lines = EstimateLineCount(_headerBox.Text) + EstimateLineCount(_ddlBox.Text);
+                double minByLines = Math.Min(maxContentH, 24 + lines * 16);
+                contentH = Math.Max(contentH, minByLines);
+                contentW = Math.Max(contentW, MinWidth - chrome);
+
+                double desiredW = Math.Max(MinWidth, Math.Min(DefaultMaxWidth, contentW + chrome));
+                double desiredH = Math.Max(MinHeight, Math.Min(DefaultMaxHeight, contentH + chrome));
+
+                _window.SizeToContent = SizeToContent.Manual;
+                _window.Width = desiredW;
+                _window.Height = desiredH;
+                _savedWidth = desiredW;
+                _savedHeight = desiredH;
+            }
+            finally
+            {
+                _headerBox.ClearValue(FrameworkElement.MaxWidthProperty);
+                _ddlBox.ClearValue(FrameworkElement.MaxWidthProperty);
+                _scrollViewer.VerticalScrollBarVisibility = prevV;
+                _scrollViewer.HorizontalScrollBarVisibility = prevH;
+            }
+        }
+
+        private static int EstimateLineCount(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return 0;
+            int n = 1;
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (text[i] == '\n') n++;
+            }
+            return n;
         }
 
         public static IntPtr GetWindowHandle()
@@ -636,6 +692,7 @@ namespace AxialSqlTools.IntelliSense
             _isOpen = false;
             _isPinned = false;
             _isResizing = false;
+            _userResized = false;
             _wasMouseLeftDown = false;
             _lastContentKey = null;
             _owner = null;

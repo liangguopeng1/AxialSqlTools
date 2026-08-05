@@ -87,6 +87,9 @@ namespace AxialSqlTools
         /// <summary>表/视图，带列与索引。</summary>
         public class TableColumnInfo : DatabaseObjectInfo
         {
+            public bool IsView { get; set; }
+            /// <summary>视图定义（OBJECT_DEFINITION），仅视图有值。</summary>
+            public string Definition { get; set; }
             public List<ColumnInfo> Columns { get; set; } = new List<ColumnInfo>();
             public List<IndexInfo> Indexes { get; set; } = new List<IndexInfo>();
         }

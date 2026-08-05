@@ -191,6 +191,14 @@ namespace AxialSqlTools.IntelliSense
                         fromRef = TryParseFromClause(fullText);
                 }
 
+                // 悬停词就是 FROM/JOIN 中的表名时，直接用完整三段引用（含跨库）
+                if (fromRef != null && string.Equals(fromRef.Name, cleanWord, StringComparison.OrdinalIgnoreCase))
+                {
+                    var direct = ResolveTable(connInfo, catalog, fromRef);
+                    if (direct != null)
+                        return BuildTableQuickInfo(dataSource, defaultDb, fromRef, direct);
+                }
+
                 var asTable = ResolveTable(connInfo, catalog, new TableRef
                 {
                     Name = cleanWord,
@@ -380,7 +388,7 @@ namespace AxialSqlTools.IntelliSense
             AddHeaderLine(data, "数据源", dataSource);
             AddHeaderLine(data, "数据库", db);
             AddHeaderLine(data, "架构", table?.Schema ?? tref?.Schema ?? "dbo");
-            AddHeaderLine(data, "表", table?.Name ?? tref?.Name);
+            AddHeaderLine(data, table != null && table.IsView ? "视图" : "表", table?.Name ?? tref?.Name);
             if (!string.IsNullOrEmpty(table?.Description))
                 data.Description = table.Description;
             data.DdlText = QuickInfoDdlBuilder.BuildCreateTable(table);
@@ -399,7 +407,7 @@ namespace AxialSqlTools.IntelliSense
             AddHeaderLine(data, "数据源", dataSource);
             AddHeaderLine(data, "数据库", db);
             AddHeaderLine(data, "架构", table?.Schema ?? tref?.Schema ?? "dbo");
-            AddHeaderLine(data, "表", table?.Name ?? tref?.Name);
+            AddHeaderLine(data, table != null && table.IsView ? "视图" : "表", table?.Name ?? tref?.Name);
             AddHeaderLine(data, "列", col?.Name);
             if (!string.IsNullOrEmpty(col?.Description))
                 data.Description = col.Description;

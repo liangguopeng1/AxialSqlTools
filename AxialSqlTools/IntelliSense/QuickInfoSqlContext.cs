@@ -156,12 +156,24 @@ namespace AxialSqlTools.IntelliSense
                     if (t.Offset >= regionEnd) break;
                     string kw = t.Text?.ToUpperInvariant();
                     if (IsJoinKeyword(kw) || kw == "ON" || kw == "AS") break;
+                    // 语句/子句边界：禁止跨到下一句 SELECT（无分号时尤其常见）
+                    if (IsFromRegionStopKeyword(kw)) break;
+                    // 跳过 WITH (NOLOCK) / kucun(nolock) 等表提示，避免把 nolock 当成表名
+                    if (kw == "WITH") { i++; continue; }
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                    {
+                        i = SkipParenthesisGroup(tokens, i);
+                        continue;
+                    }
                     if (t.TokenType == TSqlTokenType.Dot) { i++; continue; }
                     if (IsWordLike(t) || IsPartialObjectName(t))
                     {
                         string n = Unbracket(t.Text);
-                        names.Add(n);
-                        nameSet.Add(n);
+                        if (!IsTableHintOrNoise(n))
+                        {
+                            names.Add(n);
+                            nameSet.Add(n);
+                        }
                     }
                     i++;
                 }
@@ -309,7 +321,13 @@ namespace AxialSqlTools.IntelliSense
                 var t = tokens[i];
                 if (t == null || IsInsignificant(t)) continue;
                 if (t.Offset > offset) break;
-                if (string.Equals(t.Text, "SELECT", StringComparison.OrdinalIgnoreCase))
+                string text = t.Text?.ToUpperInvariant();
+                if (text == ";" || text == "GO")
+                {
+                    selectIdx = -1;
+                    continue;
+                }
+                if (text == "SELECT")
                     selectIdx = i;
             }
             if (selectIdx >= 0)
@@ -319,10 +337,11 @@ namespace AxialSqlTools.IntelliSense
                     var t = tokens[i];
                     if (t == null || IsInsignificant(t)) continue;
                     string kw = t.Text?.ToUpperInvariant();
+                    if (kw == ";" || kw == "GO") break;
                     if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
                         || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT")
                         return -1;
-                    if (string.Equals(t.Text, "FROM", StringComparison.OrdinalIgnoreCase))
+                    if (kw == "FROM")
                         return i;
                 }
             }
@@ -330,8 +349,15 @@ namespace AxialSqlTools.IntelliSense
             for (int i = 0; i < tokens.Count; i++)
             {
                 var t = tokens[i];
-                if (t != null && t.Offset <= offset
-                    && string.Equals(t.Text, "FROM", StringComparison.OrdinalIgnoreCase))
+                if (t == null || IsInsignificant(t)) continue;
+                if (t.Offset > offset) break;
+                string text = t.Text?.ToUpperInvariant();
+                if (text == ";" || text == "GO")
+                {
+                    lastFrom = -1;
+                    continue;
+                }
+                if (text == "FROM")
                     lastFrom = i;
             }
             return lastFrom;
@@ -344,8 +370,7 @@ namespace AxialSqlTools.IntelliSense
                 var t = tokens[i];
                 if (t == null || IsInsignificant(t)) continue;
                 string kw = t.Text?.ToUpperInvariant();
-                if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
-                    || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT" || kw == ";")
+                if (IsFromRegionStopKeyword(kw))
                     return t.Offset;
             }
             for (int i = tokens.Count - 1; i >= 0; i--)
@@ -355,6 +380,41 @@ namespace AxialSqlTools.IntelliSense
                 return t.Offset + t.Text.Length;
             }
             return int.MaxValue;
+        }
+
+        /// <summary>FROM 区间结束关键字（含下一语句起点，避免无分号时串句）。</summary>
+        private static bool IsFromRegionStopKeyword(string kw)
+        {
+            if (string.IsNullOrEmpty(kw)) return false;
+            switch (kw)
+            {
+                case "WHERE":
+                case "GROUP":
+                case "ORDER":
+                case "HAVING":
+                case "UNION":
+                case "EXCEPT":
+                case "INTERSECT":
+                case ";":
+                case "GO":
+                case "SELECT":
+                case "INSERT":
+                case "UPDATE":
+                case "DELETE":
+                case "MERGE":
+                case "EXEC":
+                case "EXECUTE":
+                case "CREATE":
+                case "ALTER":
+                case "DROP":
+                case "TRUNCATE":
+                case "USE":
+                case "DECLARE":
+                case "SET":
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         private static bool IsJoinKeyword(string kw)
@@ -443,6 +503,53 @@ namespace AxialSqlTools.IntelliSense
                 default:
                     return false;
             }
+        }
+
+        private static bool IsTableHintOrNoise(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return true;
+            if (IsSqlKeyword(name)) return true;
+            switch (name.ToUpperInvariant())
+            {
+                case "READCOMMITTED":
+                case "REPEATABLEREAD":
+                case "SERIALIZABLE":
+                case "SNAPSHOT":
+                case "HOLDLOCK":
+                case "UPDLOCK":
+                case "XLOCK":
+                case "ROWLOCK":
+                case "PAGLOCK":
+                case "TABLOCK":
+                case "TABLOCKX":
+                case "NOWAIT":
+                case "READPAST":
+                case "FORCESEEK":
+                case "FORCESCAN":
+                case "IGNORE_CONSTRAINTS":
+                case "IGNORE_TRIGGERS":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>跳过成对括号（含嵌套），返回右括号后的下一个索引。</summary>
+        private static int SkipParenthesisGroup(List<TSqlParserToken> tokens, int openIdx)
+        {
+            int depth = 0;
+            for (int i = openIdx; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (t == null) continue;
+                if (t.TokenType == TSqlTokenType.LeftParenthesis) depth++;
+                else if (t.TokenType == TSqlTokenType.RightParenthesis)
+                {
+                    depth--;
+                    if (depth <= 0) return i + 1;
+                }
+            }
+            return openIdx + 1;
         }
 
         private static int FindTokenIndexAt(List<TSqlParserToken> tokens, int offset)

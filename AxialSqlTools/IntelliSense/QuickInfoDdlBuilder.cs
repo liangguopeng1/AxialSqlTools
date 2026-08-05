@@ -7,7 +7,10 @@ namespace AxialSqlTools.IntelliSense
     {
         public static string BuildCreateTable(TableColumnInfo table)
         {
-            if (table == null || table.Columns == null || table.Columns.Count == 0)
+            if (table == null) return string.Empty;
+            if (table.IsView)
+                return BuildCreateView(table);
+            if (table.Columns == null || table.Columns.Count == 0)
                 return string.Empty;
             var sb = new StringBuilder();
             sb.AppendLine("-- auto-generated definition");
@@ -64,11 +67,33 @@ namespace AxialSqlTools.IntelliSense
             return sb.ToString().TrimEnd();
         }
 
+        public static string BuildCreateView(TableColumnInfo view)
+        {
+            if (view == null) return string.Empty;
+            if (!string.IsNullOrEmpty(view.Definition))
+                return view.Definition.Trim();
+            // 无定义时至少给出列结构提示
+            if (view.Columns == null || view.Columns.Count == 0)
+                return string.Empty;
+            var sb = new StringBuilder();
+            sb.AppendLine("-- view definition unavailable");
+            sb.AppendLine("create view " + Qualify(view.Schema, view.Name) + " as");
+            sb.Append("select ");
+            for (int i = 0; i < view.Columns.Count; i++)
+            {
+                if (i > 0) sb.Append(", ");
+                sb.Append(view.Columns[i].Name);
+            }
+            return sb.ToString().TrimEnd();
+        }
+
         public static string BuildColumnDdl(TableColumnInfo table, ColumnInfo col)
         {
             if (table == null || col == null) return string.Empty;
+            string objKind = table.IsView ? "view" : "table";
+            string propKind = table.IsView ? "VIEW" : "TABLE";
             var sb = new StringBuilder();
-            sb.AppendLine("alter table " + Qualify(table.Schema, table.Name));
+            sb.AppendLine("alter " + objKind + " " + Qualify(table.Schema, table.Name));
             sb.Append("  add ").Append(col.Name).Append(" ").Append(col.DataType ?? string.Empty);
             if (col.IsIdentity) sb.Append(" identity");
             if (col.IsPrimaryKey) sb.Append(" primary key");
@@ -80,7 +105,7 @@ namespace AxialSqlTools.IntelliSense
                 sb.AppendLine();
                 sb.AppendLine("exec sp_addextendedproperty 'MS_Description', N'" + EscapeSqlString(col.Description)
                     + "', 'SCHEMA', '" + EscapeSqlIdent(table.Schema ?? "dbo")
-                    + "', 'TABLE', '" + EscapeSqlIdent(table.Name)
+                    + "', '" + propKind + "', '" + EscapeSqlIdent(table.Name)
                     + "', 'COLUMN', '" + EscapeSqlIdent(col.Name) + "'");
                 sb.Append("go");
             }

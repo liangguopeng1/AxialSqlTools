@@ -362,11 +362,7 @@ namespace AxialSqlTools.IntelliSense
                 {
                     catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo);
                     if (catalog == null)
-                    {
                         MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo);
-                        CloseTooltip();
-                        return;
-                    }
                 }
 
                 var info = _provider.GetQuickInfo(text, offset, catalog, connInfo);
