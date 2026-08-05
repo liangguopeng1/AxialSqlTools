@@ -93,19 +93,74 @@ namespace AxialSqlTools
                     }
 
                     var script = ParseCached(batchText);
+                    int localOffset = caretOffset - batchStart;
+                    if (localOffset < 0) localOffset = 0;
+
+                    // 原文兜底：分号后 / 行首输入关键字（不依赖 ScriptDom token，避免残缺 SQL 丢 token）
+                    string rawPrefix;
+                    bool afterStmtBreak;
+                    bool atLineStart;
+                    TryGetRawTypingPrefix(batchText, localOffset, out rawPrefix, out afterStmtBreak, out atLineStart);
                     if (script == null)
                     {
+                        if ((afterStmtBreak || atLineStart) && !string.IsNullOrEmpty(rawPrefix))
+                        {
+                            result.Context = CompletionContext.BatchStart;
+                            result.Prefix = rawPrefix;
+                            result.Items = BuildItems(CompletionContext.BatchStart, rawPrefix, null, new LocalSymbols(), catalog, settings, connInfo);
+                            result.Items = FilterAndSort(result.Items, rawPrefix, settings, connInfo, null);
+                            result.ReplaceStartOffset = caretOffset - rawPrefix.Length;
+                            result.ReplaceEndOffset = caretOffset;
+                        }
                         return result;
                     }
 
                     var tokens = _lastTokens;
-                    int localOffset = caretOffset - batchStart;
-                    if (localOffset < 0) localOffset = 0;
-
                     var local = ExtractLocalSymbols(script);
                     CollectAliases(script, localOffset, local, tokens);
 
                     string prefix;
+
+                    // 分号/GO 后：强制语句起始（SELECT 等）——须先于成员访问，避免被上一句 a.col 误抢
+                    if (afterStmtBreak && !string.IsNullOrEmpty(rawPrefix))
+                    {
+                        result.Context = CompletionContext.BatchStart;
+                        result.Prefix = rawPrefix;
+                        result.Items = BuildItems(CompletionContext.BatchStart, rawPrefix, null, local, catalog, settings, connInfo);
+                        result.Items = FilterAndSort(result.Items, rawPrefix, settings, connInfo, null);
+                        result.ReplaceStartOffset = caretOffset - rawPrefix.Length;
+                        result.ReplaceEndOffset = caretOffset;
+                        return result;
+                    }
+
+                    // 行首输入：多表 JOIN 后写 in/where，或新语句写 s
+                    int caretTokenIndex = FindTokenIndexForPrefix(tokens, localOffset);
+                    if (atLineStart && !string.IsNullOrEmpty(rawPrefix))
+                    {
+                        bool hasFrom = HasFromKeywordBefore(tokens, localOffset);
+                        result.Context = hasFrom && !afterStmtBreak
+                            ? CompletionContext.FromClause
+                            : CompletionContext.BatchStart;
+                        result.Prefix = rawPrefix;
+                        var fromNameEarly = hasFrom && !afterStmtBreak
+                            ? new FromObjectNameContext { InFromClause = true, Partial = rawPrefix }
+                            : null;
+                        if (result.Context == CompletionContext.FromClause)
+                        {
+                            result.Items = new List<CompletionItem>();
+                            if (settings.includeKeywords)
+                                AddKeywords(result.Items, AfterFromKeywords);
+                        }
+                        else
+                        {
+                            result.Items = BuildItems(CompletionContext.BatchStart, rawPrefix, null, local, catalog, settings, connInfo);
+                        }
+                        result.Items = FilterAndSort(result.Items, rawPrefix, settings, connInfo, fromNameEarly);
+                        result.ReplaceStartOffset = caretOffset - rawPrefix.Length;
+                        result.ReplaceEndOffset = caretOffset;
+                        return result;
+                    }
+
                     if (TryGetMemberAccessPrefix(tokens, localOffset, out string memberPrefix))
                     {
                         string owner = GetOwnerBeforeDot(memberPrefix);
@@ -121,10 +176,10 @@ namespace AxialSqlTools
                         return result;
                     }
 
-                    int caretTokenIndex = FindTokenIndexForPrefix(tokens, localOffset);
                     if (caretTokenIndex >= 0 && IsAtLineStartTypingKeyword(tokens, localOffset, caretTokenIndex))
                     {
                         prefix = ExtractPrefix(tokens, localOffset);
+                        if (string.IsNullOrEmpty(prefix)) prefix = rawPrefix;
                         result.Context = CompletionContext.BatchStart;
                         result.Prefix = prefix;
                         result.Items = BuildItems(CompletionContext.BatchStart, prefix, null, local, catalog, settings, connInfo);
@@ -136,6 +191,8 @@ namespace AxialSqlTools
 
                     var fromName = ParseFromObjectName(tokens, localOffset);
                     var ctx = GetContext(tokens, localOffset, fromName, out prefix);
+                    if (string.IsNullOrEmpty(prefix) && !string.IsNullOrEmpty(rawPrefix))
+                        prefix = rawPrefix;
                     result.Context = ctx;
                     result.Prefix = prefix;
 
@@ -322,6 +379,8 @@ namespace AxialSqlTools
             {
                 local.Aliases.Clear();
                 TSqlStatement target = null;
+                TSqlStatement nearest = null;
+                int nearestStart = -1;
                 if (script != null)
                 {
                     foreach (var batch in script.Batches)
@@ -331,12 +390,18 @@ namespace AxialSqlTools
                             if (GetFromClause(stmt) == null) continue;
                             int start = stmt.StartOffset;
                             int end = start + Math.Max(0, stmt.FragmentLength);
-                            // 光标必须落在本语句内，禁止回退到上一句
-                            if (localOffset < start || localOffset > end) continue;
-                            target = stmt;
+                            if (localOffset >= start && localOffset <= end)
+                                target = stmt;
+                            // 残缺 WHERE（如 and d.）时 FragmentLength 可能短于光标：取光标前最近带 FROM 的语句
+                            if (localOffset >= start && start >= nearestStart)
+                            {
+                                nearestStart = start;
+                                nearest = stmt;
+                            }
                         }
                     }
                 }
+                if (target == null) target = nearest;
                 if (target != null)
                 {
                     var from = GetFromClause(target);
@@ -344,17 +409,18 @@ namespace AxialSqlTools
                     {
                         CollectFromClause(tr, local);
                     }
-                    return;
                 }
-                // 当前语句未完整解析（如 where and）：仅用 token 推断，绝不沿用上一句
+                // 始终用 token 补全 JOIN 别名（ScriptDom 对 kucun(nolock) 等可能丢别名）
                 if (tokens != null)
                     CollectAliasesFromTokens(tokens, localOffset, local);
             }
 
-            /// <summary>定位当前 SELECT 对应的 FROM（允许 FROM 在光标之后；不跨 ; 语句）。</summary>
+            /// <summary>定位当前 SELECT 对应的 FROM（允许 FROM 在光标之后；支持误写分号后继续 AND 条件）。</summary>
             private static int FindFromClauseTokenIndex(List<TSqlParserToken> tokens, int localOffset)
             {
                 int selectIdx = -1;
+                int selectBeforeSemi = -1;
+                int lastSemiIdx = -1;
                 for (int i = 0; i < tokens.Count; i++)
                 {
                     var t = tokens[i];
@@ -363,11 +429,19 @@ namespace AxialSqlTools
                     string text = t.Text?.ToUpperInvariant();
                     if (text == ";" || text == "GO")
                     {
+                        selectBeforeSemi = selectIdx;
+                        lastSemiIdx = i;
                         selectIdx = -1;
                         continue;
                     }
                     if (text == "SELECT")
                         selectIdx = i;
+                }
+                // where ... ; and alias.col → 分号后无新 SELECT，沿用分号前的查询别名
+                if (selectIdx < 0 && selectBeforeSemi >= 0 && lastSemiIdx >= 0
+                    && IsClauseContinuationAfter(tokens, lastSemiIdx, localOffset))
+                {
+                    selectIdx = selectBeforeSemi;
                 }
                 if (selectIdx >= 0)
                 {
@@ -375,16 +449,17 @@ namespace AxialSqlTools
                     {
                         var t = tokens[i];
                         if (t == null || IsInsignificantToken(t)) continue;
-                        string kw = t.Text?.ToUpperInvariant();
-                        if (kw == ";" || kw == "GO") break;
-                        if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
-                            || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT")
-                            return -1;
+                        // 允许越过误写的分号去找 FROM（FROM 一定在分号前）
                         if (string.Equals(t.Text, "FROM", StringComparison.OrdinalIgnoreCase))
                             return i;
+                        string kw = t.Text?.ToUpperInvariant();
+                        if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
+                            || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT")
+                            break;
                     }
                 }
                 int lastFrom = -1;
+                int fromBeforeSemi = -1;
                 for (int i = 0; i < tokens.Count; i++)
                 {
                     var t = tokens[i];
@@ -393,16 +468,47 @@ namespace AxialSqlTools
                     string text = t.Text?.ToUpperInvariant();
                     if (text == ";" || text == "GO")
                     {
+                        fromBeforeSemi = lastFrom;
+                        lastSemiIdx = i;
                         lastFrom = -1;
                         continue;
                     }
                     if (text == "FROM")
                         lastFrom = i;
                 }
-                return lastFrom;
+                if (lastFrom >= 0) return lastFrom;
+                if (fromBeforeSemi >= 0 && lastSemiIdx >= 0
+                    && IsClauseContinuationAfter(tokens, lastSemiIdx, localOffset))
+                    return fromBeforeSemi;
+                return -1;
             }
 
-            private static int FindFromClauseScanEnd(List<TSqlParserToken> tokens, int fromIdx)
+            /// <summary>分号后是否为 AND/OR/别名.列 等子句续写（而非新的 SELECT 语句）。</summary>
+            private static bool IsClauseContinuationAfter(List<TSqlParserToken> tokens, int semiIdx, int localOffset)
+            {
+                for (int i = semiIdx + 1; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset >= localOffset) break;
+                    string kw = t.Text?.ToUpperInvariant();
+                    if (kw == "AND" || kw == "OR" || kw == "WHERE" || kw == "ORDER" || kw == "GROUP"
+                        || kw == "HAVING" || kw == "ON")
+                        return true;
+                    if (kw == "SELECT" || kw == "INSERT" || kw == "UPDATE" || kw == "DELETE"
+                        || kw == "MERGE" || kw == "CREATE" || kw == "ALTER" || kw == "DROP"
+                        || kw == "EXEC" || kw == "EXECUTE" || kw == "USE" || kw == "DECLARE" || kw == "SET")
+                        return false;
+                    if (IsWordLikeToken(t) || IsPartialObjectNameToken(t) || IsIdentifierLike(t))
+                        return true;
+                    if (t.TokenType == TSqlTokenType.Dot)
+                        return true;
+                    return false;
+                }
+                return false;
+            }
+
+            private static int FindFromRegionEnd(List<TSqlParserToken> tokens, int fromIdx)
             {
                 for (int i = fromIdx + 1; i < tokens.Count; i++)
                 {
@@ -411,8 +517,7 @@ namespace AxialSqlTools
                     string kw = t.Text?.ToUpperInvariant();
                     if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
                         || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT"
-                        || kw == "JOIN" || kw == "INNER" || kw == "LEFT" || kw == "RIGHT"
-                        || kw == "FULL" || kw == "CROSS" || kw == "OUTER" || kw == ";")
+                        || kw == ";" || kw == "GO" || kw == "SELECT")
                     {
                         return t.Offset;
                     }
@@ -426,92 +531,148 @@ namespace AxialSqlTools
                 return int.MaxValue;
             }
 
-            /// <summary>从当前语句 FROM…WHERE 区间推断表引用（支持 db..table、无别名、有别名）。</summary>
+            /// <summary>从当前语句整个 FROM…WHERE 区间收集所有表/JOIN 别名（含 db..table、table(nolock) alias）。</summary>
             private void CollectAliasesFromTokens(List<TSqlParserToken> tokens, int localOffset, LocalSymbols local)
             {
                 int fromIdx = FindFromClauseTokenIndex(tokens, localOffset);
                 if (fromIdx < 0) return;
-                int scanEnd = FindFromClauseScanEnd(tokens, fromIdx);
-                string database = null;
-                string schema = null;
-                string table = null;
-                string alias = null;
-                int dotRun = 0;
-                int partCount = 0;
-                for (int i = fromIdx + 1; i < tokens.Count; i++)
+                int regionEnd = FindFromRegionEnd(tokens, fromIdx);
+                int i = fromIdx + 1;
+                while (i < tokens.Count)
                 {
-                    var t = tokens[i];
-                    if (t == null || IsInsignificantToken(t)) continue;
-                    if (t.Offset >= scanEnd) break;
-                    string kw = t.Text?.ToUpperInvariant();
-                    if (kw == "WHERE" || kw == "JOIN" || kw == "INNER" || kw == "LEFT" || kw == "RIGHT"
-                        || kw == "FULL" || kw == "CROSS" || kw == "OUTER" || kw == "GROUP" || kw == "ORDER"
-                        || kw == "HAVING" || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT"
-                        || kw == "ON" || kw == "AS" || kw == ";")
+                    var t0 = tokens[i];
+                    if (t0 == null || IsInsignificantToken(t0)) { i++; continue; }
+                    if (t0.Offset >= regionEnd) break;
+                    string kw0 = t0.Text?.ToUpperInvariant();
+                    if (kw0 == "INNER" || kw0 == "LEFT" || kw0 == "RIGHT" || kw0 == "FULL"
+                        || kw0 == "CROSS" || kw0 == "OUTER" || kw0 == "JOIN" || kw0 == ",")
                     {
-                        break;
-                    }
-                    if (t.TokenType == TSqlTokenType.Dot)
-                    {
-                        dotRun++;
+                        i++;
                         continue;
                     }
-                    if (!(IsWordLikeToken(t) || IsPartialObjectNameToken(t) || IsIdentifierLike(t)))
-                        continue;
-                    string name = UnbracketIdentifier(t.Text);
-                    if (IsSqlTableKeyword(name)) continue;
-                    if (table != null && dotRun == 0)
+                    if (kw0 == "ON")
                     {
-                        // 表名后的独立标识符 = 别名（无点号连接）
-                        alias = name;
-                        break;
-                    }
-                    if (dotRun >= 2 && partCount == 1)
-                    {
-                        // db..table 或 db..schema.table
-                        database = table;
-                        schema = "dbo";
-                        table = name;
-                        partCount = 2;
-                        dotRun = 0;
-                        continue;
-                    }
-                    if (dotRun >= 1 && partCount >= 1)
-                    {
-                        if (partCount == 1)
+                        i++;
+                        while (i < tokens.Count)
                         {
-                            schema = table;
+                            var ot = tokens[i];
+                            if (ot == null || IsInsignificantToken(ot)) { i++; continue; }
+                            if (ot.Offset >= regionEnd) return;
+                            string okw = ot.Text?.ToUpperInvariant();
+                            if (okw == "INNER" || okw == "LEFT" || okw == "RIGHT" || okw == "FULL"
+                                || okw == "CROSS" || okw == "OUTER" || okw == "JOIN" || okw == ",")
+                                break;
+                            i++;
+                        }
+                        continue;
+                    }
+                    if (kw0 == "AS") { i++; continue; }
+
+                    string database = null;
+                    string schema = null;
+                    string table = null;
+                    string alias = null;
+                    int dotRun = 0;
+                    int partCount = 0;
+                    while (i < tokens.Count)
+                    {
+                        var t = tokens[i];
+                        if (t == null || IsInsignificantToken(t)) { i++; continue; }
+                        if (t.Offset >= regionEnd) break;
+                        string kw = t.Text?.ToUpperInvariant();
+                        if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
+                            || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT" || kw == ";"
+                            || kw == "INNER" || kw == "LEFT" || kw == "RIGHT" || kw == "FULL"
+                            || kw == "CROSS" || kw == "OUTER" || kw == "JOIN" || kw == "," || kw == "ON" || kw == "AS")
+                        {
+                            break;
+                        }
+                        if (kw == "WITH") { i++; continue; }
+                        if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                        {
+                            // 跳过 (nolock) 等表提示
+                            int depth = 0;
+                            for (; i < tokens.Count; i++)
+                            {
+                                var pt = tokens[i];
+                                if (pt == null) continue;
+                                if (pt.TokenType == TSqlTokenType.LeftParenthesis) depth++;
+                                else if (pt.TokenType == TSqlTokenType.RightParenthesis)
+                                {
+                                    depth--;
+                                    if (depth <= 0) { i++; break; }
+                                }
+                            }
+                            continue;
+                        }
+                        if (t.TokenType == TSqlTokenType.Dot)
+                        {
+                            dotRun++;
+                            i++;
+                            continue;
+                        }
+                        if (!(IsWordLikeToken(t) || IsPartialObjectNameToken(t) || IsIdentifierLike(t)))
+                        {
+                            i++;
+                            continue;
+                        }
+                        string name = UnbracketIdentifier(t.Text);
+                        if (IsSqlTableKeyword(name)) { i++; continue; }
+                        if (table != null && dotRun == 0)
+                        {
+                            alias = name;
+                            i++;
+                            break;
+                        }
+                        if (dotRun >= 2 && partCount == 1)
+                        {
+                            database = table;
+                            schema = "dbo";
                             table = name;
                             partCount = 2;
+                            dotRun = 0;
+                            i++;
+                            continue;
                         }
-                        else if (partCount == 2 && database == null)
+                        if (dotRun >= 1 && partCount >= 1)
                         {
-                            database = schema;
-                            schema = table;
-                            table = name;
-                            partCount = 3;
+                            if (partCount == 1)
+                            {
+                                schema = table;
+                                table = name;
+                                partCount = 2;
+                            }
+                            else if (partCount == 2 && database == null)
+                            {
+                                database = schema;
+                                schema = table;
+                                table = name;
+                                partCount = 3;
+                            }
+                            else
+                            {
+                                table = name;
+                            }
+                            dotRun = 0;
+                            i++;
+                            continue;
                         }
-                        else
-                        {
-                            table = name;
-                        }
+                        table = name;
+                        partCount = 1;
                         dotRun = 0;
-                        continue;
+                        i++;
                     }
-                    table = name;
-                    partCount = 1;
-                    dotRun = 0;
+                    if (string.IsNullOrEmpty(table) || IsSqlTableKeyword(table)) continue;
+                    var tref = new TableRef { Database = database, Schema = schema, Name = table };
+                    NormalizeTableRef(tref);
+                    if (!string.IsNullOrEmpty(alias) && !IsSqlTableKeyword(alias))
+                        MergeAlias(local, alias, tref);
+                    MergeAlias(local, tref.Name, tref);
+                    if (!string.IsNullOrEmpty(tref.Schema))
+                        MergeAlias(local, tref.Schema + "." + tref.Name, tref);
+                    if (!string.IsNullOrEmpty(tref.Database))
+                        MergeAlias(local, tref.Database + "." + (tref.Schema ?? "dbo") + "." + tref.Name, tref);
                 }
-                if (string.IsNullOrEmpty(table) || IsSqlTableKeyword(table)) return;
-                var tref = new TableRef { Database = database, Schema = schema, Name = table };
-                NormalizeTableRef(tref);
-                if (!string.IsNullOrEmpty(alias) && !IsSqlTableKeyword(alias))
-                    MergeAlias(local, alias, tref);
-                MergeAlias(local, tref.Name, tref);
-                if (!string.IsNullOrEmpty(tref.Schema))
-                    MergeAlias(local, tref.Schema + "." + tref.Name, tref);
-                if (!string.IsNullOrEmpty(tref.Database))
-                    MergeAlias(local, tref.Database + "." + (tref.Schema ?? "dbo") + "." + tref.Name, tref);
             }
 
             private static void MergeAlias(LocalSymbols local, string key, TableRef tref)
@@ -676,9 +837,60 @@ namespace AxialSqlTools
                 if (ownerTok == null || !IsWordLikeToken(ownerTok)) return false;
 
                 int dotEnd = tokens[dotIdx].Offset + tokens[dotIdx].Text.Length;
-                string colPart = ExtractPartialWordAfter(tokens, dotEnd, localOffset);
-                prefix = ownerTok.Text + "." + colPart;
+                // 点号与光标之间只能有「正在输入的那一个标识符」，不能跨行/跨关键字
+                // 否则 JOIN 行的 f.col 会把下一行的 in/s 误判成成员访问
+                TSqlParserToken colTok = null;
+                for (int i = 0; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset < dotEnd) continue;
+                    if (t.Offset >= localOffset) break;
+                    // 分号在光标前才算打断；光标在 d.| 而 ; 在后面时不影响
+                    if (t.Text == ";" || string.Equals(t.Text, "GO", StringComparison.OrdinalIgnoreCase))
+                        return false;
+                    if (t.TokenType == TSqlTokenType.Dot) return false;
+                    if (!IsWordLikeToken(t) && !IsPartialObjectNameToken(t))
+                        return false;
+                    if (colTok != null)
+                        return false; // 点后已有完整标识，后面又有别的词 → 不是 a.b|
+                    colTok = t;
+                }
+                string colPart;
+                if (colTok == null)
+                {
+                    colPart = string.Empty;
+                }
+                else if (colTok.Offset + colTok.Text.Length <= localOffset)
+                {
+                    // 光标在该标识符之后：仅当紧贴词尾（无其它内容）才算 a.col|
+                    colPart = colTok.Text;
+                }
+                else
+                {
+                    colPart = colTok.Text.Substring(0, Math.Max(0, localOffset - colTok.Offset));
+                }
+                // 再用原文确认点号与光标间无换行（token 空白可能合并多行）
+                if (HasNewlineBetween(tokens, dotEnd, localOffset))
+                    return false;
+
+                prefix = UnbracketIdentifier(ownerTok.Text) + "." + colPart;
                 return true;
+            }
+
+            private static bool HasNewlineBetween(List<TSqlParserToken> tokens, int startOffset, int endOffset)
+            {
+                if (tokens == null) return false;
+                foreach (var t in tokens)
+                {
+                    if (t == null || t.Text == null) continue;
+                    if (t.Offset + t.Text.Length <= startOffset) continue;
+                    if (t.Offset >= endOffset) break;
+                    if (t.TokenType == TSqlTokenType.WhiteSpace &&
+                        (t.Text.IndexOf('\n') >= 0 || t.Text.IndexOf('\r') >= 0))
+                        return true;
+                }
+                return false;
             }
 
             private static string ExtractPartialWordAfter(List<TSqlParserToken> tokens, int startOffset, int endOffset)
@@ -708,13 +920,20 @@ namespace AxialSqlTools
                     if (catalog == null || !string.Equals(catalog.Database, tref.Database, StringComparison.OrdinalIgnoreCase))
                     {
                         target = GetCatalogNonBlocking(connInfo, tref.Database);
-                        if (target == null) return null;
                     }
                 }
                 if (target != null)
                 {
-                    var found = target.FindTableOrView(tref.Schema, tref.Name);
+                    var found = target.FindTableOrView(tref.Schema, tref.Name)
+                                ?? target.FindTableOrView(null, tref.Name);
                     if (found != null) return found;
+                }
+                // 目标库缓存未就绪时，勿直接失败：按表名在当前库再试一次（同名表）
+                if (catalog != null && !ReferenceEquals(catalog, target))
+                {
+                    var fallback = catalog.FindTableOrView(tref.Schema, tref.Name)
+                                   ?? catalog.FindTableOrView(null, tref.Name);
+                    if (fallback != null) return fallback;
                 }
                 return null;
             }
@@ -775,6 +994,9 @@ namespace AxialSqlTools
 
                 switch (kw)
                 {
+                    case ";":
+                    case "GO":
+                        return CompletionContext.BatchStart;
                     case "SELECT":
                         // SELECT 后若已有 FROM，则可能在列区；简化：SELECT 后未到 FROM 视为 SelectElements
                         if (!SeenKeywordAfter(tokens, caretTokenIndex, "FROM"))
@@ -785,6 +1007,12 @@ namespace AxialSqlTools
                     case "FROM":
                     case "JOIN":
                     case "APPLY":
+                    case "INNER":
+                    case "LEFT":
+                    case "RIGHT":
+                    case "FULL":
+                    case "CROSS":
+                    case "OUTER":
                         return CompletionContext.FromClause;
                     case ",":
                         {
@@ -844,6 +1072,80 @@ namespace AxialSqlTools
                 }
 
                 return CompletionContext.Unknown;
+            }
+
+            /// <summary>从原文取当前正在输入的前缀，并判断是否在分号/GO 后、是否行首。</summary>
+            private static void TryGetRawTypingPrefix(
+                string text, int caretOffset,
+                out string prefix, out bool afterStmtBreak, out bool atLineStart)
+            {
+                prefix = string.Empty;
+                afterStmtBreak = false;
+                atLineStart = false;
+                if (string.IsNullOrEmpty(text) || caretOffset <= 0)
+                {
+                    afterStmtBreak = true;
+                    atLineStart = true;
+                    return;
+                }
+                int i = Math.Min(caretOffset, text.Length) - 1;
+                int wordEnd = i + 1;
+                while (i >= 0 && IsIdentChar(text[i]))
+                    i--;
+                int wordStart = i + 1;
+                if (wordStart < wordEnd)
+                    prefix = text.Substring(wordStart, wordEnd - wordStart);
+
+                int j = i;
+                while (j >= 0 && (text[j] == ' ' || text[j] == '\t'))
+                    j--;
+                atLineStart = j < 0 || text[j] == '\n' || text[j] == '\r';
+
+                while (j >= 0 && char.IsWhiteSpace(text[j]))
+                    j--;
+                if (j < 0)
+                {
+                    afterStmtBreak = true;
+                    return;
+                }
+                if (text[j] == ';')
+                {
+                    afterStmtBreak = true;
+                    return;
+                }
+                // GO 批分隔
+                if ((text[j] == 'O' || text[j] == 'o') && j >= 1)
+                {
+                    char g = text[j - 1];
+                    if ((g == 'G' || g == 'g') &&
+                        (j == 1 || char.IsWhiteSpace(text[j - 2]) || text[j - 2] == ';'))
+                    {
+                        afterStmtBreak = true;
+                    }
+                }
+            }
+
+            private static bool IsIdentChar(char c)
+            {
+                return char.IsLetterOrDigit(c) || c == '_' || c == '@' || c == '#';
+            }
+
+            private static bool HasFromKeywordBefore(List<TSqlParserToken> tokens, int localOffset)
+            {
+                if (tokens == null) return false;
+                for (int i = tokens.Count - 1; i >= 0; i--)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset >= localOffset) continue;
+                    string text = t.Text?.ToUpperInvariant();
+                    if (text == ";" || text == "GO") return false;
+                    if (text == "FROM") return true;
+                    if (text == "SELECT" || text == "INSERT" || text == "UPDATE" || text == "DELETE"
+                        || text == "MERGE" || text == "CREATE" || text == "ALTER")
+                        return false;
+                }
+                return false;
             }
 
             /// <summary>新行/分号后行首正在输入语句关键字前缀（如 s → SELECT）。</summary>
@@ -1096,6 +1398,13 @@ namespace AxialSqlTools
                         if (t != null && IsWordLikeToken(t) && t.Offset + t.Text.Length >= localOffset
                             && t.Offset <= localOffset)
                             return batchStart + t.Offset;
+                    }
+                    // a. / a.col：InsertText 只有列名，替换起点只能是点号后（勿吞掉 a.）
+                    int lastDot = prefix.LastIndexOf('.');
+                    if (lastDot >= 0)
+                    {
+                        int afterLen = prefix.Length - lastDot - 1;
+                        return batchStart + localOffset - afterLen;
                     }
                     if (localOffset >= prefix.Length)
                         return batchStart + localOffset - prefix.Length;
@@ -1745,18 +2054,35 @@ namespace AxialSqlTools
 
             private void AddColumnsFromFromAliases(List<CompletionItem> items, MetadataCatalog catalog, LocalSymbols local, IntelliSenseSettings settings, ScriptFactoryAccess.ConnectionInfo connInfo)
             {
-                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                // 每张表选一个短别名（非表名、非 schema.table）；无别名则不带前缀
+                var preferredAlias = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var tables = new Dictionary<string, TableRef>(StringComparer.OrdinalIgnoreCase);
                 foreach (var kv in local.Aliases)
                 {
                     var tref = kv.Value;
                     if (tref == null || string.IsNullOrEmpty(tref.Name)) continue;
-                    string key = (tref.Database ?? string.Empty) + "|" + (tref.Schema ?? string.Empty) + "|" + tref.Name;
-                    if (!seen.Add(key)) continue;
-                    var tcol = ResolveTableRef(connInfo, catalog, tref);
+                    string tableKey = (tref.Database ?? string.Empty) + "|" + (tref.Schema ?? string.Empty) + "|" + tref.Name;
+                    tables[tableKey] = tref;
+                    string aliasKey = kv.Key;
+                    if (string.IsNullOrEmpty(aliasKey) || aliasKey.IndexOf('.') >= 0) continue;
+                    if (string.Equals(aliasKey, tref.Name, StringComparison.OrdinalIgnoreCase)) continue;
+                    string existing;
+                    if (!preferredAlias.TryGetValue(tableKey, out existing) || aliasKey.Length < existing.Length)
+                        preferredAlias[tableKey] = aliasKey;
+                }
+                foreach (var kv in tables)
+                {
+                    var tcol = ResolveTableRef(connInfo, catalog, kv.Value);
                     if (tcol == null) continue;
+                    string alias;
+                    preferredAlias.TryGetValue(kv.Key, out alias);
                     foreach (var col in tcol.Columns)
                     {
-                        items.Add(new CompletionItem(col.Name, FormatColumnInsert(col.Name, settings), CompletionKind.Column,
+                        string colInsert = FormatColumnInsert(col.Name, settings);
+                        string insert = string.IsNullOrEmpty(alias)
+                            ? colInsert
+                            : FormatIdentifier(alias, settings) + "." + colInsert;
+                        items.Add(new CompletionItem(col.Name, insert, CompletionKind.Column,
                             BuildColumnDescription(col)));
                     }
                 }
@@ -2093,6 +2419,13 @@ namespace AxialSqlTools
                     return item != null && item.Kind == CompletionKind.Snippet ? 110 : 100;
                 }
                 if (name.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 100;
+                // 多词关键字：in → INNER JOIN、group → GROUP BY
+                if (item != null && item.Kind == CompletionKind.Keyword && name.IndexOf(' ') >= 0)
+                {
+                    int sp = name.IndexOf(' ');
+                    string first = sp > 0 ? name.Substring(0, sp) : name;
+                    if (first.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 95;
+                }
                 // 片段/关键字/内建函数只做前缀匹配，避免 pr 命中 DATEPART 等缩写误匹配
                 if (item != null && (item.Kind == CompletionKind.Snippet || item.Kind == CompletionKind.Keyword
                     || item.Kind == CompletionKind.ScalarFunction))

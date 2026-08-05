@@ -411,6 +411,12 @@ namespace AxialSqlTools.IntelliSense
         /// <summary>按键后调度补全（弹框关：防抖新弹；弹框开：立即刷新候选）。</summary>
         public void MaybeScheduleAutoTrigger(uint nCmdID)
         {
+            bool isTypeChar = nCmdID == (uint)VSStd2KCmdID.TYPECHAR;
+            bool isBackspace = nCmdID == (uint)VSStd2KCmdID.BACKSPACE;
+            bool isDelete = nCmdID == (uint)VSStd2KCmdID.DELETE;
+            if (isTypeChar || isBackspace || isDelete)
+                _textViewExtension?.NotifyTyping();
+
             var settings = UiSettingsStore.GetIntelliSenseSettings();
             if (!settings.enabled || !settings.autoTrigger) return;
             if (EditorSelectionHelper.HasTextSelection(_textView))
@@ -422,9 +428,6 @@ namespace AxialSqlTools.IntelliSense
             // SSMS 内建未禁用（首次安装/settings.json 写失败）→ 抑制自动弹，仅 Ctrl+Space 手动可用，避免双弹框
             if (IntelliSenseManager.AutoTriggerSuppressed) return;
 
-            bool isTypeChar = nCmdID == (uint)VSStd2KCmdID.TYPECHAR;
-            bool isBackspace = nCmdID == (uint)VSStd2KCmdID.BACKSPACE;
-            bool isDelete = nCmdID == (uint)VSStd2KCmdID.DELETE;
             if (!isTypeChar && !isBackspace && !isDelete) return;
 
             if (_sessionOpen)
@@ -584,6 +587,7 @@ namespace AxialSqlTools.IntelliSense
                 RefreshReplaceEndFromCaret();
                 if (TryCommitExactSnippet())
                 {
+                    _textViewExtension?.SuppressHoverAfterCommit();
                     return;
                 }
 
@@ -606,6 +610,11 @@ namespace AxialSqlTools.IntelliSense
             catch
             {
                 // 插入失败不阻塞编辑
+            }
+            finally
+            {
+                // 选中补全后不要立刻弹出悬停框
+                _textViewExtension?.SuppressHoverAfterCommit();
             }
         }
 

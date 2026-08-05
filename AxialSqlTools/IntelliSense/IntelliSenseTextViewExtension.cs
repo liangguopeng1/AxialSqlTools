@@ -26,6 +26,7 @@ namespace AxialSqlTools.IntelliSense
         private readonly QuickInfoProvider _provider = new QuickInfoProvider();
         private DispatcherTimer _hoverTimer;
         private DateTime _lastMoveTime = DateTime.MinValue;
+        private DateTime _lastTypeTime = DateTime.MinValue;
         private Point _lastMovePos = new Point(-1, -1);
         private Point _tooltipAnchorPos;
         private IntPtr _editorHwnd;
@@ -35,6 +36,9 @@ namespace AxialSqlTools.IntelliSense
         private bool _editorHadFocus = true;
         private string _lastLoggedWord;
         private DateTime _lastDiagLog = DateTime.MinValue;
+        /// <summary>补全提交后抑制悬停，直到鼠标移开。</summary>
+        private bool _suppressHoverUntilMouseMove;
+        private Point _suppressHoverAnchor = new Point(-1, -1);
 
         public event Action<IntPtr> EditorFocusLost;
         public event Action EditorPointerDown;
@@ -206,6 +210,21 @@ namespace AxialSqlTools.IntelliSense
                     return;
                 }
 
+                // 补全刚提交：鼠标未移开前不弹悬停框
+                if (_suppressHoverUntilMouseMove)
+                {
+                    int sdx = Math.Abs(_lastMovePos.X - _suppressHoverAnchor.X);
+                    int sdy = Math.Abs(_lastMovePos.Y - _suppressHoverAnchor.Y);
+                    if (sdx <= MoveCloseThreshold && sdy <= MoveCloseThreshold)
+                    {
+                        CloseTooltip();
+                        return;
+                    }
+                    _suppressHoverUntilMouseMove = false;
+                    _lastMoveTime = DateTime.UtcNow;
+                    return;
+                }
+
                 // 本视图已稳定显示：不要每 tick 重算/重绘
                 if (_tooltipShowing && QuickInfoTooltip.IsOwnedBy(this) && QuickInfoTooltip.IsOpen)
                 {
@@ -217,6 +236,8 @@ namespace AxialSqlTools.IntelliSense
 
                 int threshold = settings.hoverTooltipDelayMs > 0 ? settings.hoverTooltipDelayMs : 500;
                 if ((DateTime.UtcNow - _lastMoveTime).TotalMilliseconds < threshold) return;
+                // 刚输入过：勿把光标附近的词当成悬停（输入 a 别名会误弹表信息框）
+                if ((DateTime.UtcNow - _lastTypeTime).TotalMilliseconds < threshold) return;
 
                 TryShowQuickInfo();
             }
@@ -411,6 +432,28 @@ namespace AxialSqlTools.IntelliSense
             if ((DateTime.UtcNow - _lastDiagLog).TotalSeconds < 2) return;
             _lastDiagLog = DateTime.UtcNow;
             _logger.Debug(format, args);
+        }
+
+        /// <summary>打字时调用：关掉悬停框，并在悬停延迟内不再弹出。</summary>
+        public void NotifyTyping()
+        {
+            _lastTypeTime = DateTime.UtcNow;
+            CloseTooltip();
+        }
+
+        /// <summary>补全选中插入后调用：关掉悬停框，直到鼠标移开再允许弹出。</summary>
+        public void SuppressHoverAfterCommit()
+        {
+            _suppressHoverUntilMouseMove = true;
+            NativePoint pt;
+            if (GetCursorPos(out pt))
+                _suppressHoverAnchor = new Point(pt.x, pt.y);
+            else
+                _suppressHoverAnchor = _lastMovePos;
+            _lastMoveTime = DateTime.UtcNow;
+            _lastTypeTime = DateTime.UtcNow;
+            CloseTooltip();
+            try { QuickInfoTooltip.Close(); } catch { }
         }
 
         private void CloseTooltip()
