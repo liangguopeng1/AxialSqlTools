@@ -950,7 +950,9 @@ namespace AxialSqlTools
                 }
 
                 var segments = new List<string>();
-                bool sawDot = false;
+                // AfterDot = 光标/partial 紧跟在点号后（dbo.| / dbo.Ta|），不是「限定名里曾经出现过点」
+                // 否则 schema.table gr| 会被误判，GROUP BY / WHERE 等关键字被抑制
+                bool afterDot = i >= 0 && text[i] == '.';
                 bool doubleDot = false;
                 int guard = 0;
                 int maxGuard = Math.Max(32, (caretOffset + 1) * 4);
@@ -964,7 +966,6 @@ namespace AxialSqlTools
 
                     if (text[i] == '.')
                     {
-                        sawDot = true;
                         int dots = 0;
                         while (i >= 0 && text[i] == '.')
                         {
@@ -1019,7 +1020,7 @@ namespace AxialSqlTools
                         return false;
                     ctx.InFromClause = true;
                     ctx.Segments = segments;
-                    ctx.AfterDot = sawDot;
+                    ctx.AfterDot = afterDot;
                     ctx.UsesDoubleDot = doubleDot;
                     return true;
                 }
@@ -1031,7 +1032,6 @@ namespace AxialSqlTools
                     return false;
 
                 // 「FROM t where|」：partial 本身是子句关键字，且前面已有表名 → 不是在输表名
-                // 注意：RtBase.dbo.t 带点时 sawDot 也为 true，不能用 !sawDot 挡住
                 if (!isExec && segments.Count > 0
                     && IsFromObjectNameTerminatorKeyword(ctx.Partial))
                     return false;
@@ -1039,7 +1039,7 @@ namespace AxialSqlTools
                 if (!isExec)
                     ctx.InFromClause = true;
                 ctx.Segments = segments;
-                ctx.AfterDot = sawDot;
+                ctx.AfterDot = afterDot;
                 ctx.UsesDoubleDot = doubleDot;
                 return true;
             }
@@ -1363,6 +1363,14 @@ namespace AxialSqlTools
                         return CompletionContext.AfterCreate;
                     case "ALTER":
                         return CompletionContext.AfterAlter;
+                    case "WITH":
+                    case "MERGE":
+                    case "TRUNCATE":
+                    case "DECLARE":
+                    case "IF":
+                    case "BEGIN":
+                    case "DROP":
+                        return CompletionContext.BatchStart;
                 }
 
                 // 批次起始（仅当光标前无有效 token）
@@ -1615,6 +1623,8 @@ namespace AxialSqlTools
 
                 var parts = new List<string>();
                 string partial = string.Empty;
+                // AfterDot：仅表示光标在点号后继续输段（dbo.| / dbo.Ta|），
+                // 不能因 schema.table 内部的点而置位，否则表后输 gr 不提示 GROUP BY
                 bool afterDot = false;
                 int i = idx;
 
@@ -1624,10 +1634,14 @@ namespace AxialSqlTools
                     afterDot = true;
                     i--;
                 }
-                else if (cur != null && IsPartialObjectNameToken(cur) && cur.Offset + cur.Text.Length >= localOffset)
+                else if (cur != null && IsWordLikeToken(cur) && cur.Offset + cur.Text.Length >= localOffset)
                 {
+                    // 含 or/in/gr 等：ScriptDom 可能已把 partial 标成关键字 token
                     partial = cur.Text.Substring(0, Math.Max(0, localOffset - cur.Offset));
                     ctx.PartialStartOffset = cur.Offset;
+                    var beforePartial = PreviousSignificantToken(tokens, idx);
+                    if (beforePartial != null && beforePartial.TokenType == TSqlTokenType.Dot)
+                        afterDot = true;
                     i--;
                 }
                 else if (cur != null && IsPartialObjectNameToken(cur))
@@ -1657,7 +1671,6 @@ namespace AxialSqlTools
                             parts.Insert(0, UnbracketIdentifier(tokens[i].Text));
                             i--;
                         }
-                        afterDot = true;
                         continue;
                     }
 
@@ -1974,6 +1987,13 @@ namespace AxialSqlTools
                     case "SET":
                     case "CREATE":
                     case "ALTER":
+                    case "WITH":
+                    case "MERGE":
+                    case "TRUNCATE":
+                    case "DECLARE":
+                    case "IF":
+                    case "BEGIN":
+                    case "DROP":
                     case "GO":
                         return true;
                     default:
@@ -2087,6 +2107,10 @@ namespace AxialSqlTools
                         break;
 
                     case CompletionContext.InsertTarget:
+                        if (settings.includeKeywords) AddKeywords(items, InsertKeywords);
+                        AddTablesAndViews(items, catalog, settings);
+                        break;
+
                     case CompletionContext.UpdateTarget:
                     case CompletionContext.DeleteTarget:
                         AddTablesAndViews(items, catalog, settings);
@@ -2101,7 +2125,6 @@ namespace AxialSqlTools
                         break;
 
                     case CompletionContext.WhereClause:
-                    case CompletionContext.OrderByGroupBy:
                     case CompletionContext.UpdateSet:
                         AddAliasCompletions(items, local, settings, prefix);
                         AddColumnsFromFromAliases(items, catalog, local, settings, connInfo);
@@ -2109,6 +2132,17 @@ namespace AxialSqlTools
                         if (settings.includeKeywords && !string.IsNullOrEmpty(prefix)
                             && !PrefixLooksLikeAlias(prefix, local))
                             AddKeywords(items, OperatorKeywords);
+                        break;
+
+                    case CompletionContext.OrderByGroupBy:
+                        AddAliasCompletions(items, local, settings, prefix);
+                        AddColumnsFromFromAliases(items, catalog, local, settings, connInfo);
+                        if (settings.includeKeywords)
+                        {
+                            AddKeywords(items, GroupOrderByKeywords);
+                            if (!string.IsNullOrEmpty(prefix) && !PrefixLooksLikeAlias(prefix, local))
+                                AddKeywords(items, OperatorKeywords);
+                        }
                         break;
 
                     case CompletionContext.AfterExec:
@@ -2981,16 +3015,11 @@ namespace AxialSqlTools
                 string p = (prefix ?? string.Empty);
                 string filterPrefix = UnbracketIdentifier(GetLastSegment(p));
 
+                // 先收集全部匹配再排序截断，避免目录靠前的弱匹配占满配额、漏掉后面的高分表
                 foreach (var item in items)
                 {
                     if (string.IsNullOrEmpty(filterPrefix) || ItemMatchesPrefix(item, filterPrefix))
-                    {
                         filtered.Add(item);
-                    }
-                    if (filtered.Count >= settings.maxCompletionItems * 2)
-                    {
-                        break;
-                    }
                 }
 
                 filtered.Sort((a, b) =>
@@ -3307,7 +3336,18 @@ namespace AxialSqlTools
                 return sb.ToString();
             }
 
-            public static readonly string[] SelectClauseKeywords = { "FROM", "INTO" };
+            public static readonly string[] SelectClauseKeywords =
+            {
+                "DISTINCT", "TOP", "ALL", "PERCENT",
+                "AS", "FROM", "INTO",
+                "CASE", "WHEN", "THEN", "ELSE", "END"
+            };
+
+            /// <summary>GROUP/ORDER 后补 BY。</summary>
+            public static readonly string[] GroupOrderByKeywords = { "BY" };
+
+            /// <summary>INSERT 后常见关键字。</summary>
+            public static readonly string[] InsertKeywords = { "INTO", "SELECT", "VALUES", "DEFAULT" };
 
             public static readonly string[] TopLevelKeywords =
             {
@@ -3342,11 +3382,12 @@ namespace AxialSqlTools
 
             private static bool ShouldSuggestAfterFromKeywords(FromObjectNameContext fromName, string prefix)
             {
+                // 正在输限定名下一段（dbo.|）时不夹 JOIN/WHERE
                 if (fromName != null && fromName.AfterDot) return false;
                 // 仍在敲 FROM 后第一个对象名：只提示表/库，勿夹 LEFT JOIN 等
                 if (fromName == null || fromName.Segments == null || fromName.Segments.Count == 0)
                     return false;
-                // 已有表名后再提示 JOIN / WHERE（如 FROM t le）
+                // 已有表名后再提示 JOIN / WHERE / GROUP BY（如 FROM dbo.t gr）
                 return !string.IsNullOrEmpty(prefix);
             }
 

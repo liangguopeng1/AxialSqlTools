@@ -373,6 +373,14 @@ namespace AxialSqlTools.IntelliSense
                     return;
                 }
 
+                // 必须鼠标真正落在该词字形上；行尾空白/行外不得 snip 到行末表名
+                int wordEnd = wordStart + word.Length;
+                if (!IsPointerOverWordGlyph(line, wordStart, wordEnd, _lastMovePos.X, _lastMovePos.Y))
+                {
+                    CloseTooltip();
+                    return;
+                }
+
                 string text = GetFullText();
                 int offset = GetOffsetFromLineColumn(line, wordStart + Math.Max(0, word.Length / 2));
                 if (offset < 0) return;
@@ -527,6 +535,44 @@ namespace AxialSqlTools.IntelliSense
             return true;
         }
 
+        /// <summary>
+        /// 鼠标是否落在 [wordStart, wordEnd) 的屏幕字形矩形内。
+        /// 避免行尾空白/行下方空白被映射到行末标识符而误弹 QuickInfo。
+        /// </summary>
+        private bool IsPointerOverWordGlyph(int line, int wordStart, int wordEnd, int clientX, int clientY)
+        {
+            if (wordEnd <= wordStart) return false;
+            POINT[] startPts = new POINT[1];
+            POINT[] endPts = new POINT[1];
+            if (_textView.GetPointOfLineColumn(line, wordStart, startPts) != S_OK)
+                return false;
+            if (_textView.GetPointOfLineColumn(line, wordEnd, endPts) != S_OK)
+                return false;
+
+            int top = startPts[0].y;
+            int bottom;
+            POINT[] nextPts = new POINT[1];
+            if (_textView.GetBuffer(out IVsTextLines textLines) == S_OK
+                && textLines.GetLastLineIndex(out int lastLine, out _) == S_OK
+                && line < lastLine
+                && _textView.GetPointOfLineColumn(line + 1, 0, nextPts) == S_OK)
+            {
+                bottom = nextPts[0].y;
+            }
+            else
+            {
+                int h = Math.Abs(endPts[0].y - startPts[0].y);
+                bottom = top + Math.Max(16, h + 16);
+            }
+
+            const int pad = 3;
+            int left = Math.Min(startPts[0].x, endPts[0].x) - pad;
+            int right = Math.Max(startPts[0].x, endPts[0].x) + pad;
+            if (clientX < left || clientX > right) return false;
+            if (clientY < top - pad || clientY >= bottom + pad) return false;
+            return true;
+        }
+
         private static bool IsWordChar(char c)
         {
             return char.IsLetterOrDigit(c) || c == '_' || c == '@' || c == '#';
@@ -558,9 +604,41 @@ namespace AxialSqlTools.IntelliSense
                 }
             }
             if (!anyPoint) return false;
-            line = bestLine;
 
+            // 鼠标必须落在该行的垂直带内，不能把行下方空白算进上一行
+            POINT[] linePts = new POINT[1];
+            if (_textView.GetPointOfLineColumn(bestLine, 0, linePts) != S_OK) return false;
+            int lineTop = linePts[0].y;
+            int lineBottom;
+            POINT[] nextLinePts = new POINT[1];
+            if (bestLine < lastLine
+                && _textView.GetPointOfLineColumn(bestLine + 1, 0, nextLinePts) == S_OK)
+            {
+                lineBottom = nextLinePts[0].y;
+            }
+            else
+            {
+                lineBottom = lineTop + 20;
+            }
+            if (clientY < lineTop || clientY >= lineBottom)
+                return false;
+
+            line = bestLine;
             textLines.GetLengthOfLine(line, out int lineLen);
+
+            // 行尾右侧空白：不要 snip 到最后一个字符
+            if (lineLen > 0)
+            {
+                POINT[] eolPts = new POINT[1];
+                if (_textView.GetPointOfLineColumn(line, lineLen, eolPts) == S_OK
+                    && clientX > eolPts[0].x + 3)
+                    return false;
+            }
+            else
+            {
+                return false;
+            }
+
             int colLo = 0, colHi = lineLen, bestCol = 0;
             while (colLo <= colHi)
             {

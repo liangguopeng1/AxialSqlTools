@@ -144,7 +144,8 @@ namespace AxialSqlTools.IntelliSense
             _debounceTimer.Tick += (s, e) =>
             {
                 _debounceTimer.Stop();
-                TriggerCompletion(false);
+                // 弹框已开时走 editingRefresh：空结果会关框；未开则首次弹出
+                TriggerCompletion(false, editingRefresh: _sessionOpen);
             };
 
             _externalFocusCloseTimer = new DispatcherTimer(DispatcherPriority.Background, dispatcher)
@@ -521,30 +522,10 @@ namespace AxialSqlTools.IntelliSense
                 return;
             }
 
-            if (_sessionOpen)
-            {
-                if (isBackspace || isDelete)
-                {
-                    Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() =>
-                    {
-                        if (ShouldSuppressAutoPopup())
-                        {
-                            CloseSession();
-                            return;
-                        }
-                        TriggerCompletion(false, editingRefresh: true);
-                    }), DispatcherPriority.Background);
-                    return;
-                }
-                if (IsWithinAcceptGrace()) return;
-                Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => TriggerCompletion(false, editingRefresh: true)),
-                    DispatcherPriority.Background);
-            }
-            else
-            {
-                _debounceTimer.Stop();
-                _debounceTimer.Start();
-            }
+            // 无论弹框是否已开，都走防抖：快打时用最终前缀一次计算，避免 AcceptGrace 挡刷新、
+            // 也避免每键打满线程池。AcceptGrace 只用于 Tab/Enter 防误提交。
+            _debounceTimer.Stop();
+            _debounceTimer.Start();
         }
 
         /// <summary>强制/自动触发补全。force=true 立即（Ctrl+Space）。引擎计算在后台线程，避免 UI 卡死。</summary>
@@ -693,10 +674,7 @@ namespace AxialSqlTools.IntelliSense
             {
                 window.UpdateItems(result.Items);
                 window.RepositionAt(pt.Value.x, pt.Value.y, hwnd);
-                if (editingRefresh)
-                {
-                    _sessionOpenedAt = DateTime.UtcNow;
-                }
+                // 不在刷新时重置 AcceptGrace：否则快打时 grace 被不断延长，Tab/行为异常
                 UpdateSessionCaretAnchor();
                 EnsureSessionWatchdogRunning();
             }
