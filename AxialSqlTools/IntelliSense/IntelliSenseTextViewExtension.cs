@@ -434,26 +434,46 @@ namespace AxialSqlTools.IntelliSense
             _logger.Debug(format, args);
         }
 
-        /// <summary>打字时调用：关掉悬停框，并在悬停延迟内不再弹出。</summary>
+        /// <summary>打字时调用：关掉悬停框；鼠标未真正移动前不再弹出（避免 =1 后仍对着旧词弹元数据）。</summary>
         public void NotifyTyping()
         {
             _lastTypeTime = DateTime.UtcNow;
+            SuppressHoverUntilMouseMove();
             CloseTooltip();
         }
 
         /// <summary>补全选中插入后调用：关掉悬停框，直到鼠标移开再允许弹出。</summary>
         public void SuppressHoverAfterCommit()
         {
-            _suppressHoverUntilMouseMove = true;
-            NativePoint pt;
-            if (GetCursorPos(out pt))
-                _suppressHoverAnchor = new Point(pt.x, pt.y);
-            else
-                _suppressHoverAnchor = _lastMovePos;
+            SuppressHoverUntilMouseMove();
             _lastMoveTime = DateTime.UtcNow;
             _lastTypeTime = DateTime.UtcNow;
             CloseTooltip();
             try { QuickInfoTooltip.Close(); } catch { }
+        }
+
+        /// <summary>抑制悬停直到鼠标离开锚点；锚点必须与 _lastMovePos 同为客户区坐标。</summary>
+        private void SuppressHoverUntilMouseMove()
+        {
+            _suppressHoverUntilMouseMove = true;
+            // 优先用当前客户区位置；勿用屏幕坐标与 _lastMovePos 混比（否则抑制立刻失效）
+            if (_lastMovePos.X >= 0 && _lastMovePos.Y >= 0)
+            {
+                _suppressHoverAnchor = _lastMovePos;
+                return;
+            }
+            NativePoint screenPt;
+            if (_editorHwnd != IntPtr.Zero && GetCursorPos(out screenPt))
+            {
+                NativePoint clientPt = screenPt;
+                if (ScreenToClient(_editorHwnd, ref clientPt))
+                {
+                    _suppressHoverAnchor = new Point(clientPt.x, clientPt.y);
+                    _lastMovePos = _suppressHoverAnchor;
+                    return;
+                }
+            }
+            _suppressHoverAnchor = _lastMovePos;
         }
 
         private void CloseTooltip()

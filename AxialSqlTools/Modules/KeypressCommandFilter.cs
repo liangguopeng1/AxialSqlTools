@@ -2,6 +2,7 @@
 using Microsoft.VisualStudio.OLE.Interop;
 using Microsoft.VisualStudio.TextManager.Interop;
 using System;
+using System.Runtime.InteropServices;
 using System.Windows.Input;
 using System.Windows.Threading;
 using AxialSqlTools.IntelliSense;
@@ -162,7 +163,22 @@ namespace AxialSqlTools
 
             if (_intelliSense != null)
             {
-                _intelliSense.MaybeScheduleAutoTrigger(nCmdID);
+                char typed = '\0';
+                if (cmdGroup == VSConstants.VSStd2K
+                    && nCmdID == (uint)VSConstants.VSStd2KCmdID.TYPECHAR
+                    && pvaIn != IntPtr.Zero)
+                {
+                    try
+                    {
+                        object raw = Marshal.GetObjectForNativeVariant(pvaIn);
+                        if (raw != null)
+                            typed = Convert.ToChar(raw);
+                    }
+                    catch
+                    {
+                    }
+                }
+                _intelliSense.MaybeScheduleAutoTrigger(nCmdID, typed);
             }
 
             return nextCommandTarget?.Exec(ref cmdGroup, nCmdID, nCmdexecopt, pvaIn, pvaOut) ?? VSConstants.S_OK;

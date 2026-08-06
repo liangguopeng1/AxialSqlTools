@@ -98,8 +98,12 @@ namespace AxialSqlTools.IntelliSense
             i = nameStart - 1;
             var segments = new List<string>();
             bool doubleDot = false;
+            int guard = 0;
+            int maxGuard = Math.Max(32, (offset + 1) * 4);
             while (i >= 0)
             {
+                if (++guard > maxGuard)
+                    break;
                 while (i >= 0 && (text[i] == ' ' || text[i] == '\t')) i--;
                 if (i < 0) break;
                 if (text[i] == '\n' || text[i] == '\r' || text[i] == ';') break;
@@ -122,12 +126,17 @@ namespace AxialSqlTools.IntelliSense
                     while (i >= 0 && text[i] != '[') i--;
                     if (i >= 0) i--;
                 }
+                else if (text[i] == '[')
+                {
+                    // 未闭合 [identifier：跳过 '['，否则 i 不前进会死循环
+                    i--;
+                }
                 else
                 {
                     while (i >= 0 && IsIdentChar(text[i])) i--;
                 }
                 int segStart = i + 1;
-                if (segStart >= segEnd) break;
+                if (segStart >= segEnd) continue;
                 string seg = Unbracket(text.Substring(segStart, segEnd - segStart));
                 if (string.Equals(seg, "EXEC", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(seg, "EXECUTE", StringComparison.OrdinalIgnoreCase))
@@ -304,6 +313,8 @@ namespace AxialSqlTools.IntelliSense
                         segEndOffset = Math.Max(segEndOffset, lastTok.Offset + lastTok.Text.Length);
                 }
 
+                // i 未前进时强制步进，避免外层死循环
+                if (i <= segStartIdx) i = segStartIdx + 1;
                 var parsed = ParseTableSegment(names, tokens, segStartIdx, segEndOffset);
                 if (parsed != null)
                 {

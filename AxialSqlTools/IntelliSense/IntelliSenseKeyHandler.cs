@@ -4,8 +4,10 @@ using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.TextManager.Interop;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Threading;
@@ -88,7 +90,6 @@ namespace AxialSqlTools.IntelliSense
 
         private readonly AxialSqlToolsPackage _package;
         private readonly IVsTextView _textView;
-        private readonly CompletionEngine _engine = new CompletionEngine();
         private CompletionListWindow _window;
         private readonly DispatcherTimer _debounceTimer;
         private readonly DispatcherTimer _externalFocusCloseTimer;
@@ -101,8 +102,10 @@ namespace AxialSqlTools.IntelliSense
         private int _sessionCaretLine = -1;
         private int _replaceStartOffset = -1;
         private int _replaceEndOffset = -1;
+        private int _completionGen;
         private const int SessionAcceptDelayMs = 400;
         private const int SuppressAutoTriggerAfterCommitMs = 500;
+        private const int CompletionEngineWarnMs = 500;
 
         private bool IsWithinAcceptGrace() =>
             _sessionOpen && (DateTime.UtcNow - _sessionOpenedAt).TotalMilliseconds < SessionAcceptDelayMs;
@@ -316,6 +319,59 @@ namespace AxialSqlTools.IntelliSense
             }
         }
 
+        /// <summary>
+        /// 自动触发时：空行、或刚输入 ; / GO 后尚无标识符前缀 → 不弹框（Ctrl+Space 仍可手动）。
+        /// </summary>
+        private bool ShouldSuppressAutoPopup()
+        {
+            if (IsCaretAtEmptyCompletionContext()) return true;
+            try
+            {
+                if (_textView.GetCaretPos(out int line, out int col) != VSConstants.S_OK)
+                    return false;
+                if (_textView.GetBuffer(out IVsTextLines textLines) != VSConstants.S_OK)
+                    return false;
+                textLines.GetLengthOfLine(line, out int lineLen);
+                if (col <= 0) return true;
+                textLines.GetLineText(line, 0, line, Math.Min(col, lineLen), out string before);
+                if (string.IsNullOrEmpty(before)) return true;
+
+                int i = before.Length - 1;
+                while (i >= 0 && (before[i] == ' ' || before[i] == '\t')) i--;
+                if (i < 0) return true;
+
+                // 正在输入标识符前缀则允许弹
+                if (IsAutoTriggerIdentChar(before[i]))
+                    return false;
+
+                if (before[i] == ';') return true;
+
+                // GO 批分隔后
+                if ((before[i] == 'O' || before[i] == 'o') && i >= 1)
+                {
+                    char g = before[i - 1];
+                    if ((g == 'G' || g == 'g') &&
+                        (i == 1 || !IsAutoTriggerIdentChar(before[i - 2])))
+                        return true;
+                }
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsAutoTriggerIdentChar(char c)
+        {
+            return char.IsLetterOrDigit(c) || c == '_' || c == '@' || c == '#' || c == '[' || c == ']';
+        }
+
+        private static bool IsAutoPopupTerminatorChar(char c)
+        {
+            return c == ';' || c == ')' || c == '\n' || c == '\r';
+        }
+
         public bool IsSessionOpen => _sessionOpen;
 
         /// <summary>补全框右侧详情复制（Ctrl+C / 右键）。</summary>
@@ -435,7 +491,7 @@ namespace AxialSqlTools.IntelliSense
         }
 
         /// <summary>按键后调度补全（弹框关：防抖新弹；弹框开：立即刷新候选）。</summary>
-        public void MaybeScheduleAutoTrigger(uint nCmdID)
+        public void MaybeScheduleAutoTrigger(uint nCmdID, char typedChar = '\0')
         {
             bool isTypeChar = nCmdID == (uint)VSStd2KCmdID.TYPECHAR;
             bool isBackspace = nCmdID == (uint)VSStd2KCmdID.BACKSPACE;
@@ -457,13 +513,21 @@ namespace AxialSqlTools.IntelliSense
 
             if (!isTypeChar && !isBackspace && !isDelete) return;
 
+            // 分号等语句结束符：关弹框且不自动再弹（等用户开始输入下一条语句前缀）
+            if (isTypeChar && IsAutoPopupTerminatorChar(typedChar))
+            {
+                _debounceTimer.Stop();
+                if (_sessionOpen) CloseSession();
+                return;
+            }
+
             if (_sessionOpen)
             {
                 if (isBackspace || isDelete)
                 {
                     Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() =>
                     {
-                        if (IsCaretAtEmptyCompletionContext())
+                        if (ShouldSuppressAutoPopup())
                         {
                             CloseSession();
                             return;
@@ -483,7 +547,7 @@ namespace AxialSqlTools.IntelliSense
             }
         }
 
-        /// <summary>强制/自动触发补全。force=true 立即（Ctrl+Space）。</summary>
+        /// <summary>强制/自动触发补全。force=true 立即（Ctrl+Space）。引擎计算在后台线程，避免 UI 卡死。</summary>
         public void TriggerCompletion(bool force, bool editingRefresh = false)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
@@ -502,8 +566,8 @@ namespace AxialSqlTools.IntelliSense
                 return;
             }
 
-            // 自动触发时，当前行光标前无有效输入则不弹框（Ctrl+Space 仍可手动触发）
-            if (!force && IsCaretAtEmptyCompletionContext())
+            // 自动触发时：空行 / 分号后无前缀 → 不弹框（Ctrl+Space 仍可手动触发）
+            if (!force && ShouldSuppressAutoPopup())
             {
                 CloseSession();
                 return;
@@ -542,58 +606,41 @@ namespace AxialSqlTools.IntelliSense
                     }
                 }
 
-                _logger.Info("TriggerCompletion: engine caret={0} textLen={1} db={2}", caret, text?.Length ?? 0, connInfo?.Database);
-                var result = _engine.GetCompletion(text, caret, catalog, settings, connInfo);
-                _replaceStartOffset = result.ReplaceStartOffset;
-                _replaceEndOffset = result.ReplaceEndOffset;
-
-                if (result.IsEmpty)
+                int gen = Interlocked.Increment(ref _completionGen);
+                var dispatcher = System.Windows.Application.Current?.Dispatcher
+                    ?? Dispatcher.CurrentDispatcher;
+                _logger.Info("TriggerCompletion: queue engine caret={0} textLen={1} db={2} gen={3}",
+                    caret, text?.Length ?? 0, connInfo?.Database, gen);
+                ThreadPool.QueueUserWorkItem(_ =>
                 {
-                    _logger.Info("TriggerCompletion: empty context={0} prefix={1}", result.Context, result.Prefix);
-                    // 候选为空时必须关掉旧弹框，否则会残留上一语句的列提示
-                    if (force || editingRefresh || _sessionOpen)
-                        CloseSession();
-                    return;
-                }
-
-                if (result.Context == CompletionContext.AfterExec)
-                    _logger.Info("TriggerCompletion: AfterExec items={0} prefix={1}", result.Items.Count, result.Prefix);
-
-                // 补全弹框打开时关闭悬停注释框，避免叠在一起
-                if (QuickInfoTooltip.IsOpen)
-                    QuickInfoTooltip.Close();
-
-                _logger.Info("TriggerCompletion: show items={0}", result.Items.Count);
-                var pt = GetCaretScreenPoint();
-                if (!pt.HasValue)
-                {
-                    if (force || editingRefresh)
-                        CloseSession();
-                    return;
-                }
-
-                IntPtr hwnd = _textView.GetWindowHandle();
-                var window = EnsureCompletionWindow();
-                if (_sessionOpen)
-                {
-                    window.UpdateItems(result.Items);
-                    window.RepositionAt(pt.Value.x, pt.Value.y, hwnd);
-                    if (editingRefresh)
+                    try
                     {
-                        _sessionOpenedAt = DateTime.UtcNow;
+                        var sw = Stopwatch.StartNew();
+                        // 独立实例，避免与并发刷新争用 _lastBatchText 缓存
+                        var engine = new CompletionEngine();
+                        var result = engine.GetCompletion(text, caret, catalog, settings, connInfo);
+                        sw.Stop();
+                        if (sw.ElapsedMilliseconds >= CompletionEngineWarnMs)
+                            _logger.Warn("GetCompletion slow {0}ms gen={1} ctx={2}", sw.ElapsedMilliseconds, gen, result?.Context);
+                        else
+                            _logger.Info("GetCompletion {0}ms gen={1} ctx={2} items={3}",
+                                sw.ElapsedMilliseconds, gen, result?.Context, result?.Items?.Count ?? 0);
+                        dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            if (gen != _completionGen) return;
+                            ApplyCompletionResult(result, force, editingRefresh);
+                        }), DispatcherPriority.Background);
                     }
-                    UpdateSessionCaretAnchor();
-                    EnsureSessionWatchdogRunning();
-                }
-                else
-                {
-                    _sessionOpen = true;
-                    _sessionOpenedAt = DateTime.UtcNow;
-                    window.ShowAt(pt.Value.x, pt.Value.y, result.Items, hwnd);
-                    UpdateSessionCaretAnchor();
-                    EnsureSessionWatchdogRunning();
-                }
-                _logger.Info("TriggerCompletion: done");
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "GetCompletion background failed gen={0}", gen);
+                        dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            if (gen != _completionGen) return;
+                            CloseSession();
+                        }), DispatcherPriority.Background);
+                    }
+                });
             }
             catch (Exception ex)
             {
@@ -601,6 +648,67 @@ namespace AxialSqlTools.IntelliSense
                 FlushLogsAsync();
                 CloseSession();
             }
+        }
+
+        private void ApplyCompletionResult(CompletionResult result, bool force, bool editingRefresh)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (result == null)
+            {
+                CloseSession();
+                return;
+            }
+
+            _replaceStartOffset = result.ReplaceStartOffset;
+            _replaceEndOffset = result.ReplaceEndOffset;
+
+            if (result.IsEmpty)
+            {
+                _logger.Info("TriggerCompletion: empty context={0} prefix={1}", result.Context, result.Prefix);
+                // 候选为空时必须关掉旧弹框，否则会残留上一语句的列提示
+                if (force || editingRefresh || _sessionOpen)
+                    CloseSession();
+                return;
+            }
+
+            if (result.Context == CompletionContext.AfterExec)
+                _logger.Info("TriggerCompletion: AfterExec items={0} prefix={1}", result.Items.Count, result.Prefix);
+
+            // 补全弹框打开时关闭悬停注释框，避免叠在一起
+            if (QuickInfoTooltip.IsOpen)
+                QuickInfoTooltip.Close();
+
+            _logger.Info("TriggerCompletion: show items={0}", result.Items.Count);
+            var pt = GetCaretScreenPoint();
+            if (!pt.HasValue)
+            {
+                if (force || editingRefresh)
+                    CloseSession();
+                return;
+            }
+
+            IntPtr hwnd = _textView.GetWindowHandle();
+            var window = EnsureCompletionWindow();
+            if (_sessionOpen)
+            {
+                window.UpdateItems(result.Items);
+                window.RepositionAt(pt.Value.x, pt.Value.y, hwnd);
+                if (editingRefresh)
+                {
+                    _sessionOpenedAt = DateTime.UtcNow;
+                }
+                UpdateSessionCaretAnchor();
+                EnsureSessionWatchdogRunning();
+            }
+            else
+            {
+                _sessionOpen = true;
+                _sessionOpenedAt = DateTime.UtcNow;
+                window.ShowAt(pt.Value.x, pt.Value.y, result.Items, hwnd);
+                UpdateSessionCaretAnchor();
+                EnsureSessionWatchdogRunning();
+            }
+            _logger.Info("TriggerCompletion: done");
         }
 
         /// <summary>后台刷盘，不阻塞 UI。</summary>
@@ -733,6 +841,7 @@ namespace AxialSqlTools.IntelliSense
 
         public void CloseSession()
         {
+            Interlocked.Increment(ref _completionGen);
             _sessionOpen = false;
             _sessionCaretLine = -1;
             _debounceTimer?.Stop();
