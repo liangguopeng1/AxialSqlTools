@@ -41,6 +41,8 @@ namespace AxialSqlTools
             public List<RoutineInfo> ScalarFunctions { get; set; } = new List<RoutineInfo>();
             public List<RoutineInfo> TableFunctions { get; set; } = new List<RoutineInfo>();
             public List<DatabaseObjectInfo> Synonyms { get; set; } = new List<DatabaseObjectInfo>();
+            /// <summary>LoadRoutines 是否成功跑完（失败时可能有表无过程，EXEC 需重建）。</summary>
+            public bool RoutinesLoaded { get; set; }
 
             public bool IsEmpty =>
                 Tables.Count == 0 && Views.Count == 0 && Procedures.Count == 0 &&
@@ -50,6 +52,20 @@ namespace AxialSqlTools
             public TableColumnInfo FindTableOrView(string schema, string name)
             {
                 return FindIn(Tables, schema, name) ?? FindIn(Views, schema, name);
+            }
+
+            /// <summary>查找存储过程（schema 空则按名称匹配任一架构）。</summary>
+            public RoutineInfo FindProcedure(string schema, string name)
+            {
+                if (Procedures == null || string.IsNullOrEmpty(name)) return null;
+                foreach (var p in Procedures)
+                {
+                    if (!StringComparer.OrdinalIgnoreCase.Equals(p.Name, name)) continue;
+                    if (string.IsNullOrEmpty(schema)
+                        || StringComparer.OrdinalIgnoreCase.Equals(p.Schema, schema))
+                        return p;
+                }
+                return null;
             }
 
             private TableColumnInfo FindIn(List<TableColumnInfo> list, string schema, string name)

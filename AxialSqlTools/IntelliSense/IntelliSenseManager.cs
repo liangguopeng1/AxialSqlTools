@@ -81,6 +81,7 @@ namespace AxialSqlTools.IntelliSense
         public static void CloseAllPopups()
         {
             IntelliSenseKeyHandler.CloseAllSessions();
+            IntelliSenseKeyHandler.SuppressAutoTriggerBriefly();
             QuickInfoTooltip.Close();
         }
     }

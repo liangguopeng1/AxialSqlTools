@@ -14,6 +14,14 @@ namespace AxialSqlTools.IntelliSense
             public bool HasOwner;
         }
 
+        /// <summary>EXEC/EXECUTE 目标过程引用。</summary>
+        public sealed class RoutineRef
+        {
+            public string Database;
+            public string Schema;
+            public string Name;
+        }
+
         private sealed class TableSegment
         {
             public TableRef Ref;
@@ -52,6 +60,115 @@ namespace AxialSqlTools.IntelliSense
                 }
             }
             return result;
+        }
+
+        /// <summary>
+        /// 原文解析 EXEC/EXECUTE 目标（支持 caiwu..proc / caiwu.dbo.proc）。
+        /// hoverName 须为过程名最后一段（如 000_pro_...）。
+        /// </summary>
+        public static RoutineRef TryResolveExecRoutine(string text, int offset, string hoverName)
+        {
+            if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(hoverName) || offset < 0)
+                return null;
+
+            int probe = Math.Min(Math.Max(0, offset), text.Length);
+            while (probe < text.Length && IsIdentChar(text[probe])) probe++;
+            int i = probe - 1;
+            while (i >= 0 && IsIdentChar(text[i])) i--;
+            int nameStart = i + 1;
+            int nameEnd = probe;
+            if (nameStart >= nameEnd) return null;
+            string nameFromText = Unbracket(text.Substring(nameStart, nameEnd - nameStart));
+            string hoverClean = hoverName.Trim('[', ']', '"');
+            if (string.IsNullOrEmpty(nameFromText) && string.IsNullOrEmpty(hoverClean))
+                return null;
+            // ScriptDOM 可能把 000_pro 拆成 Integer+Ident；以原文整词为准
+            string name;
+            if (string.IsNullOrEmpty(nameFromText))
+                name = hoverClean;
+            else if (string.IsNullOrEmpty(hoverClean)
+                     || string.Equals(nameFromText, hoverClean, StringComparison.OrdinalIgnoreCase)
+                     || nameFromText.IndexOf(hoverClean, StringComparison.OrdinalIgnoreCase) >= 0
+                     || hoverClean.IndexOf(nameFromText, StringComparison.OrdinalIgnoreCase) >= 0)
+                name = nameFromText.Length >= (hoverClean?.Length ?? 0) ? nameFromText : hoverClean;
+            else
+                return null;
+            if (string.IsNullOrEmpty(name)) return null;
+
+            i = nameStart - 1;
+            var segments = new List<string>();
+            bool doubleDot = false;
+            while (i >= 0)
+            {
+                while (i >= 0 && (text[i] == ' ' || text[i] == '\t')) i--;
+                if (i < 0) break;
+                if (text[i] == '\n' || text[i] == '\r' || text[i] == ';') break;
+                if (text[i] == '.')
+                {
+                    int dots = 0;
+                    while (i >= 0 && text[i] == '.')
+                    {
+                        dots++;
+                        i--;
+                    }
+                    if (dots >= 2) doubleDot = true;
+                    continue;
+                }
+                if (!IsIdentChar(text[i]) && text[i] != '[' && text[i] != ']')
+                    break;
+                int segEnd = i + 1;
+                if (text[i] == ']')
+                {
+                    while (i >= 0 && text[i] != '[') i--;
+                    if (i >= 0) i--;
+                }
+                else
+                {
+                    while (i >= 0 && IsIdentChar(text[i])) i--;
+                }
+                int segStart = i + 1;
+                if (segStart >= segEnd) break;
+                string seg = Unbracket(text.Substring(segStart, segEnd - segStart));
+                if (string.Equals(seg, "EXEC", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(seg, "EXECUTE", StringComparison.OrdinalIgnoreCase))
+                {
+                    i = segEnd - 1;
+                    break;
+                }
+                if (!string.IsNullOrEmpty(seg))
+                    segments.Insert(0, seg);
+            }
+
+            while (i >= 0 && (text[i] == ' ' || text[i] == '\t')) i--;
+            if (i < 0) return null;
+            int kwEnd = i + 1;
+            while (i >= 0 && IsIdentChar(text[i])) i--;
+            string kw = text.Substring(i + 1, kwEnd - (i + 1));
+            if (!string.Equals(kw, "EXEC", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(kw, "EXECUTE", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            var result = new RoutineRef { Name = name };
+            if (doubleDot && segments.Count >= 1)
+            {
+                result.Database = segments[0];
+                result.Schema = "dbo";
+            }
+            else if (segments.Count >= 2)
+            {
+                result.Database = segments[0];
+                result.Schema = segments[1];
+            }
+            else if (segments.Count == 1)
+            {
+                result.Schema = segments[0];
+            }
+            return result;
+        }
+
+        private static bool IsIdentChar(char c)
+        {
+            return char.IsLetterOrDigit(c) || c == '_' || c == '@' || c == '#';
         }
 
         /// <summary>解析光标所在（或最近）FROM/JOIN 表引用；优先命中悬停位置所在表段。</summary>

@@ -110,6 +110,12 @@ namespace AxialSqlTools
                     _intelliSense.CloseSession();
             }
 
+            if (_intelliSense != null && _intelliSense.IsSessionOpen && IsCopyCommand(cmdGroup, nCmdID))
+            {
+                if (_intelliSense.TryCopyCompletionDetail())
+                    return VSConstants.S_OK;
+            }
+
             if (_intelliSense != null && _intelliSense.IsSessionOpen && _intelliSense.HandleSessionKey(cmdGroup, nCmdID))
             {
                 return VSConstants.S_OK;
@@ -168,6 +174,12 @@ namespace AxialSqlTools
                 || nCmdID == (uint)VSConstants.VSStd2KCmdID.TAB
                 || nCmdID == (uint)VSConstants.VSStd2KCmdID.COMPLETEWORD
                 || nCmdID == (uint)VSConstants.VSStd2KCmdID.SHOWMEMBERLIST;
+        }
+
+        private static bool IsCopyCommand(Guid cmdGroup, uint nCmdID)
+        {
+            return cmdGroup == typeof(VSConstants.VSStd97CmdID).GUID
+                && nCmdID == (uint)VSConstants.VSStd97CmdID.Copy;
         }
 
         private bool ShouldProcessSnippetKey(uint nCmdID)

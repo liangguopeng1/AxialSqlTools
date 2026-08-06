@@ -37,6 +37,24 @@ namespace AxialSqlTools.IntelliSense
             }
         }
 
+        /// <summary>执行查询/切窗口后短暂抑制自动弹，避免 F5 后又弹出补全。</summary>
+        public static void SuppressAutoTriggerBriefly(int ms = 1500)
+        {
+            var until = DateTime.UtcNow.AddMilliseconds(ms);
+            for (int i = ActiveHandlers.Count - 1; i >= 0; i--)
+            {
+                try
+                {
+                    var h = ActiveHandlers[i];
+                    if (h != null && h._suppressAutoTriggerUntil < until)
+                        h._suppressAutoTriggerUntil = until;
+                }
+                catch
+                {
+                }
+            }
+        }
+
         public static void EnsureAllHoverTimers()
         {
             for (int i = ActiveHandlers.Count - 1; i >= 0; i--)
@@ -79,10 +97,12 @@ namespace AxialSqlTools.IntelliSense
 
         private bool _sessionOpen;
         private DateTime _sessionOpenedAt;
+        private DateTime _suppressAutoTriggerUntil = DateTime.MinValue;
         private int _sessionCaretLine = -1;
         private int _replaceStartOffset = -1;
         private int _replaceEndOffset = -1;
         private const int SessionAcceptDelayMs = 400;
+        private const int SuppressAutoTriggerAfterCommitMs = 500;
 
         private bool IsWithinAcceptGrace() =>
             _sessionOpen && (DateTime.UtcNow - _sessionOpenedAt).TotalMilliseconds < SessionAcceptDelayMs;
@@ -298,6 +318,12 @@ namespace AxialSqlTools.IntelliSense
 
         public bool IsSessionOpen => _sessionOpen;
 
+        /// <summary>补全框右侧详情复制（Ctrl+C / 右键）。</summary>
+        public bool TryCopyCompletionDetail()
+        {
+            return _window != null && _window.IsOpen && _window.TryCopyDetail();
+        }
+
         private void OnEditorPointerDown()
         {
             // 编辑器收到按下 = 点了编辑器（不是弹框）→ 关闭悬停弹框
@@ -427,6 +453,7 @@ namespace AxialSqlTools.IntelliSense
 
             // SSMS 内建未禁用（首次安装/settings.json 写失败）→ 抑制自动弹，仅 Ctrl+Space 手动可用，避免双弹框
             if (IntelliSenseManager.AutoTriggerSuppressed) return;
+            if (DateTime.UtcNow < _suppressAutoTriggerUntil) return;
 
             if (!isTypeChar && !isBackspace && !isDelete) return;
 
@@ -461,7 +488,6 @@ namespace AxialSqlTools.IntelliSense
         {
             ThreadHelper.ThrowIfNotOnUIThread();
             _logger.Info("TriggerCompletion force={0} refresh={1}", force, editingRefresh);
-            LogManager.Flush();
 
             if (!force && EditorSelectionHelper.HasTextSelection(_textView))
             {
@@ -482,11 +508,15 @@ namespace AxialSqlTools.IntelliSense
                 CloseSession();
                 return;
             }
+            if (!force && DateTime.UtcNow < _suppressAutoTriggerUntil)
+            {
+                CloseSession();
+                return;
+            }
 
             try
             {
                 _logger.Info("TriggerCompletion: read text");
-                LogManager.Flush();
                 string text = GetFullText();
                 int caret = GetCaretOffset();
                 if (caret < 0)
@@ -496,41 +526,44 @@ namespace AxialSqlTools.IntelliSense
                 }
 
                 _logger.Info("TriggerCompletion: connection");
-                LogManager.Flush();
                 var connInfo = SafeGetCurrentConnection();
                 // 自动触发：只用缓存，后台预热，避免新标签首次输入时 UI 同步连库卡死
+                // EXEC 例外：必须同步拿到过程目录（含跨库），否则候选恒空
                 MetadataCatalog catalog = null;
                 if (connInfo != null)
                 {
+                    bool likelyExec = LooksLikeExecContext(text, caret);
                     catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo);
-                    if (catalog == null)
+                    if (catalog == null || (likelyExec && !catalog.RoutinesLoaded))
                     {
                         MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo);
-                        if (force)
-                            catalog = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo);
+                        if (force || likelyExec)
+                            catalog = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, null, requireRoutines: likelyExec);
                     }
                 }
 
                 _logger.Info("TriggerCompletion: engine caret={0} textLen={1} db={2}", caret, text?.Length ?? 0, connInfo?.Database);
-                LogManager.Flush();
                 var result = _engine.GetCompletion(text, caret, catalog, settings, connInfo);
                 _replaceStartOffset = result.ReplaceStartOffset;
                 _replaceEndOffset = result.ReplaceEndOffset;
 
                 if (result.IsEmpty)
                 {
+                    _logger.Info("TriggerCompletion: empty context={0} prefix={1}", result.Context, result.Prefix);
                     // 候选为空时必须关掉旧弹框，否则会残留上一语句的列提示
                     if (force || editingRefresh || _sessionOpen)
                         CloseSession();
                     return;
                 }
 
+                if (result.Context == CompletionContext.AfterExec)
+                    _logger.Info("TriggerCompletion: AfterExec items={0} prefix={1}", result.Items.Count, result.Prefix);
+
                 // 补全弹框打开时关闭悬停注释框，避免叠在一起
                 if (QuickInfoTooltip.IsOpen)
                     QuickInfoTooltip.Close();
 
                 _logger.Info("TriggerCompletion: show items={0}", result.Items.Count);
-                LogManager.Flush();
                 var pt = GetCaretScreenPoint();
                 if (!pt.HasValue)
                 {
@@ -561,14 +594,50 @@ namespace AxialSqlTools.IntelliSense
                     EnsureSessionWatchdogRunning();
                 }
                 _logger.Info("TriggerCompletion: done");
-                LogManager.Flush();
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "TriggerCompletion failed");
-                LogManager.Flush();
+                FlushLogsAsync();
                 CloseSession();
             }
+        }
+
+        /// <summary>后台刷盘，不阻塞 UI。</summary>
+        private static void FlushLogsAsync()
+        {
+            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try { LogManager.Flush(); }
+                catch { }
+            });
+        }
+
+        /// <summary>光标前是否处于 EXEC/EXECUTE 目标名（用于自动触发时同步拉过程目录）。</summary>
+        private static bool LooksLikeExecContext(string text, int caretOffset)
+        {
+            if (string.IsNullOrEmpty(text) || caretOffset <= 0) return false;
+            int end = Math.Min(caretOffset, text.Length);
+            int lineStart = end - 1;
+            while (lineStart >= 0 && text[lineStart] != '\n' && text[lineStart] != '\r' && text[lineStart] != ';')
+                lineStart--;
+            lineStart++;
+            string before = text.Substring(lineStart, end - lineStart);
+            int idx = before.LastIndexOf("EXECUTE", StringComparison.OrdinalIgnoreCase);
+            int execLen = 7;
+            if (idx < 0)
+            {
+                idx = before.LastIndexOf("EXEC", StringComparison.OrdinalIgnoreCase);
+                execLen = 4;
+            }
+            if (idx < 0) return false;
+            // 须为独立关键字（前非标识符），且后面至少有空白（已进入目标名区域）或行尾空格
+            if (idx > 0 && (char.IsLetterOrDigit(before[idx - 1]) || before[idx - 1] == '_'))
+                return false;
+            int after = idx + execLen;
+            if (after < before.Length && (char.IsLetterOrDigit(before[after]) || before[after] == '_'))
+                return false; // 仍在敲 EXEC 关键字本身
+            return after < before.Length; // EXEC 后已有内容（空格/目标名）
         }
 
         private void TryCommitSelected()
@@ -601,10 +670,12 @@ namespace AxialSqlTools.IntelliSense
 
                 ReplaceRangeWith(insertText, _replaceStartOffset, _replaceEndOffset);
 
-                if (item.Kind == CompletionKind.Snippet && item.SnippetCursorOffset >= 0)
+                if (item.SnippetCursorOffset >= 0)
                 {
                     OffsetToLineCol(_replaceStartOffset, out int line, out int col);
                     SnippetExpansionHelper.SetCaretPosition(_textView, line, col, insertText, item.SnippetCursorOffset);
+                    // 光标落入 ISNULL(| , ) 等实参位时，短暂抑制自动弹，避免立刻再出 SELECT 列表
+                    _suppressAutoTriggerUntil = DateTime.UtcNow.AddMilliseconds(SuppressAutoTriggerAfterCommitMs);
                 }
             }
             catch

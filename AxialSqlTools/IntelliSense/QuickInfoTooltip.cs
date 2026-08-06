@@ -9,7 +9,11 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Shell;
 using System.Windows.Threading;
+using Microsoft.SqlServer.Management.UI.VSIntegration;
+using Microsoft.SqlServer.Management.UI.VSIntegration.Editors;
+using Microsoft.SqlServer.Management.Smo.RegSvrEnum;
 using Microsoft.VisualStudio.PlatformUI;
+using Microsoft.VisualStudio.Shell;
 
 namespace AxialSqlTools.IntelliSense
 {
@@ -29,25 +33,33 @@ namespace AxialSqlTools.IntelliSense
         private static StackPanel _contentStack;
         private static TextBox _headerBox;
         private static TextBox _ddlBox;
+        private static Button _goToSourceButton;
+        private static Border _actionBar;
         private static Grid _rootGrid;
         private static bool _isOpen;
         private static bool _isPinned;
         private static bool _isResizing;
+        private static bool _contextMenuOpen;
+        private static DateTime _suppressDeactivateCloseUntil = DateTime.MinValue;
         private static bool _wasMouseLeftDown;
         private static string _lastContentKey;
         private static bool _userResized;
         private static double _savedWidth = 480;
         private static double _savedHeight = 320;
         private static object _owner;
+        private static string _goToSourceSql;
+        private static string _goToSourceDatabase;
 
         public static bool IsOpen => _isOpen;
 
         /// <summary>用户已点击弹框：移开鼠标不关闭，点其他地方才关。</summary>
         public static bool IsPinned => _isPinned && _isOpen;
 
-        /// <summary>应保持打开：已钉住 / 正在缩放 / 鼠标在弹框上。</summary>
+        /// <summary>应保持打开：已钉住 / 正在缩放 / 右键菜单 / 鼠标在弹框上。</summary>
         public static bool ShouldKeepOpen =>
-            _isOpen && (_isPinned || _isResizing || IsMouseOverPopup());
+            _isOpen && (_isPinned || _isResizing || _contextMenuOpen
+                || DateTime.UtcNow < _suppressDeactivateCloseUntil
+                || IsMouseOverPopup());
 
         /// <summary>当前弹框是否由指定悬停源打开（多标签共用一个弹框时防互关闪烁）。</summary>
         public static bool IsOwnedBy(object owner) =>
@@ -118,6 +130,8 @@ namespace AxialSqlTools.IntelliSense
                 if (app == null) return;
                 app.Deactivated += (s, e) =>
                 {
+                    if (_contextMenuOpen || DateTime.UtcNow < _suppressDeactivateCloseUntil)
+                        return;
                     try { Close(); } catch { }
                 };
                 app.Exit += (s, e) =>
@@ -148,6 +162,8 @@ namespace AxialSqlTools.IntelliSense
         public static void PollOutsideClick()
         {
             if (!_isOpen) return;
+            if (_contextMenuOpen || DateTime.UtcNow < _suppressDeactivateCloseUntil)
+                return;
             if (!IsSsmsForeground())
             {
                 Close();
@@ -198,12 +214,33 @@ namespace AxialSqlTools.IntelliSense
                 Padding = new Thickness(0),
                 Focusable = true
             };
+            _goToSourceButton = new Button
+            {
+                Content = "跳转源码",
+                Padding = new Thickness(10, 3, 10, 3),
+                Margin = new Thickness(0),
+                FontSize = 12,
+                Cursor = Cursors.Hand,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Focusable = true
+            };
+            _goToSourceButton.Click += OnGoToSourceClick;
+            _actionBar = new Border
+            {
+                Padding = new Thickness(0, 6, 16, 0),
+                Child = _goToSourceButton,
+                Visibility = Visibility.Collapsed
+            };
+            var body = new DockPanel();
+            DockPanel.SetDock(_actionBar, Dock.Bottom);
+            body.Children.Add(_actionBar);
+            body.Children.Add(_scrollViewer);
             _outerBorder = new Border
             {
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(3),
                 Padding = new Thickness(8, 6, 8, 6),
-                Child = _scrollViewer
+                Child = body
             };
             var resizeGrip = new Thumb
             {
@@ -258,6 +295,8 @@ namespace AxialSqlTools.IntelliSense
             WindowChrome.SetIsHitTestVisibleInChrome(_scrollViewer, true);
             WindowChrome.SetIsHitTestVisibleInChrome(_headerBox, true);
             WindowChrome.SetIsHitTestVisibleInChrome(_ddlBox, true);
+            WindowChrome.SetIsHitTestVisibleInChrome(_goToSourceButton, true);
+            WindowChrome.SetIsHitTestVisibleInChrome(_actionBar, true);
             _window.Closed += (s, e) =>
             {
                 _isOpen = false;
@@ -273,6 +312,8 @@ namespace AxialSqlTools.IntelliSense
             _window.PreviewKeyDown += OnPreviewKeyDown;
             _window.GotFocus += (s, e) => Pin();
             _window.SourceInitialized += OnWindowSourceInitialized;
+            HookTextBoxContextMenu(_headerBox);
+            HookTextBoxContextMenu(_ddlBox);
             _window.SizeChanged += (s, e) =>
             {
                 // 仅用户拖拽缩放时锁定尺寸；自动 Measure / Pin 选中不要当成「用户已调大小」
@@ -285,13 +326,36 @@ namespace AxialSqlTools.IntelliSense
             EnsureAppLifecycleHooks();
         }
 
+        /// <summary>右键菜单打开期间/刚复制完勿因失活关掉弹框。</summary>
+        private static void HookTextBoxContextMenu(TextBox box)
+        {
+            if (box == null) return;
+            box.ContextMenuOpening += (s, e) =>
+            {
+                _contextMenuOpen = true;
+                _suppressDeactivateCloseUntil = DateTime.UtcNow.AddSeconds(30);
+                Pin();
+            };
+            box.ContextMenuClosing += (s, e) =>
+            {
+                _contextMenuOpen = false;
+                _suppressDeactivateCloseUntil = DateTime.UtcNow.AddMilliseconds(600);
+                Pin();
+                try { _window?.Activate(); } catch { }
+            };
+        }
+
         private static void OnWindowDeactivated(object sender, EventArgs e)
         {
             if (!_isOpen || _isResizing) return;
+            if (_contextMenuOpen || DateTime.UtcNow < _suppressDeactivateCloseUntil)
+                return;
             // 延迟判断：点弹框内控件时可能短暂失活；切到其他应用则立即关
             _window.Dispatcher.BeginInvoke(new Action(() =>
             {
                 if (!_isOpen || _isResizing) return;
+                if (_contextMenuOpen || DateTime.UtcNow < _suppressDeactivateCloseUntil)
+                    return;
                 if (!IsSsmsForeground())
                 {
                     Close();
@@ -354,6 +418,76 @@ namespace AxialSqlTools.IntelliSense
                 IsUndoEnabled = false,
                 Visibility = Visibility.Collapsed
             };
+        }
+
+        private static void OnGoToSourceClick(object sender, RoutedEventArgs e)
+        {
+            Pin();
+            _suppressDeactivateCloseUntil = DateTime.UtcNow.AddSeconds(2);
+            string sql = _goToSourceSql;
+            string database = _goToSourceDatabase;
+            if (string.IsNullOrEmpty(sql)) return;
+            try
+            {
+                Close();
+                ThreadHelper.ThrowIfNotOnUIThread();
+                OpenProcedureSourceInNewQuery(sql, database);
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    System.Windows.MessageBox.Show(
+                        "打开源码失败: " + ex.Message,
+                        "Axial SQL Tools",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private static void OpenProcedureSourceInNewQuery(string sql, string database)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var connInfo = ScriptFactoryAccess.GetCurrentConnectionInfo();
+            if (connInfo != null && !string.IsNullOrWhiteSpace(database))
+                connInfo = ScriptFactoryAccess.CloneWithDatabase(connInfo, database) ?? connInfo;
+
+            if (connInfo?.ActiveConnectionInfo != null)
+                ServiceCache.ScriptFactory.CreateNewBlankScript(ScriptType.Sql, connInfo.ActiveConnectionInfo, null);
+            else
+            {
+                var ui = TryBuildUiConnection(connInfo);
+                if (ui != null)
+                    ServiceCache.ScriptFactory.CreateNewBlankScript(ScriptType.Sql, ui, null);
+                else
+                    ServiceCache.ScriptFactory.CreateNewBlankScript(ScriptType.Sql);
+            }
+
+            var doc = (EnvDTE.TextDocument)ServiceCache.ExtensibilityModel.Application.ActiveDocument.Object(null);
+            doc.EndPoint.CreateEditPoint().Insert(sql);
+        }
+
+        private static UIConnectionInfo TryBuildUiConnection(ScriptFactoryAccess.ConnectionInfo connInfo)
+        {
+            if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.FullConnectionString))
+                return null;
+            try
+            {
+                var builder = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(connInfo.FullConnectionString);
+                return ScriptFactoryAccess.TryCreateUiConnectionInfo(
+                    builder,
+                    builder.UserID,
+                    builder.Password,
+                    string.Empty);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static void OnResizeGripDragDelta(object sender, DragDeltaEventArgs e)
@@ -452,6 +586,17 @@ namespace AxialSqlTools.IntelliSense
                 : new SolidColorBrush(Color.FromArgb(50, 0, 0, 0));
             _scrollViewer.Background = Brushes.Transparent;
             _rootGrid.Background = Brushes.Transparent;
+            try
+            {
+                _goToSourceButton.Foreground = fg;
+                _goToSourceButton.Background = light
+                    ? new SolidColorBrush(Color.FromRgb(0xE8, 0xE8, 0xE8))
+                    : new SolidColorBrush(Color.FromArgb(60, 255, 255, 255));
+                _goToSourceButton.BorderBrush = border;
+            }
+            catch
+            {
+            }
         }
 
         public static void Show(QuickInfoData data, double deviceScreenX, double deviceScreenY, IntPtr ownerHwnd, object owner = null)
@@ -502,6 +647,23 @@ namespace AxialSqlTools.IntelliSense
             {
                 _ddlBox.Text = string.Empty;
                 _ddlBox.Visibility = Visibility.Collapsed;
+            }
+
+            if (data.CanGoToSource && !string.IsNullOrEmpty(data.DdlText))
+            {
+                _goToSourceSql = data.DdlText;
+                _goToSourceDatabase = data.SourceDatabase;
+                string tipName = string.IsNullOrEmpty(data.SourceObjectName)
+                    ? "源码"
+                    : data.SourceObjectName;
+                _goToSourceButton.ToolTip = "在新查询窗口打开 " + tipName;
+                _actionBar.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                _goToSourceSql = null;
+                _goToSourceDatabase = null;
+                _actionBar.Visibility = Visibility.Collapsed;
             }
 
             _lastContentKey = key;
@@ -692,10 +854,16 @@ namespace AxialSqlTools.IntelliSense
             _isOpen = false;
             _isPinned = false;
             _isResizing = false;
+            _contextMenuOpen = false;
+            _suppressDeactivateCloseUntil = DateTime.MinValue;
             _userResized = false;
             _wasMouseLeftDown = false;
             _lastContentKey = null;
             _owner = null;
+            _goToSourceSql = null;
+            _goToSourceDatabase = null;
+            if (_actionBar != null)
+                _actionBar.Visibility = Visibility.Collapsed;
         }
 
         /// <summary>仅当弹框属于该 owner 时关闭，避免其他标签的悬停 timer 误关导致闪烁。</summary>

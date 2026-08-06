@@ -1,54 +1,291 @@
 <Window x:Class="AxialSqlTools.IntelliSense.CompletionListWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:AxialSqlTools.IntelliSense"
         Title="Completion"
         WindowStyle="None"
         AllowsTransparency="True"
         ShowInTaskbar="False"
         Topmost="True"
         ShowActivated="False"
-        Width="500"
-        MinWidth="500"
-        MaxWidth="500"
-        Height="220"
-        MinHeight="220"
-        MaxHeight="320"
+        Width="520"
+        MinWidth="520"
+        MaxWidth="520"
+        Height="240"
+        MinHeight="240"
+        MaxHeight="340"
         Background="Transparent"
         Focusable="False">
-    <Border BorderBrush="#9AA0A6" BorderThickness="1" Background="#FFFFFF" CornerRadius="3">
-        <Grid>
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="280"/>
-                <ColumnDefinition Width="220"/>
-            </Grid.ColumnDefinitions>
-            <ListBox x:Name="ItemsList"
-                     Grid.Column="0"
-                     Focusable="False"
-                     Background="#FFFFFF"
-                     Foreground="#1F1F1F"
-                     BorderThickness="0"
-                     Padding="2,0"
-                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                     ScrollViewer.VerticalScrollBarVisibility="Auto"
-                     ScrollViewer.CanContentScroll="False"
-                     SelectionChanged="ItemsList_SelectionChanged">
-                <ListBox.ItemTemplate>
-                    <DataTemplate>
-                        <StackPanel Orientation="Horizontal" Margin="2,1">
-                            <TextBlock Text="{Binding Glyph}" Width="18" Foreground="#185FA5" VerticalAlignment="Center" FontFamily="Consolas"/>
-                            <TextBlock Text="{Binding DisplayText}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="248"/>
+    <Window.Resources>
+        <SolidColorBrush x:Key="PopupBgBrush" Color="#F5F5F5"/>
+        <SolidColorBrush x:Key="PopupFgBrush" Color="#1F1F1F"/>
+        <SolidColorBrush x:Key="PopupBorderBrush" Color="#C8C8C8"/>
+        <SolidColorBrush x:Key="PopupPanelBgBrush" Color="#EEEEEE"/>
+        <SolidColorBrush x:Key="PopupMutedFgBrush" Color="#6E6E6E"/>
+        <SolidColorBrush x:Key="PopupSelectedBgBrush" Color="#E0E0E0"/>
+        <SolidColorBrush x:Key="PopupHoverBgBrush" Color="#EBEBEB"/>
+        <SolidColorBrush x:Key="PopupAccentBrush" Color="#007ACC"/>
+        <Style x:Key="KindGlyphBorder" TargetType="Border">
+            <Setter Property="Width" Value="18"/>
+            <Setter Property="Height" Value="18"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Background" Value="#5F6B7A"/>
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static local:CompletionKind.Column}">
+                    <Setter Property="Background" Value="#2B7CD3"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static local:CompletionKind.Table}">
+                    <Setter Property="Background" Value="#2E7D32"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static local:CompletionKind.View}">
+                    <Setter Property="Background" Value="#00897B"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static local:CompletionKind.Database}">
+                    <Setter Property="Background" Value="#EF6C00"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static local:CompletionKind.Schema}">
+                    <Setter Property="Background" Value="#455A64"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static local:CompletionKind.Procedure}">
+                    <Setter Property="Background" Value="#3949AB"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static local:CompletionKind.ScalarFunction}">
+                    <Setter Property="Background" Value="#00838F"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static local:CompletionKind.TableFunction}">
+                    <Setter Property="Background" Value="#00838F"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static local:CompletionKind.Keyword}">
+                    <Setter Property="Background" Value="#607D8B"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static local:CompletionKind.Snippet}">
+                    <Setter Property="Background" Value="#C62828"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static local:CompletionKind.Variable}">
+                    <Setter Property="Background" Value="#546E7A"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static local:CompletionKind.Synonym}">
+                    <Setter Property="Background" Value="#558B2F"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static local:CompletionKind.Parameter}">
+                    <Setter Property="Background" Value="#F9A825"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="CompletionItemContainer" TargetType="ListBoxItem">
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="2,1"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="RowBorder"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="5"
+                                Padding="6,5"
+                                SnapsToDevicePixels="True">
+                            <Grid>
+                                <Border x:Name="Accent"
+                                        Width="3"
+                                        HorizontalAlignment="Left"
+                                        Margin="-6,0,0,0"
+                                        CornerRadius="2"
+                                        Background="Transparent"/>
+                                <ContentPresenter Margin="4,0,0,0"/>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="RowBorder" Property="Background" Value="{DynamicResource PopupSelectedBgBrush}"/>
+                                <Setter TargetName="Accent" Property="Background" Value="{DynamicResource PopupAccentBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="RowBorder" Property="Background" Value="{DynamicResource PopupHoverBgBrush}"/>
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsSelected" Value="True"/>
+                                    <Condition Property="IsMouseOver" Value="True"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="RowBorder" Property="Background" Value="{DynamicResource PopupSelectedBgBrush}"/>
+                                <Setter TargetName="Accent" Property="Background" Value="{DynamicResource PopupAccentBrush}"/>
+                            </MultiTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <Border x:Name="RootBorder"
+            BorderBrush="{DynamicResource PopupBorderBrush}"
+            BorderThickness="1"
+            Background="{DynamicResource PopupBgBrush}"
+            CornerRadius="8"
+            SnapsToDevicePixels="True">
+        <Border.Effect>
+            <DropShadowEffect BlurRadius="14"
+                              ShadowDepth="2"
+                              Direction="270"
+                              Opacity="0.18"
+                              Color="#000000"/>
+        </Border.Effect>
+        <Border x:Name="InnerBorder"
+                CornerRadius="8"
+                Background="{DynamicResource PopupBgBrush}"
+                ClipToBounds="True">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="290"/>
+                    <ColumnDefinition Width="230"/>
+                </Grid.ColumnDefinitions>
+                <ListBox x:Name="ItemsList"
+                         Grid.Column="0"
+                         Focusable="False"
+                         Background="Transparent"
+                         Foreground="{DynamicResource PopupFgBrush}"
+                         BorderThickness="0"
+                         Padding="4,4"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                         ScrollViewer.CanContentScroll="False"
+                         ItemContainerStyle="{StaticResource CompletionItemContainer}"
+                         SelectionChanged="ItemsList_SelectionChanged">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal">
+                                <Border Style="{StaticResource KindGlyphBorder}" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Glyph}"
+                                               Foreground="White"
+                                               FontFamily="Segoe UI Semibold, Segoe UI, Consolas"
+                                               FontSize="10"
+                                               FontWeight="SemiBold"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Text="{Binding DisplayText}"
+                                           Margin="8,0,0,0"
+                                           VerticalAlignment="Center"
+                                           FontFamily="Segoe UI, Microsoft YaHei UI"
+                                           FontSize="12.5"
+                                           Foreground="{DynamicResource PopupFgBrush}"
+                                           TextTrimming="CharacterEllipsis"
+                                           MaxWidth="240"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+                <Border x:Name="DetailPane"
+                        Grid.Column="1"
+                        BorderBrush="{DynamicResource PopupBorderBrush}"
+                        BorderThickness="1,0,0,0"
+                        Background="{DynamicResource PopupPanelBgBrush}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  CanContentScroll="False"
+                                  Padding="0"
+                                  Focusable="False">
+                        <StackPanel Margin="12,10">
+                        <Border x:Name="KindBadge"
+                                HorizontalAlignment="Left"
+                                CornerRadius="4"
+                                Padding="7,2"
+                                Background="#2B7CD3"
+                                Margin="0,0,0,8">
+                            <TextBlock x:Name="KindBadgeText"
+                                       FontFamily="Segoe UI Semibold, Segoe UI, Microsoft YaHei UI"
+                                       FontSize="11"
+                                       FontWeight="SemiBold"
+                                       Foreground="White"
+                                       Text="列"/>
+                        </Border>
+                        <TextBox x:Name="DetailPrimary"
+                                 FontFamily="Consolas, Cascadia Mono, Segoe UI"
+                                 FontSize="12.5"
+                                 FontWeight="SemiBold"
+                                 Foreground="{DynamicResource PopupFgBrush}"
+                                 Background="Transparent"
+                                 BorderThickness="0"
+                                 IsReadOnly="True"
+                                 IsUndoEnabled="False"
+                                 TextWrapping="Wrap"
+                                 AcceptsReturn="True"
+                                 Padding="0"
+                                 Margin="0,0,0,8"
+                                 VerticalScrollBarVisibility="Disabled"
+                                 HorizontalScrollBarVisibility="Disabled"/>
+                        <Grid x:Name="DetailSourcePanel" Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock x:Name="DetailDbLabel"
+                                       Grid.Row="0" Grid.Column="0"
+                                       Text="数据库"
+                                       FontFamily="Segoe UI, Microsoft YaHei UI"
+                                       FontSize="11"
+                                       Foreground="{DynamicResource PopupMutedFgBrush}"
+                                       Margin="0,0,8,3"/>
+                            <TextBox x:Name="DetailDatabase"
+                                     Grid.Row="0" Grid.Column="1"
+                                     FontFamily="Segoe UI, Microsoft YaHei UI"
+                                     FontSize="11"
+                                     Foreground="{DynamicResource PopupFgBrush}"
+                                     Background="Transparent"
+                                     BorderThickness="0"
+                                     IsReadOnly="True"
+                                     IsUndoEnabled="False"
+                                     TextWrapping="NoWrap"
+                                     Padding="0"
+                                     Margin="0,0,0,3"
+                                     VerticalScrollBarVisibility="Disabled"
+                                     HorizontalScrollBarVisibility="Disabled"/>
+                            <TextBlock x:Name="DetailTableLabel"
+                                       Grid.Row="1" Grid.Column="0"
+                                       Text="表"
+                                       FontFamily="Segoe UI, Microsoft YaHei UI"
+                                       FontSize="11"
+                                       Foreground="{DynamicResource PopupMutedFgBrush}"
+                                       Margin="0,0,8,0"/>
+                            <TextBox x:Name="DetailTable"
+                                     Grid.Row="1" Grid.Column="1"
+                                     FontFamily="Segoe UI, Microsoft YaHei UI"
+                                     FontSize="11"
+                                     Foreground="{DynamicResource PopupFgBrush}"
+                                     Background="Transparent"
+                                     BorderThickness="0"
+                                     IsReadOnly="True"
+                                     IsUndoEnabled="False"
+                                     TextWrapping="Wrap"
+                                     AcceptsReturn="True"
+                                     Padding="0"
+                                     VerticalScrollBarVisibility="Disabled"
+                                     HorizontalScrollBarVisibility="Disabled"/>
+                        </Grid>
+                        <TextBox x:Name="DetailSecondary"
+                                 FontFamily="Segoe UI, Microsoft YaHei UI"
+                                 FontSize="11"
+                                 Foreground="{DynamicResource PopupMutedFgBrush}"
+                                 Background="Transparent"
+                                 BorderThickness="0"
+                                 IsReadOnly="True"
+                                 IsUndoEnabled="False"
+                                 TextWrapping="Wrap"
+                                 AcceptsReturn="True"
+                                 Padding="0"
+                                 VerticalScrollBarVisibility="Disabled"
+                                 HorizontalScrollBarVisibility="Disabled"/>
                         </StackPanel>
-                    </DataTemplate>
-                </ListBox.ItemTemplate>
-            </ListBox>
-            <Border Grid.Column="1" BorderBrush="#E0E0E0" BorderThickness="1,0,0,0" Background="#FAFAFA">
-                <TextBlock x:Name="DetailText"
-                           Margin="6,4"
-                           FontFamily="Consolas"
-                           FontSize="11"
-                           Foreground="#3C3C3C"
-                           TextWrapping="Wrap"/>
-            </Border>
-        </Grid>
+                    </ScrollViewer>
+                </Border>
+            </Grid>
+        </Border>
     </Border>
 </Window>

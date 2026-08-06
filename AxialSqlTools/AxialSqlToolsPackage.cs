@@ -23,6 +23,7 @@ using Microsoft.VisualStudio;
 using System.Collections;
 using NLog;
 using NLog.Targets;
+using NLog.Targets.Wrappers;
 using Microsoft.Data.SqlClient;
 using System.Data;
 using System.Linq;
@@ -137,17 +138,22 @@ namespace AxialSqlTools
                           ArchiveFileName = Path.Combine(logDirectory, "archive/log.{###}.txt"),
                           ArchiveAboveSize = 1024 * 1024 * 5, // 5 MB, for example
                           MaxArchiveFiles = 5,
-                          KeepFileOpen = false,
-                          AutoFlush = true
+                          KeepFileOpen = true,
+                          AutoFlush = false
                       };
-
-                      // Add the file target to the builder
-                      // builder.AddTarget(fileTarget);
+                      // 异步写盘，避免补全热路径同步 Flush 卡 UI
+                      var asyncFile = new AsyncTargetWrapper("asyncFileLog", fileTarget)
+                      {
+                          QueueLimit = 10000,
+                          OverflowAction = AsyncTargetWrapperOverflowAction.Discard,
+                          TimeToSleepBetweenBatches = 50,
+                          BatchSize = 100
+                      };
 
                       // Create a rule: "Write all logs from Info to Fatal to fileTarget"
                       builder.ForLogger()
                              .FilterMinLevel(LogLevel.Info)
-                             .WriteTo(fileTarget);
+                             .WriteTo(asyncFile);
                   });
 
             _logger = LogManager.GetCurrentClassLogger();
@@ -356,7 +362,7 @@ namespace AxialSqlTools
                 OleMenuCommandService oleMenuCommandService = await GetServiceAsync(typeof(IMenuCommandService)) as OleMenuCommandService;
 
                 HookExecuteCommand(application, "Query.Execute", hookAfterExecute: true);
-                HookExecuteCommand(application, "Query.ExecuteSelection");
+                // SSMS 选中执行也走 Query.Execute，无独立 Query.ExecuteSelection 命令
                 HookExecuteCommand(application, "Query.Parse");
 
                 EnvDTE80.Events2 events = (EnvDTE80.Events2)application.Events;
@@ -1239,9 +1245,26 @@ namespace AxialSqlTools
 
         private void HookExecuteCommand(DTE2 application, string commandName, bool hookAfterExecute = false)
         {
+            if (application == null || string.IsNullOrWhiteSpace(commandName))
+                return;
             try
             {
-                var cmd = application.Commands.Item(commandName);
+                EnvDTE.Command cmd = null;
+                try
+                {
+                    cmd = application.Commands.Item(commandName);
+                }
+                catch (ArgumentException)
+                {
+                    // 当前 SSMS 版本无此命令名（如旧代码里的 Query.ExecuteSelection）
+                    _logger?.Info("IntelliSense: skip missing command {0}.", commandName);
+                    return;
+                }
+                if (cmd == null || string.IsNullOrEmpty(cmd.Guid))
+                {
+                    _logger?.Info("IntelliSense: skip unavailable command {0}.", commandName);
+                    return;
+                }
                 var cmdGuid = new Guid(cmd.Guid);
                 IntelliSenseManager.RegisterExecuteCommand(cmdGuid, (uint)cmd.ID);
                 var evt = application.Events.get_CommandEvents(cmd.Guid, cmd.ID);

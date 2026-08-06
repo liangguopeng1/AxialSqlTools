@@ -39,6 +39,9 @@ namespace AxialSqlTools
             private readonly ConcurrentDictionary<string, TableColumnInfo> _tableColumnCache =
                 new ConcurrentDictionary<string, TableColumnInfo>(StringComparer.OrdinalIgnoreCase);
 
+            private readonly ConcurrentDictionary<string, List<string>> _databaseListCache =
+                new ConcurrentDictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
             private static readonly Regex IPv4Regex = new Regex(
                 @"^\d{1,3}(\.\d{1,3}){3}$",
                 RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -106,7 +109,11 @@ namespace AxialSqlTools
             }
 
             /// <summary>取或构建目录。connInfo 为当前活动连接；dbOverride 用于三段名跨库。</summary>
-            public MetadataCatalog GetOrBuildCatalog(ScriptFactoryAccess.ConnectionInfo connInfo, string dbOverride = null)
+            /// <param name="requireRoutines">为 true 时，若缓存缺 RoutinesLoaded 则只补过程，不丢弃表缓存（供 EXEC）。</param>
+            public MetadataCatalog GetOrBuildCatalog(
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string dbOverride = null,
+                bool requireRoutines = false)
             {
                 if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
                 {
@@ -123,20 +130,56 @@ namespace AxialSqlTools
                 if (_cache.TryGetValue(key, out var cached) && cached != null && !cached.IsEmpty
                     && string.Equals(cached.Database, database, StringComparison.OrdinalIgnoreCase))
                 {
+                    if (!requireRoutines || cached.RoutinesLoaded)
+                        return cached;
+                    // 有表无过程：只补过程，绝不整目录丢弃（否则 FROM 跨库表提示被拖慢）
+                    EnsureRoutinesLoaded(connInfo, database, cached, key);
+                    if (_cache.TryGetValue(key, out var latest) && latest != null && !latest.IsEmpty)
+                        return latest;
                     return cached;
                 }
 
-                // 已有后台构建时不在 UI 再同步连库（避免卡死）
+                // 已有后台构建：等待完成（跨库 EXEC 等场景需要结果，不能直接返回 null）
                 if (_building.ContainsKey(key))
+                {
+                    for (int i = 0; i < 100 && _building.ContainsKey(key); i++)
+                    {
+                        System.Threading.Thread.Sleep(50);
+                        if (_cache.TryGetValue(key, out cached) && cached != null && !cached.IsEmpty
+                            && string.Equals(cached.Database, database, StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (!requireRoutines || cached.RoutinesLoaded)
+                                return cached;
+                        }
+                    }
+                    if (_cache.TryGetValue(key, out cached) && cached != null && !cached.IsEmpty
+                        && string.Equals(cached.Database, database, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (requireRoutines && !cached.RoutinesLoaded)
+                            EnsureRoutinesLoaded(connInfo, database, cached, key);
+                        return cached;
+                    }
                     return null;
+                }
 
                 if (!_building.TryAdd(key, 0))
+                {
+                    // 并发抢锁失败：再等一轮缓存
+                    for (int i = 0; i < 40 && _building.ContainsKey(key); i++)
+                        System.Threading.Thread.Sleep(50);
+                    if (_cache.TryGetValue(key, out cached) && cached != null && !cached.IsEmpty
+                        && string.Equals(cached.Database, database, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (requireRoutines && !cached.RoutinesLoaded)
+                            EnsureRoutinesLoaded(connInfo, database, cached, key);
+                        return cached;
+                    }
                     return null;
+                }
 
                 try
                 {
-                    MetadataCatalog removedCatalog;
-                    _cache.TryRemove(key, out removedCatalog);
+                    // 全量构建前保留旧缓存可读；成功后再替换，避免构建期间 FROM 空窗
                     var catalog = BuildCatalog(connInfo, database);
                     if (catalog != null)
                     {
@@ -149,6 +192,123 @@ namespace AxialSqlTools
                     byte removedFlag;
                     _building.TryRemove(key, out removedFlag);
                 }
+            }
+
+            /// <summary>在已有表缓存上仅重载过程/函数，不清空 Tables/Views。</summary>
+            private void EnsureRoutinesLoaded(
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string database,
+                MetadataCatalog catalog,
+                string key)
+            {
+                if (catalog == null || catalog.RoutinesLoaded)
+                    return;
+                // 与全量构建共用 _building，避免并发改同一 catalog
+                if (!_building.TryAdd(key, 0))
+                {
+                    for (int i = 0; i < 40 && _building.ContainsKey(key); i++)
+                        System.Threading.Thread.Sleep(50);
+                    return;
+                }
+                try
+                {
+                    if (catalog.RoutinesLoaded)
+                        return;
+                    var target = ScriptFactoryAccess.CloneWithDatabase(connInfo, database);
+                    if (target == null || string.IsNullOrWhiteSpace(target.FullConnectionString))
+                        return;
+                    using (var conn = new SqlConnection(WithConnectTimeout(target.FullConnectionString)))
+                    {
+                        conn.Open();
+                        catalog.Procedures.Clear();
+                        catalog.ScalarFunctions.Clear();
+                        catalog.TableFunctions.Clear();
+                        LoadRoutines(conn, catalog);
+                    }
+                }
+                catch
+                {
+                    catalog.RoutinesLoaded = false;
+                }
+                finally
+                {
+                    byte removed;
+                    _building.TryRemove(key, out removed);
+                }
+            }
+
+            /// <summary>缓存库名列表，避免每次 FROM 跨库判定都连 master 查 sys.databases。</summary>
+            public List<string> GetDatabasesCached(ScriptFactoryAccess.ConnectionInfo connInfo)
+            {
+                if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
+                    return new List<string>();
+                string key = connInfo.ServerName ?? string.Empty;
+                if (_databaseListCache.TryGetValue(key, out var cached) && cached != null)
+                    return cached;
+                var list = ScriptFactoryAccess.GetDatabases(connInfo) ?? new List<string>();
+                _databaseListCache[key] = list;
+                return list;
+            }
+
+            public bool ContainsDatabase(ScriptFactoryAccess.ConnectionInfo connInfo, string name)
+            {
+                if (string.IsNullOrEmpty(name)) return false;
+                var dbs = GetDatabasesCached(connInfo);
+                for (int i = 0; i < dbs.Count; i++)
+                {
+                    if (string.Equals(dbs[i], name, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                return false;
+            }
+
+            /// <summary>按需加载单个过程/函数定义（悬停展示 SQL；不在整库 LoadRoutines 里拉，避免超时）。</summary>
+            public string EnsureRoutineDefinition(
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string database,
+                RoutineInfo routine)
+            {
+                if (routine == null) return null;
+                if (!string.IsNullOrEmpty(routine.Definition))
+                    return routine.Definition;
+                if (connInfo == null || string.IsNullOrWhiteSpace(routine.Name))
+                    return null;
+
+                string db = string.IsNullOrWhiteSpace(database) ? connInfo.Database : database;
+                if (string.IsNullOrWhiteSpace(db)) db = "master";
+                string sch = string.IsNullOrWhiteSpace(routine.Schema) ? "dbo" : routine.Schema;
+                var target = ScriptFactoryAccess.CloneWithDatabase(connInfo, db);
+                if (target == null || string.IsNullOrWhiteSpace(target.FullConnectionString))
+                    return null;
+
+                const string sql = @"
+SELECT m.definition
+FROM sys.objects o
+JOIN sys.schemas s ON o.schema_id = s.schema_id
+JOIN sys.sql_modules m ON m.object_id = o.object_id
+WHERE s.name = @schema AND o.name = @name AND o.type IN ('P','FN','TF','IF') AND o.is_ms_shipped = 0;";
+                try
+                {
+                    using (var conn = new SqlConnection(WithConnectTimeout(target.FullConnectionString)))
+                    {
+                        conn.Open();
+                        using (var cmd = Cmd(conn, sql))
+                        {
+                            cmd.Parameters.AddWithValue("@schema", sch);
+                            cmd.Parameters.AddWithValue("@name", routine.Name);
+                            object val = cmd.ExecuteScalar();
+                            if (val != null && val != DBNull.Value)
+                            {
+                                routine.Definition = val as string;
+                                return routine.Definition;
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                }
+                return null;
             }
 
             /// <summary>按需加载单表列（catalog 未命中或跨库时的兜底）。</summary>
@@ -303,9 +463,16 @@ ORDER BY d.name;";
                     return false;
                 if (IPv4Regex.IsMatch(name))
                     return true;
-                foreach (var server in GetLinkedServers(connInfo))
+                if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
+                    return false;
+                if (!_linkedServerCache.TryGetValue(connInfo.ServerName, out var cached) || cached == null)
                 {
-                    if (string.Equals(server, name, StringComparison.OrdinalIgnoreCase))
+                    cached = LoadLinkedServers(connInfo);
+                    _linkedServerCache[connInfo.ServerName] = cached;
+                }
+                for (int i = 0; i < cached.Count; i++)
+                {
+                    if (string.Equals(cached[i], name, StringComparison.OrdinalIgnoreCase))
                         return true;
                 }
                 return false;
@@ -403,20 +570,7 @@ ORDER BY d.name;";
 
             private static bool IsLocalDatabaseName(ScriptFactoryAccess.ConnectionInfo connInfo, string name)
             {
-                if (connInfo == null || string.IsNullOrWhiteSpace(name))
-                    return false;
-                try
-                {
-                    foreach (var db in ScriptFactoryAccess.GetDatabases(connInfo))
-                    {
-                        if (string.Equals(db, name, StringComparison.OrdinalIgnoreCase))
-                            return true;
-                    }
-                }
-                catch
-                {
-                }
-                return false;
+                return Instance.ContainsDatabase(connInfo, name);
             }
 
             private static string FourPartPrefix(string linkedServer, string database)
@@ -676,11 +830,11 @@ ORDER BY s.name, o.name, i.index_id, ic.key_ordinal;";
 
             private void LoadRoutines(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null)
             {
+                // 补全只需名/参数类型；不拉 sql_modules / OBJECT_DEFINITION（大库 5s 必超时 → 有表无过程）
                 string objects = QualifySys(fourPartPrefix, "sys.objects");
                 string schemas = QualifySys(fourPartPrefix, "sys.schemas");
                 string parameters = QualifySys(fourPartPrefix, "sys.parameters");
                 string types = QualifySys(fourPartPrefix, "sys.types");
-                string modules = QualifySys(fourPartPrefix, "sys.sql_modules");
                 string extProps = QualifySys(fourPartPrefix, "sys.extended_properties");
                 string sql = $@"
 SELECT s.name AS schema_name,
@@ -694,14 +848,11 @@ SELECT s.name AS schema_name,
        p.scale,
        p.is_output,
        p.has_default_value,
-       OBJECT_DEFINITION(p.default_object_id) AS default_value,
-       m.definition AS object_definition,
        ep.value AS object_description
 FROM {objects} o
 JOIN {schemas} s ON o.schema_id = s.schema_id
 LEFT JOIN {parameters} p ON p.object_id = o.object_id
 LEFT JOIN {types} t ON p.user_type_id = t.user_type_id
-LEFT JOIN {modules} m ON m.object_id = o.object_id
 LEFT JOIN {extProps} ep
        ON ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description'
 WHERE o.type IN ('P','FN','TF','IF') AND o.is_ms_shipped = 0
@@ -723,14 +874,12 @@ ORDER BY s.name, o.name, p.parameter_id;";
                                 !string.Equals(current.Schema, schema, StringComparison.OrdinalIgnoreCase) ||
                                 !string.Equals(current.Name, name, StringComparison.OrdinalIgnoreCase))
                             {
-                                string definition = reader.IsDBNull(12) ? null : reader.GetString(12);
-                                string objDesc = reader.IsDBNull(13) ? null : reader.GetString(13);
+                                string objDesc = reader.IsDBNull(11) ? null : reader.GetString(11);
                                 current = new RoutineInfo
                                 {
                                     Schema = schema,
                                     Name = name,
                                     Kind = RoutineKindFromType(type),
-                                    Definition = definition,
                                     Description = objDesc
                                 };
                                 AddRoutine(catalog, current);
@@ -746,22 +895,22 @@ ORDER BY s.name, o.name, p.parameter_id;";
                                 byte scale = reader.IsDBNull(8) ? (byte)0 : reader.GetByte(8);
                                 bool isOutput = !reader.IsDBNull(9) && reader.GetBoolean(9);
                                 bool hasDefault = !reader.IsDBNull(10) && reader.GetBoolean(10);
-                                string defValue = reader.IsDBNull(11) ? null : reader.GetString(11);
 
                                 current.Parameters.Add(new RoutineParam
                                 {
                                     Name = paramName,
                                     DataType = FormatDataType(typeName, maxLength, precision, scale),
                                     IsOutput = isOutput,
-                                    HasDefault = hasDefault,
-                                    DefaultValue = defValue
+                                    HasDefault = hasDefault
                                 });
                             }
                         }
                     }
+                    catalog.RoutinesLoaded = true;
                 }
                 catch
                 {
+                    catalog.RoutinesLoaded = false;
                 }
             }
 
@@ -872,6 +1021,10 @@ ORDER BY s.name, o.name;";
             public void InvalidateAll()
             {
                 _cache.Clear();
+                _databaseListCache.Clear();
+                _linkedServerCache.Clear();
+                _linkedDatabaseCache.Clear();
+                _tableColumnCache.Clear();
             }
 
             /// <summary>常用系统对象（includeSystemObjects 开启时追加到候选）。</summary>

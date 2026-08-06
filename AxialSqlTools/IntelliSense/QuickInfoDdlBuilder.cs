@@ -112,6 +112,42 @@ namespace AxialSqlTools.IntelliSense
             return sb.ToString().TrimEnd();
         }
 
+        public static string BuildProcedureSignature(RoutineInfo routine)
+        {
+            if (routine == null) return string.Empty;
+            if (!string.IsNullOrEmpty(routine.Definition))
+                return routine.Definition.Trim();
+            var sb = new StringBuilder();
+            sb.AppendLine("-- stored procedure (definition unavailable)");
+            sb.Append("create procedure ").Append(Qualify(routine.Schema, routine.Name));
+            if (routine.Parameters != null && routine.Parameters.Count > 0)
+            {
+                sb.AppendLine();
+                for (int i = 0; i < routine.Parameters.Count; i++)
+                {
+                    var p = routine.Parameters[i];
+                    sb.Append("    ").Append(p.Name ?? string.Empty)
+                        .Append(" ").Append(p.DataType ?? string.Empty);
+                    if (p.IsOutput) sb.Append(" output");
+                    if (p.HasDefault && !string.IsNullOrEmpty(p.DefaultValue))
+                        sb.Append(" = ").Append(p.DefaultValue);
+                    if (i < routine.Parameters.Count - 1) sb.AppendLine(",");
+                    else sb.AppendLine();
+                }
+            }
+            else
+            {
+                sb.AppendLine();
+            }
+            sb.Append("as");
+            if (!string.IsNullOrEmpty(routine.Description))
+            {
+                sb.AppendLine();
+                sb.AppendLine("-- ").Append(routine.Description.Replace("\r\n", " ").Replace("\n", " "));
+            }
+            return sb.ToString().TrimEnd();
+        }
+
         private static string Qualify(string schema, string name)
         {
             string sch = string.IsNullOrEmpty(schema) ? "dbo" : schema;

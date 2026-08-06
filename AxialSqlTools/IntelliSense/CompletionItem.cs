@@ -16,10 +16,19 @@ namespace AxialSqlTools
             /// <summary>右侧详情面板内容（类型/参数/描述）。</summary>
             public string Description { get; set; }
 
+            /// <summary>右侧详情：所属数据库（列/表等有来源时）。</summary>
+            public string SourceDatabase { get; set; }
+
+            /// <summary>右侧详情：所属表/视图名（可含 schema）。</summary>
+            public string SourceTable { get; set; }
+
             public CompletionKind Kind { get; set; }
 
             /// <summary>列表左侧图标符号（基于 Kind）。</summary>
             public string Glyph => KindToGlyph(Kind);
+
+            /// <summary>右侧详情用的类型中文标签。</summary>
+            public string KindLabel => KindToLabel(Kind);
 
             private static string KindToGlyph(CompletionKind k)
             {
@@ -41,7 +50,28 @@ namespace AxialSqlTools
                 }
             }
 
-            /// <summary>片段展开后光标在 InsertText 内的偏移（仅 Kind=Snippet 有效）。</summary>
+            private static string KindToLabel(CompletionKind k)
+            {
+                switch (k)
+                {
+                    case CompletionKind.Table: return "表";
+                    case CompletionKind.View: return "视图";
+                    case CompletionKind.Column: return "列";
+                    case CompletionKind.Procedure: return "存储过程";
+                    case CompletionKind.ScalarFunction: return "函数";
+                    case CompletionKind.TableFunction: return "表值函数";
+                    case CompletionKind.Synonym: return "同义词";
+                    case CompletionKind.Variable: return "变量";
+                    case CompletionKind.Database: return "数据库";
+                    case CompletionKind.Schema: return "架构";
+                    case CompletionKind.Parameter: return "参数";
+                    case CompletionKind.Snippet: return "片段";
+                    case CompletionKind.Keyword: return "关键字";
+                    default: return "项";
+                }
+            }
+
+            /// <summary>插入后光标在 InsertText 内的偏移（片段 / 带参数的存储过程）。</summary>
             public int SnippetCursorOffset { get; set; } = -1;
 
             /// <summary>关联的片段前缀，用于提交时精确匹配（仅 Kind=Snippet 有效）。</summary>

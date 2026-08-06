@@ -8,6 +8,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Microsoft.VisualStudio.PlatformUI;
 using NLog;
 
 namespace AxialSqlTools.IntelliSense
@@ -60,6 +61,157 @@ namespace AxialSqlTools.IntelliSense
             Deactivated += (s, e) => _logger.Debug("CompletionListWindow.Deactivated (IsOpen={0})", IsOpen);
             Closed += (s, e) => _logger.Debug("CompletionListWindow.Closed");
             SourceInitialized += OnSourceInitialized;
+            ApplyThemeColors();
+            PreviewKeyDown += CompletionListWindow_PreviewKeyDown;
+            var copyMenu = new ContextMenu();
+            var copyItem = new MenuItem { Header = "复制" };
+            copyItem.Click += (s, e) => TryCopyDetail();
+            copyMenu.Items.Add(copyItem);
+            DetailPrimary.ContextMenu = copyMenu;
+            DetailDatabase.ContextMenu = copyMenu;
+            DetailTable.ContextMenu = copyMenu;
+            DetailSecondary.ContextMenu = copyMenu;
+        }
+
+        private void CompletionListWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.C && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+            {
+                if (TryCopyDetail())
+                    e.Handled = true;
+            }
+            else if (e.Key == Key.A && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+            {
+                if (TrySelectAllDetail())
+                    e.Handled = true;
+            }
+        }
+
+        /// <summary>复制右侧详情选中文本；无选中则复制整段详情。</summary>
+        public bool TryCopyDetail()
+        {
+            try
+            {
+                if (CopyIfSelected(DetailPrimary)
+                    || CopyIfSelected(DetailDatabase)
+                    || CopyIfSelected(DetailTable)
+                    || CopyIfSelected(DetailSecondary))
+                    return true;
+
+                var sb = new System.Text.StringBuilder();
+                AppendDetailLine(sb, DetailPrimary.Text);
+                if (DetailSourcePanel.Visibility == Visibility.Visible)
+                {
+                    if (!string.IsNullOrWhiteSpace(DetailDatabase.Text))
+                        sb.AppendLine("数据库: " + DetailDatabase.Text);
+                    if (!string.IsNullOrWhiteSpace(DetailTable.Text))
+                        sb.AppendLine("表: " + DetailTable.Text);
+                }
+                AppendDetailLine(sb, DetailSecondary.Text);
+                string text = sb.ToString().TrimEnd();
+                if (string.IsNullOrEmpty(text)) return false;
+                Clipboard.SetText(text);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool TrySelectAllDetail()
+        {
+            try
+            {
+                TextBox target = DetailPrimary;
+                if (DetailDatabase.IsKeyboardFocusWithin || DetailDatabase.IsMouseOver)
+                    target = DetailDatabase;
+                else if (DetailTable.IsKeyboardFocusWithin || DetailTable.IsMouseOver)
+                    target = DetailTable;
+                else if (DetailSecondary.IsKeyboardFocusWithin || DetailSecondary.IsMouseOver)
+                    target = DetailSecondary;
+                else if (DetailPrimary.IsKeyboardFocusWithin || DetailPrimary.IsMouseOver)
+                    target = DetailPrimary;
+                target.Focus();
+                target.SelectAll();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool CopyIfSelected(TextBox box)
+        {
+            if (box == null || box.SelectionLength <= 0) return false;
+            box.Copy();
+            return true;
+        }
+
+        private static void AppendDetailLine(System.Text.StringBuilder sb, string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+            sb.AppendLine(text);
+        }
+
+        private void ApplyThemeColors()
+        {
+            try
+            {
+                Brush bg = VsThemeBrushResolver.ResolveBrush(this, EnvironmentColors.ToolWindowBackgroundBrushKey)
+                    ?? SystemColors.WindowBrush;
+                Brush fg = VsThemeBrushResolver.ResolveBrush(this, EnvironmentColors.ToolWindowTextBrushKey)
+                    ?? SystemColors.WindowTextBrush;
+                Brush border = VsThemeBrushResolver.ResolveBrush(this, EnvironmentColors.ToolWindowBorderBrushKey)
+                    ?? SystemColors.ActiveBorderBrush;
+                Brush accent = VsThemeBrushResolver.ResolveEnvironmentBrushByName(this, "MainWindowActiveDefaultBorderBrushKey")
+                    ?? VsThemeBrushResolver.ResolveEnvironmentBrushByName(this, "SystemAccentBrushKey")
+                    ?? border;
+
+                Color bgColor = VsThemeBrushResolver.GetBrushColor(bg, Colors.White);
+                Color fgColor = VsThemeBrushResolver.GetBrushColor(fg, Colors.Black);
+                Color borderColor = VsThemeBrushResolver.GetBrushColor(border, Color.FromRgb(0xC8, 0xC8, 0xC8));
+                Color accentColor = VsThemeBrushResolver.GetBrushColor(accent, Color.FromRgb(0x00, 0x7A, 0xCC));
+                bool light = VsThemeBrushResolver.GetRelativeLuminance(bgColor) > 0.6;
+
+                // 与悬停框一致：主体用工具窗口背景，右侧略深一层
+                Color panelColor = light
+                    ? VsThemeBrushResolver.BlendColors(bgColor, Colors.Black, 0.06)
+                    : VsThemeBrushResolver.BlendColors(bgColor, Colors.White, 0.08);
+                Color selectedColor = light
+                    ? VsThemeBrushResolver.BlendColors(bgColor, Colors.Black, 0.12)
+                    : VsThemeBrushResolver.BlendColors(bgColor, Colors.White, 0.14);
+                Color hoverColor = light
+                    ? VsThemeBrushResolver.BlendColors(bgColor, Colors.Black, 0.07)
+                    : VsThemeBrushResolver.BlendColors(bgColor, Colors.White, 0.10);
+                Color mutedColor = light
+                    ? VsThemeBrushResolver.BlendColors(fgColor, bgColor, 0.45)
+                    : VsThemeBrushResolver.BlendColors(fgColor, bgColor, 0.35);
+
+                SetBrush("PopupBgBrush", bgColor);
+                SetBrush("PopupFgBrush", fgColor);
+                SetBrush("PopupBorderBrush", borderColor);
+                SetBrush("PopupPanelBgBrush", panelColor);
+                SetBrush("PopupMutedFgBrush", mutedColor);
+                SetBrush("PopupSelectedBgBrush", selectedColor);
+                SetBrush("PopupHoverBgBrush", hoverColor);
+                SetBrush("PopupAccentBrush", accentColor);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "CompletionListWindow ApplyThemeColors failed");
+            }
+        }
+
+        private void SetBrush(string key, Color color)
+        {
+            if (Resources[key] is SolidColorBrush existing && !existing.IsFrozen)
+            {
+                existing.Color = color;
+                return;
+            }
+            Resources[key] = new SolidColorBrush(color);
         }
 
         private void OnSourceInitialized(object sender, EventArgs e)
@@ -80,6 +232,7 @@ namespace AxialSqlTools.IntelliSense
 
         public void ShowAt(double deviceScreenX, double deviceScreenY, List<CompletionItem> items, IntPtr editorHwnd)
         {
+            ApplyThemeColors();
             UpdateItems(items);
             EnsureOwner(editorHwnd);
             IsHitTestVisible = false;
@@ -262,7 +415,58 @@ namespace AxialSqlTools.IntelliSense
         private void UpdateDetail()
         {
             var sel = GetSelected();
-            DetailText.Text = sel?.Description ?? string.Empty;
+            if (sel == null)
+            {
+                KindBadge.Visibility = Visibility.Collapsed;
+                DetailPrimary.Text = string.Empty;
+                DetailDatabase.Text = string.Empty;
+                DetailTable.Text = string.Empty;
+                DetailSourcePanel.Visibility = Visibility.Collapsed;
+                DetailSecondary.Text = string.Empty;
+                return;
+            }
+            KindBadge.Visibility = Visibility.Visible;
+            KindBadgeText.Text = sel.KindLabel;
+            KindBadge.Background = new SolidColorBrush(KindAccentColor(sel.Kind));
+            DetailPrimary.Text = string.IsNullOrWhiteSpace(sel.Description) ? sel.DisplayText : sel.Description;
+
+            bool hasDb = !string.IsNullOrWhiteSpace(sel.SourceDatabase);
+            bool hasTable = !string.IsNullOrWhiteSpace(sel.SourceTable);
+            if (hasDb || hasTable)
+            {
+                DetailSourcePanel.Visibility = Visibility.Visible;
+                DetailDatabase.Text = hasDb ? sel.SourceDatabase : "—";
+                DetailTable.Text = hasTable ? sel.SourceTable : "—";
+                DetailSecondary.Text = string.IsNullOrWhiteSpace(sel.Description) ? string.Empty : sel.DisplayText;
+            }
+            else
+            {
+                DetailSourcePanel.Visibility = Visibility.Collapsed;
+                DetailDatabase.Text = string.Empty;
+                DetailTable.Text = string.Empty;
+                DetailSecondary.Text = string.IsNullOrWhiteSpace(sel.Description) ? string.Empty : sel.DisplayText;
+            }
+        }
+
+        private static Color KindAccentColor(CompletionKind kind)
+        {
+            switch (kind)
+            {
+                case CompletionKind.Column: return Color.FromRgb(0x2B, 0x7C, 0xD3);
+                case CompletionKind.Table: return Color.FromRgb(0x2E, 0x7D, 0x32);
+                case CompletionKind.View: return Color.FromRgb(0x00, 0x89, 0x7B);
+                case CompletionKind.Database: return Color.FromRgb(0xEF, 0x6C, 0x00);
+                case CompletionKind.Schema: return Color.FromRgb(0x45, 0x5A, 0x64);
+                case CompletionKind.Procedure: return Color.FromRgb(0x39, 0x49, 0xAB);
+                case CompletionKind.ScalarFunction:
+                case CompletionKind.TableFunction: return Color.FromRgb(0x00, 0x83, 0x8F);
+                case CompletionKind.Keyword: return Color.FromRgb(0x60, 0x7D, 0x8B);
+                case CompletionKind.Snippet: return Color.FromRgb(0xC6, 0x28, 0x28);
+                case CompletionKind.Variable: return Color.FromRgb(0x54, 0x6E, 0x7A);
+                case CompletionKind.Synonym: return Color.FromRgb(0x55, 0x8B, 0x2F);
+                case CompletionKind.Parameter: return Color.FromRgb(0xF9, 0xA8, 0x25);
+                default: return Color.FromRgb(0x5F, 0x6B, 0x7A);
+            }
         }
 
         private void ItemsList_SelectionChanged(object sender, SelectionChangedEventArgs e)

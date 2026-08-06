@@ -41,6 +41,11 @@ namespace AxialSqlTools.IntelliSense
                 string dataSource = FormatDataSource(connInfo);
                 string defaultDb = connInfo?.Database ?? catalog?.Database;
 
+                // EXEC 存储过程悬停（含跨库 caiwu..proc）
+                var procInfo = TryBuildProcedureQuickInfo(fullText, caretOffset, hover.Name, catalog, connInfo, dataSource, defaultDb);
+                if (procInfo != null)
+                    return procInfo;
+
                 // 优先按悬停词命中 FROM/JOIN 中的表（支持 db.schema.table / db..table / JOIN 表）
                 var hoverTableRef = QuickInfoSqlContext.TryResolveTableByHoverName(tokens, caretOffset, hover.Name);
                 if (hoverTableRef != null && !hover.HasOwner)
@@ -170,6 +175,11 @@ namespace AxialSqlTools.IntelliSense
                 if (string.IsNullOrEmpty(cleanWord)) return null;
                 string dataSource = FormatDataSource(connInfo);
                 string defaultDb = connInfo?.Database ?? catalog?.Database;
+
+                var procInfo = TryBuildProcedureQuickInfo(fullText, caretOffset, cleanWord, catalog, connInfo, dataSource, defaultDb);
+                if (procInfo != null)
+                    return procInfo;
+
                 TableRef fromRef = null;
                 if (!string.IsNullOrEmpty(fullText))
                 {
@@ -251,6 +261,95 @@ namespace AxialSqlTools.IntelliSense
             {
                 return null;
             }
+        }
+
+        private QuickInfoData TryBuildProcedureQuickInfo(
+            string fullText,
+            int caretOffset,
+            string hoverName,
+            MetadataCatalog catalog,
+            ScriptFactoryAccess.ConnectionInfo connInfo,
+            string dataSource,
+            string defaultDb)
+        {
+            var rref = QuickInfoSqlContext.TryResolveExecRoutine(fullText, caretOffset, hoverName);
+            if (rref == null || string.IsNullOrEmpty(rref.Name))
+                return null;
+
+            // EXEC db.proc：若首段是库名则当跨库，否则当架构
+            if (string.IsNullOrEmpty(rref.Database) && !string.IsNullOrEmpty(rref.Schema)
+                && connInfo != null && MetadataCatalogService.Instance.ContainsDatabase(connInfo, rref.Schema))
+            {
+                rref.Database = rref.Schema;
+                rref.Schema = "dbo";
+            }
+
+            var routine = ResolveProcedure(connInfo, catalog, rref);
+            if (routine == null)
+                return null;
+            // 悬停展示完整过程 SQL（按需单条拉取并缓存到 RoutineInfo.Definition）
+            if (connInfo != null)
+            {
+                MetadataCatalogService.Instance.EnsureRoutineDefinition(
+                    connInfo, rref.Database ?? defaultDb, routine);
+            }
+            return BuildProcedureQuickInfo(dataSource, defaultDb, rref, routine);
+        }
+
+        private RoutineInfo ResolveProcedure(
+            ScriptFactoryAccess.ConnectionInfo connInfo,
+            MetadataCatalog catalog,
+            QuickInfoSqlContext.RoutineRef rref)
+        {
+            if (rref == null || string.IsNullOrEmpty(rref.Name)) return null;
+            MetadataCatalog target = catalog;
+            if (connInfo != null && !string.IsNullOrWhiteSpace(rref.Database))
+            {
+                if (catalog == null || !string.Equals(catalog.Database, rref.Database, StringComparison.OrdinalIgnoreCase))
+                {
+                    target = MetadataCatalogService.Instance.GetCachedCatalog(connInfo, rref.Database);
+                    if (target == null || !target.RoutinesLoaded)
+                    {
+                        // 跨库过程：同步补过程目录（有表缓存时只补过程，不整库重建）
+                        target = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, rref.Database, requireRoutines: true)
+                                 ?? target;
+                    }
+                }
+            }
+            else if (target != null && !target.RoutinesLoaded && connInfo != null)
+            {
+                target = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, null, requireRoutines: true)
+                         ?? target;
+            }
+
+            if (target == null) return null;
+            string schema = string.IsNullOrEmpty(rref.Schema) ? null : rref.Schema;
+            return target.FindProcedure(schema, rref.Name)
+                   ?? target.FindProcedure(null, rref.Name);
+        }
+
+        private QuickInfoData BuildProcedureQuickInfo(
+            string dataSource,
+            string defaultDb,
+            QuickInfoSqlContext.RoutineRef rref,
+            RoutineInfo routine)
+        {
+            var data = new QuickInfoData();
+            string db = rref?.Database ?? defaultDb;
+            AddHeaderLine(data, "数据源", dataSource);
+            AddHeaderLine(data, "数据库", db);
+            AddHeaderLine(data, "架构", routine?.Schema ?? rref?.Schema ?? "dbo");
+            AddHeaderLine(data, "存储过程", routine?.Name ?? rref?.Name);
+            if (routine?.Parameters != null)
+                AddHeaderLine(data, "参数数", routine.Parameters.Count.ToString());
+            if (!string.IsNullOrEmpty(routine?.Description))
+                data.Description = routine.Description;
+            data.DdlText = QuickInfoDdlBuilder.BuildProcedureSignature(routine);
+            data.CanGoToSource = !string.IsNullOrEmpty(data.DdlText);
+            data.SourceDatabase = db;
+            data.SourceSchema = routine?.Schema ?? rref?.Schema ?? "dbo";
+            data.SourceObjectName = routine?.Name ?? rref?.Name;
+            return data.IsEmpty ? null : data;
         }
 
         private static TableRef TryParseFromClause(string sql)
