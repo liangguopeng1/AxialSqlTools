@@ -1,8 +1,10 @@
 using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.OLE.Interop;
+using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.TextManager.Interop;
 using NLog;
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -18,6 +20,12 @@ namespace AxialSqlTools.IntelliSense
     public class IntelliSenseTextViewExtension : IDisposable
     {
         private static readonly ILogger _logger = LogManager.GetCurrentClassLogger();
+        private static readonly List<IntelliSenseTextViewExtension> ActiveExtensions =
+            new List<IntelliSenseTextViewExtension>();
+        /// <summary>最近获得焦点/点击/输入的编辑器；只有它允许弹出悬停，避免多标签 ScreenToClient 串扰。</summary>
+        private static IntelliSenseTextViewExtension _hoverOwner;
+        private static readonly object DiagLock = new object();
+        private static DateTime _lastDiagFileWrite = DateTime.MinValue;
         private const int MoveCloseThreshold = 24;
         private const int HoverMoveThreshold = 4;
         private const int VK_LBUTTON = 0x01;
@@ -51,6 +59,9 @@ namespace AxialSqlTools.IntelliSense
 
         [DllImport("user32.dll")]
         private static extern bool ScreenToClient(IntPtr hWnd, ref NativePoint lpPoint);
+
+        [DllImport("user32.dll")]
+        private static extern bool ClientToScreen(IntPtr hWnd, ref NativePoint lpPoint);
 
         [DllImport("user32.dll")]
         private static extern IntPtr WindowFromPoint(NativePoint point);
@@ -103,7 +114,19 @@ namespace AxialSqlTools.IntelliSense
                 _lastMoveTime = DateTime.UtcNow;
                 TryResolveEditorHwnd();
                 EnsureHoverTimer();
-                _logger.Info("QuickInfo Attach ok hwnd=0x{0:X}", _editorHwnd.ToInt64());
+                if (!ActiveExtensions.Contains(this))
+                    ActiveExtensions.Add(this);
+                // 仅当本编辑器已有焦点时认领，避免后 Attach 的标签抢走当前页悬停权
+                try
+                {
+                    IntPtr focus = GetFocus();
+                    if (focus != IntPtr.Zero && _editorHwnd != IntPtr.Zero
+                        && IsRelatedHwnd(_editorHwnd, focus))
+                        ClaimHoverOwnership("attach_focus");
+                }
+                catch { }
+                _logger.Info("QuickInfo Attach ok hwnd=0x{0:X} owners={1}",
+                    _editorHwnd.ToInt64(), ActiveExtensions.Count);
             }
             catch (Exception ex)
             {
@@ -195,8 +218,9 @@ namespace AxialSqlTools.IntelliSense
                     return;
                 }
 
-                if (!TryUpdateCursorFromScreen())
+                if (!TryUpdateCursorFromScreen(out string cursorReason))
                 {
+                    Diag("cursor_miss", cursorReason);
                     // 鼠标不在本编辑器：钉住时若也不在弹框上，稍候强制关（切设置页）
                     if (QuickInfoTooltip.IsOwnedBy(this) && !QuickInfoTooltip.IsPointerOverPopup())
                     {
@@ -216,6 +240,19 @@ namespace AxialSqlTools.IntelliSense
                     return;
                 }
                 _awayFromEditorSince = DateTime.MinValue;
+
+                // 多标签客户区重叠：只能让当前活动文档视图弹悬停（切回标签 A 时不再用 B 的 buffer）
+                if (!IsSelectedTextView())
+                {
+                    Diag("not_active", "hwnd=0x{0:X} owner=0x{1:X}",
+                        _editorHwnd.ToInt64(),
+                        _hoverOwner?._editorHwnd.ToInt64() ?? 0);
+                    if (ReferenceEquals(_hoverOwner, this))
+                        _hoverOwner = null;
+                    CloseTooltip();
+                    return;
+                }
+                ClaimHoverOwnership("active_view");
 
                 if (QuickInfoTooltip.ShouldKeepOpen)
                     return;
@@ -255,7 +292,7 @@ namespace AxialSqlTools.IntelliSense
                 // 刚输入过：勿把光标附近的词当成悬停（输入 a 别名会误弹表信息框）
                 if ((DateTime.UtcNow - _lastTypeTime).TotalMilliseconds < threshold) return;
 
-                LogHoverBlock("try", "pos={0},{1}", _lastMovePos.X, _lastMovePos.Y);
+                Diag("try_show", "pos={0},{1}", _lastMovePos.X, _lastMovePos.Y);
                 TryShowQuickInfo();
             }
             catch (Exception ex)
@@ -277,13 +314,18 @@ namespace AxialSqlTools.IntelliSense
                     IntPtr tipHwnd = QuickInfoTooltip.GetWindowHandle();
                     bool onTip = tipHwnd != IntPtr.Zero && (hwndAtPoint == tipHwnd || IsChild(tipHwnd, hwndAtPoint));
                     if (!onTip && _editorHwnd != IntPtr.Zero && IsRelatedHwnd(_editorHwnd, hwndAtPoint))
+                    {
+                        ClaimHoverOwnership("pointer");
                         EditorPointerDown?.Invoke();
+                    }
                 }
             }
             _prevLeftDown = leftDown;
 
             IntPtr focus = GetFocus();
             bool editorFocused = _editorHwnd != IntPtr.Zero && focus != IntPtr.Zero && IsRelatedHwnd(_editorHwnd, focus);
+            if (editorFocused && !_editorHadFocus)
+                ClaimHoverOwnership("focus");
             if (!editorFocused && _editorHadFocus)
             {
                 if (ShouldIgnoreFocusTarget == null || !ShouldIgnoreFocusTarget(focus))
@@ -313,37 +355,100 @@ namespace AxialSqlTools.IntelliSense
             }
         }
 
-        private bool TryUpdateCursorFromScreen()
+        private bool TryUpdateCursorFromScreen(out string reason)
         {
+            reason = null;
             if (_editorHwnd == IntPtr.Zero)
             {
                 _editorHwnd = _textView?.GetWindowHandle() ?? IntPtr.Zero;
-                if (_editorHwnd == IntPtr.Zero) return false;
+                if (_editorHwnd == IntPtr.Zero)
+                {
+                    reason = "no_hwnd";
+                    return false;
+                }
             }
 
             NativePoint screenPt;
-            if (!GetCursorPos(out screenPt)) return false;
+            if (!GetCursorPos(out screenPt))
+            {
+                reason = "no_cursor";
+                return false;
+            }
 
             IntPtr hwndAtPoint = WindowFromPoint(screenPt);
             if (hwndAtPoint != IntPtr.Zero)
             {
                 IntPtr tipHwnd = QuickInfoTooltip.GetWindowHandle();
                 if (tipHwnd != IntPtr.Zero && (hwndAtPoint == tipHwnd || IsChild(tipHwnd, hwndAtPoint)))
+                {
+                    reason = "on_tip";
                     return true;
+                }
             }
 
             NativePoint clientPt = screenPt;
-            if (!ScreenToClient(_editorHwnd, ref clientPt)) return false;
-            if (!GetClientRect(_editorHwnd, out RECT rc)) return false;
-            // 客户区内按坐标判定（SSMS 命中 HWND 常是兄弟窗，不能强依赖 IsRelatedHwnd）
+            if (!ScreenToClient(_editorHwnd, ref clientPt))
+            {
+                reason = "s2c_fail";
+                return false;
+            }
+            if (!GetClientRect(_editorHwnd, out RECT rc))
+            {
+                reason = "no_rect";
+                return false;
+            }
+            // 客户区内按坐标判定（SSMS 命中 HWND 常是兄弟窗；串扰由 HoverOwner 门闩处理）
             if (clientPt.x < rc.Left || clientPt.y < rc.Top || clientPt.x >= rc.Right || clientPt.y >= rc.Bottom)
             {
                 if (hwndAtPoint == IntPtr.Zero || !IsRelatedHwnd(_editorHwnd, hwndAtPoint))
+                {
+                    reason = string.Format("out_client pt={0},{1} rc={2},{3}-{4},{5} hit=0x{6:X}",
+                        clientPt.x, clientPt.y, rc.Left, rc.Top, rc.Right, rc.Bottom, hwndAtPoint.ToInt64());
                     return false;
+                }
             }
 
             NoteMove(new Point(clientPt.x, clientPt.y));
+            reason = string.Format("ok pt={0},{1} hit=0x{2:X}", clientPt.x, clientPt.y, hwndAtPoint.ToInt64());
             return true;
+        }
+
+        public void ClaimHoverOwnership(string reason)
+        {
+            if (_editorHwnd == IntPtr.Zero)
+                TryResolveEditorHwnd();
+            if (!ReferenceEquals(_hoverOwner, this))
+            {
+                _logger.Info("QuickInfo hover owner -> 0x{0:X} ({1})", _editorHwnd.ToInt64(), reason);
+                Diag("claim", "hwnd=0x{0:X} reason={1}", _editorHwnd.ToInt64(), reason);
+            }
+            _hoverOwner = this;
+        }
+
+        /// <summary>
+        /// 当前 SSMS 选中的文档文本视图。多标签客户区重叠时，用它区分前台/后台，
+        /// 避免后台页继续按同一屏幕坐标读自己的 buffer。
+        /// </summary>
+        private bool IsSelectedTextView()
+        {
+            try
+            {
+                var tm = Package.GetGlobalService(typeof(SVsTextManager)) as IVsTextManager;
+                if (tm == null) return true;
+                if (tm.GetActiveView(0, null, out IVsTextView active) != S_OK || active == null)
+                    return true;
+                if (ReferenceEquals(active, _textView))
+                    return true;
+                IntPtr activeHwnd = IntPtr.Zero;
+                try { activeHwnd = active.GetWindowHandle(); } catch { }
+                if (activeHwnd != IntPtr.Zero && _editorHwnd != IntPtr.Zero && activeHwnd == _editorHwnd)
+                    return true;
+                return false;
+            }
+            catch
+            {
+                return true;
+            }
         }
 
         private static bool IsRelatedHwnd(IntPtr editorHwnd, IntPtr hwndAtPoint)
@@ -395,7 +500,7 @@ namespace AxialSqlTools.IntelliSense
 
                 // 必须鼠标真正落在该词字形上；行尾空白/行外不得 snip 到行末表名
                 int wordEnd = wordStart + word.Length;
-                if (!IsPointerOverWordGlyph(line, wordStart, wordEnd, _lastMovePos.X, _lastMovePos.Y))
+                if (!IsPointerOverWordGlyph(line, wordStart, wordEnd))
                 {
                     LogHoverBlock("glyph", "word={0} pos={1},{2} span={3}-{4}",
                         word, _lastMovePos.X, _lastMovePos.Y, wordStart, wordEnd);
@@ -444,13 +549,19 @@ namespace AxialSqlTools.IntelliSense
                     screenPt.y = _lastMovePos.Y;
                 }
 
-                QuickInfoTooltip.Show(info, screenPt.x, screenPt.y, hwnd, this);
-                _tooltipShowing = true;
+                bool opened = QuickInfoTooltip.Show(info, screenPt.x, screenPt.y, hwnd, this);
+                _tooltipShowing = opened;
                 _tooltipAnchorPos = _lastMovePos;
-                if (!string.Equals(_lastLoggedWord, word, StringComparison.OrdinalIgnoreCase))
+                Diag(opened ? "shown_ok" : "shown_fail", "word={0} open={1} vis={2}",
+                    word, QuickInfoTooltip.IsOpen, opened);
+                if (opened && !string.Equals(_lastLoggedWord, word, StringComparison.OrdinalIgnoreCase))
                 {
                     _lastLoggedWord = word;
                     _logger.Info("QuickInfo shown for word={0}", word);
+                }
+                else if (!opened)
+                {
+                    _logger.Info("QuickInfo Show returned false word={0}", word);
                 }
             }
             catch (Exception ex)
@@ -470,12 +581,45 @@ namespace AxialSqlTools.IntelliSense
         {
             if ((DateTime.UtcNow - _lastDiagLog).TotalSeconds < 1) return;
             _lastDiagLog = DateTime.UtcNow;
-            _logger.Info("QuickInfo blocked ({0}): {1}", reason, string.Format(format, args));
+            string detail = string.Format(format, args);
+            _logger.Info("QuickInfo blocked ({0}): {1}", reason, detail);
+            Diag("blocked_" + reason, detail);
+        }
+
+        private void Diag(string tag, string format, params object[] args)
+        {
+            try
+            {
+                var now = DateTime.UtcNow;
+                if ((now - _lastDiagFileWrite).TotalMilliseconds < 400
+                    && !tag.StartsWith("claim", StringComparison.Ordinal)
+                    && !tag.StartsWith("blocked", StringComparison.Ordinal)
+                    && !tag.StartsWith("shown", StringComparison.Ordinal)
+                    && !tag.StartsWith("not_active", StringComparison.Ordinal))
+                    return;
+                _lastDiagFileWrite = now;
+                string line = string.Format(
+                    "{0:HH:mm:ss.fff}|{1}|hwnd=0x{2:X}|{3}",
+                    DateTime.Now,
+                    tag,
+                    _editorHwnd.ToInt64(),
+                    args != null && args.Length > 0 ? string.Format(format, args) : format);
+                string path = System.IO.Path.Combine(
+                    System.IO.Path.GetTempPath(), "axial-quickinfo-diag.txt");
+                lock (DiagLock)
+                {
+                    System.IO.File.AppendAllText(path, line + Environment.NewLine);
+                }
+            }
+            catch
+            {
+            }
         }
 
         /// <summary>打字时调用：关掉悬停框；鼠标未真正移动前不再弹出（避免 =1 后仍对着旧词弹元数据）。</summary>
         public void NotifyTyping()
         {
+            ClaimHoverOwnership("type");
             _lastTypeTime = DateTime.UtcNow;
             SuppressHoverUntilMouseMove();
             CloseTooltip();
@@ -526,20 +670,14 @@ namespace AxialSqlTools.IntelliSense
         {
             line = 0;
             col = 0;
-            if (TryGetLineColumnFromClientPoint(_lastMovePos.X, _lastMovePos.Y, out line, out col))
-                return true;
-
             NativePoint screenPt;
             if (!GetCursorPos(out screenPt)) return false;
-            IntPtr hwndAtPoint = WindowFromPoint(screenPt);
-            if (hwndAtPoint == IntPtr.Zero) return false;
-            NativePoint clientPt = screenPt;
-            if (!ScreenToClient(hwndAtPoint, ref clientPt)) return false;
-            if (TryGetLineColumnFromClientPoint(clientPt.x, clientPt.y, out line, out col))
+            // 全程用屏幕坐标：GetPointOfLineColumn 是视图客户区坐标，经 ClientToScreen 对齐
+            // （避免 ScreenToClient(_editorHwnd) 与视图坐标原点不一致导致 linecol 失败）
+            if (TryGetLineColumnFromScreenPoint(screenPt.x, screenPt.y, out line, out col))
                 return true;
-            clientPt = screenPt;
-            if (_editorHwnd != IntPtr.Zero && ScreenToClient(_editorHwnd, ref clientPt))
-                return TryGetLineColumnFromClientPoint(clientPt.x, clientPt.y, out line, out col);
+            LogHoverBlock("linecol_detail", "screen={0},{1} clientLast={2},{3}",
+                screenPt.x, screenPt.y, _lastMovePos.X, _lastMovePos.Y);
             return false;
         }
 
@@ -568,40 +706,50 @@ namespace AxialSqlTools.IntelliSense
 
         /// <summary>
         /// 鼠标是否落在 [wordStart, wordEnd) 的屏幕字形矩形内。
-        /// 避免行尾空白/行下方空白被映射到行末标识符而误弹 QuickInfo。
         /// </summary>
-        private bool IsPointerOverWordGlyph(int line, int wordStart, int wordEnd, int clientX, int clientY)
+        private bool IsPointerOverWordGlyph(int line, int wordStart, int wordEnd)
         {
             if (wordEnd <= wordStart) return false;
-            POINT[] startPts = new POINT[1];
-            POINT[] endPts = new POINT[1];
-            if (_textView.GetPointOfLineColumn(line, wordStart, startPts) != S_OK)
-                return false;
-            if (_textView.GetPointOfLineColumn(line, wordEnd, endPts) != S_OK)
-                return false;
+            NativePoint screenPt;
+            if (!GetCursorPos(out screenPt)) return false;
+            if (!TryGetViewPointScreen(line, wordStart, out NativePoint startScreen)) return false;
+            if (!TryGetViewPointScreen(line, wordEnd, out NativePoint endScreen)) return false;
 
-            int top = startPts[0].y;
+            int top = startScreen.y;
             int bottom;
-            POINT[] nextPts = new POINT[1];
             if (_textView.GetBuffer(out IVsTextLines textLines) == S_OK
                 && textLines.GetLastLineIndex(out int lastLine, out _) == S_OK
                 && line < lastLine
-                && _textView.GetPointOfLineColumn(line + 1, 0, nextPts) == S_OK)
+                && TryGetViewPointScreen(line + 1, 0, out NativePoint nextScreen))
             {
-                bottom = nextPts[0].y;
+                bottom = nextScreen.y;
             }
             else
             {
-                int h = Math.Abs(endPts[0].y - startPts[0].y);
+                int h = Math.Abs(endScreen.y - startScreen.y);
                 bottom = top + Math.Max(16, h + 16);
             }
 
-            const int pad = 3;
-            int left = Math.Min(startPts[0].x, endPts[0].x) - pad;
-            int right = Math.Max(startPts[0].x, endPts[0].x) + pad;
-            if (clientX < left || clientX > right) return false;
-            if (clientY < top - pad || clientY >= bottom + pad) return false;
+            const int pad = 4;
+            int left = Math.Min(startScreen.x, endScreen.x) - pad;
+            int right = Math.Max(startScreen.x, endScreen.x) + pad;
+            if (screenPt.x < left || screenPt.x > right) return false;
+            if (screenPt.y < top - pad || screenPt.y >= bottom + pad) return false;
             return true;
+        }
+
+        private bool TryGetViewPointScreen(int line, int col, out NativePoint screen)
+        {
+            screen = new NativePoint();
+            POINT[] pts = new POINT[1];
+            if (_textView.GetPointOfLineColumn(line, col, pts) != S_OK)
+                return false;
+            IntPtr hwnd = _textView.GetWindowHandle();
+            if (hwnd == IntPtr.Zero) hwnd = _editorHwnd;
+            if (hwnd == IntPtr.Zero) return false;
+            screen.x = pts[0].x;
+            screen.y = pts[0].y;
+            return ClientToScreen(hwnd, ref screen);
         }
 
         private static bool IsWordChar(char c)
@@ -609,7 +757,7 @@ namespace AxialSqlTools.IntelliSense
             return char.IsLetterOrDigit(c) || c == '_' || c == '@' || c == '#';
         }
 
-        private bool TryGetLineColumnFromClientPoint(int clientX, int clientY, out int line, out int col)
+        private bool TryGetLineColumnFromScreenPoint(int screenX, int screenY, out int line, out int col)
         {
             line = 0;
             col = 0;
@@ -621,10 +769,9 @@ namespace AxialSqlTools.IntelliSense
             while (lo <= hi)
             {
                 int mid = (lo + hi) / 2;
-                POINT[] pts = new POINT[1];
-                if (_textView.GetPointOfLineColumn(mid, 0, pts) != S_OK) return false;
+                if (!TryGetViewPointScreen(mid, 0, out NativePoint midScreen)) return false;
                 anyPoint = true;
-                if (pts[0].y <= clientY)
+                if (midScreen.y <= screenY)
                 {
                     bestLine = mid;
                     lo = mid + 1;
@@ -636,47 +783,29 @@ namespace AxialSqlTools.IntelliSense
             }
             if (!anyPoint) return false;
 
-            // 鼠标必须落在该行的垂直带内，不能把行下方空白算进上一行
-            POINT[] linePts = new POINT[1];
-            if (_textView.GetPointOfLineColumn(bestLine, 0, linePts) != S_OK) return false;
-            int lineTop = linePts[0].y;
+            if (!TryGetViewPointScreen(bestLine, 0, out NativePoint lineTopPt)) return false;
+            int lineTop = lineTopPt.y;
             int lineBottom;
-            POINT[] nextLinePts = new POINT[1];
-            if (bestLine < lastLine
-                && _textView.GetPointOfLineColumn(bestLine + 1, 0, nextLinePts) == S_OK)
-            {
-                lineBottom = nextLinePts[0].y;
-            }
+            if (bestLine < lastLine && TryGetViewPointScreen(bestLine + 1, 0, out NativePoint nextPt))
+                lineBottom = nextPt.y;
             else
-            {
                 lineBottom = lineTop + 20;
-            }
-            if (clientY < lineTop || clientY >= lineBottom)
+            if (screenY < lineTop || screenY >= lineBottom)
                 return false;
 
             line = bestLine;
             textLines.GetLengthOfLine(line, out int lineLen);
+            if (lineLen <= 0) return false;
 
-            // 行尾右侧空白：不要 snip 到最后一个字符
-            if (lineLen > 0)
-            {
-                POINT[] eolPts = new POINT[1];
-                if (_textView.GetPointOfLineColumn(line, lineLen, eolPts) == S_OK
-                    && clientX > eolPts[0].x + 3)
-                    return false;
-            }
-            else
-            {
+            if (TryGetViewPointScreen(line, lineLen, out NativePoint eolPt) && screenX > eolPt.x + 3)
                 return false;
-            }
 
             int colLo = 0, colHi = lineLen, bestCol = 0;
             while (colLo <= colHi)
             {
                 int midCol = (colLo + colHi) / 2;
-                POINT[] pts = new POINT[1];
-                if (_textView.GetPointOfLineColumn(line, midCol, pts) != S_OK) break;
-                if (pts[0].x <= clientX)
+                if (!TryGetViewPointScreen(line, midCol, out NativePoint colPt)) break;
+                if (colPt.x <= screenX)
                 {
                     bestCol = midCol;
                     colLo = midCol + 1;
@@ -728,12 +857,15 @@ namespace AxialSqlTools.IntelliSense
         {
             _tracking = false;
             _tooltipShowing = false;
+            ActiveExtensions.Remove(this);
+            if (ReferenceEquals(_hoverOwner, this))
+                _hoverOwner = null;
             if (_hoverTimer != null)
             {
                 _hoverTimer.Stop();
                 _hoverTimer = null;
             }
-            QuickInfoTooltip.Close();
+            QuickInfoTooltip.CloseIfOwnedBy(this);
         }
 
         public void Dispose()

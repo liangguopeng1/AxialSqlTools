@@ -273,7 +273,7 @@ namespace AxialSqlTools.IntelliSense
                 WindowStyle = WindowStyle.None,
                 AllowsTransparency = true,
                 ShowInTaskbar = false,
-                Topmost = false,
+                Topmost = true,
                 ShowActivated = false,
                 Focusable = true,
                 ResizeMode = ResizeMode.CanResize,
@@ -367,6 +367,9 @@ namespace AxialSqlTools.IntelliSense
                 }
                 if (IsMouseOverPopup()) return;
                 if (_window.IsActive) return;
+                // ShowActivated=false：悬停弹出本就不激活窗口，Deactivated 不代表该关；
+                // 未钉住时由 PollOutsideClick / 编辑器点击关闭，避免刚 Show 就闪关。
+                if (!_isPinned) return;
                 CloseFromOutsideClick();
             }), DispatcherPriority.Input);
         }
@@ -603,20 +606,22 @@ namespace AxialSqlTools.IntelliSense
             }
         }
 
-        public static void Show(QuickInfoData data, double deviceScreenX, double deviceScreenY, IntPtr ownerHwnd, object owner = null)
+        public static bool Show(QuickInfoData data, double deviceScreenX, double deviceScreenY, IntPtr ownerHwnd, object owner = null)
         {
-            if (data == null || data.IsEmpty) return;
+            if (data == null || data.IsEmpty) return false;
             EnsureAppLifecycleHooks();
-            if (!IsSsmsForeground()) return;
+            if (!IsSsmsForeground()) return false;
             // 钉住时仍允许换内容（列→表），仅相同内容时跳过
             string key = BuildContentKey(data);
             bool sameContent = _isOpen && string.Equals(_lastContentKey, key, StringComparison.Ordinal);
             if (sameContent)
-                return;
+                return true;
 
             // 换内容：必须重新按内容测算，忽略上次用户/自动尺寸
             _userResized = false;
             _owner = owner ?? (object)ownerHwnd;
+            // 刚弹出时抑制 Deactivated 闪关
+            _suppressDeactivateCloseUntil = DateTime.UtcNow.AddMilliseconds(800);
             ApplyThemeColors();
             var header = new StringBuilder();
             foreach (var line in data.HeaderLines)
@@ -672,12 +677,13 @@ namespace AxialSqlTools.IntelliSense
 
             _lastContentKey = key;
             PositionAndShow(deviceScreenX, deviceScreenY, ownerHwnd, reposition: true);
+            return _isOpen && _window != null && _window.IsVisible;
         }
 
-        public static void Show(string text, double deviceScreenX, double deviceScreenY, IntPtr ownerHwnd, object owner = null)
+        public static bool Show(string text, double deviceScreenX, double deviceScreenY, IntPtr ownerHwnd, object owner = null)
         {
-            if (string.IsNullOrEmpty(text)) return;
-            Show(new QuickInfoData { DdlText = text }, deviceScreenX, deviceScreenY, ownerHwnd, owner);
+            if (string.IsNullOrEmpty(text)) return false;
+            return Show(new QuickInfoData { DdlText = text }, deviceScreenX, deviceScreenY, ownerHwnd, owner);
         }
 
         private static string BuildContentKey(QuickInfoData data)
