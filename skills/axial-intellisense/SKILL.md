@@ -15,15 +15,26 @@ description: AxialSqlTools 的自研 SQL IntelliSense（补全 + ToolTip + 参�
 |---|---|
 | `MetadataModels.cs` | `IntelliSenseSettings` + 元数据模型（`MetadataCatalog`/`TableColumnInfo`/`RoutineInfo` 等） |
 | `CompletionItem.cs` | 补全项 + `CompletionKind`/`CompletionContext` 枚举 |
+| `CompletionEngine.cs` | `partial` 主入口：`GetCompletion` + GO 分批 / TSql170Parser AST 缓存 |
 | `MetadataCatalogService.cs` | 按 `(Server, Database)` 内存缓存元数据；独立 SqlConnection 查 sys.*（5s 超时）；连接复用；缓存失效 |
-| `CompletionEngine.cs` | TSql170Parser 解析 → GO 分批 + AST 缓存 → 上下文判定（§4 映射表）→ 候选生成 |
 | `IntelliSenseKeyHandler.cs` | 防抖 DispatcherTimer + 弹框态键路由 + Tab 优先级链 + 光标坐标锚定 + 提交插入 |
 | `CompletionListWindow.xaml(.cs)` | WPF 无边框 Window，定位到光标屏幕坐标 |
 | `QuickInfoProvider.cs` | Token → 元数据对象 → 信息文本 |
 | `QuickInfoTooltip.cs` | WPF ToolTip 渲染 |
-| `IntelliSenseTextViewExtension.cs` | 悬停监听（HWND subclass + DispatcherTimer） |
+| `IntelliSenseTextViewExtension.cs` | 悬停监听（Win32 轮询 + DispatcherTimer；勿 AssignHandle 子类化） |
 | `IntelliSenseDisableHelper.cs` | 写 SSMS 注册表禁用内建 |
 | `IntelliSenseManager.cs` | 总调度入口 + `AutoTriggerSuppressed` 降级 |
+
+`AxialSqlTools/IntelliSense/Completion/`（引擎 partial 分册 + 结果模型；命名空间仍为 `AxialSqlTools.IntelliSense`）：
+
+| 文件 | 职责 |
+|---|---|
+| `CompletionModels.cs` | `CompletionResult` / `LocalSymbols` / `CteInfo` / `LocalTableInfo` / `TableRef` |
+| `CompletionEngine.LocalSymbols.cs` | CTE / 临时表 / 表变量 / FROM 别名收集 |
+| `CompletionEngine.Context.cs` | 上下文判定（§4 映射表）、FROM/EXEC 限定名解析、`FromObjectNameContext` |
+| `CompletionEngine.Items.cs` | 候选生成（`BuildItems`）、过滤排序（`FilterAndSort`/`GetMatchScore`）、关键字与内建函数表 |
+
+`CompletionEngine` 为 **同一类型的 partial class**（对外仍是 `CompletionEngine.GetCompletion`）。改逻辑时按职责进对应文件；新增 `.cs` 须登记 `AxialSqlTools.csproj`。
 
 修改文件：
 - `Modules/KeypressCommandFilter.cs` — 加 IntelliSense 优先级链分支
@@ -96,17 +107,22 @@ TriggerCompletion:
 
 ## 修改指引
 
-1. 改补全候选/上下文判定 → `CompletionEngine`（`BuildItems`/`GetContext`/§4 映射表）。
-2. 改弹框行为/键路由 → `IntelliSenseKeyHandler` + `CompletionListWindow`。
-3. 改元数据查询/缓存 → `MetadataCatalogService`（注意 `FormatDataType`、缓存失效时机）。
-4. 新增设置项 → `MetadataModels.IntelliSenseSettings` + `UiSettingsStore` Get/Save + `TabIntelliSense` 控件 + 加载/保存。
-5. 新增 `.cs`/`.xaml` 必须**登记 csproj**（传统 csproj 不自动包含）。
-6. UI 线程切换用 `JoinableTaskFactory`；后台查询回 UI 用 DispatcherTimer/BeginInvoke。
+1. 改补全候选 → `Completion/CompletionEngine.Items.cs`（`BuildItems` / `Add*` / `FilterAndSort` / `GetMatchScore`）。
+2. 改上下文判定 / FROM·EXEC 名解析 → `Completion/CompletionEngine.Context.cs`（`GetContext` / `ParseFromObjectName*` / §4 映射表）。
+3. 改 CTE/别名/临时表收集 → `Completion/CompletionEngine.LocalSymbols.cs`。
+4. 改批次切分或解析缓存 → `CompletionEngine.cs`（`TryGetBatchAt` / `ParseCached`）。
+5. 改弹框行为/键路由 → `IntelliSenseKeyHandler` + `CompletionListWindow`。
+6. 改元数据查询/缓存 → `MetadataCatalogService`（注意 `FormatDataType`、缓存失效时机）。
+7. 新增设置项 → `MetadataModels.IntelliSenseSettings` + `UiSettingsStore` Get/Save + `TabIntelliSense` 控件 + 加载/保存。
+8. 新增 `.cs`/`.xaml` 必须**登记 csproj**（传统 csproj 不自动包含）。
+9. UI 线程切换用 `JoinableTaskFactory`；后台查询回 UI 用 DispatcherTimer/BeginInvoke。
+
+回归：`tools/intellisense-scenario-tests.ps1`（反射 `CompletionEngine.GetCompletion`，类型名不变）。
 
 ## 已知 TODO（待 SSMS 实测）
 
 - `IntelliSenseDisableHelper` 的 SSMS 内建注册表路径 `Software\Microsoft\SQL Server Management Studio\22.0\Text Editor\Transact-SQL\IntelliSense` 精确键名待确认（不准则内建禁不掉，但降级链保证不双弹框）。
-- `IntelliSenseTextViewExtension` 悬停用光标位置近似鼠标位置（精确应接 `IVsTextView.GetLineColumnFromPoint`）。
+- `IntelliSenseTextViewExtension` 悬停用 Win32 屏幕坐标 + 活动视图门闩（`GetActiveView`）；勿对编辑器 `AssignHandle`（新建标签会卡死）。
 - 设置 UI 本地化 `loc` Tag + `Strings.resx` 未接（当前中文硬编码）。
 
 ## 验证

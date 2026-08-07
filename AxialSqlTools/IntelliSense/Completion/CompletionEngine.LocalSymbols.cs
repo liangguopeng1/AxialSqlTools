@@ -1,0 +1,711 @@
+using Microsoft.SqlServer.TransactSql.ScriptDom;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace AxialSqlTools
+{
+    namespace IntelliSense
+    {
+        public partial class CompletionEngine
+        {
+            #region 本地符号
+
+            private LocalSymbols ExtractLocalSymbols(TSqlScript script)
+            {
+                var local = new LocalSymbols();
+                if (script == null) return local;
+
+                foreach (var batch in script.Batches)
+                {
+                    foreach (var stmt in batch.Statements)
+                    {
+                        CollectFromStatement(stmt, local);
+                    }
+                }
+                return local;
+            }
+
+            private void CollectFromStatement(TSqlStatement stmt, LocalSymbols local)
+            {
+                if (stmt is DeclareTableVariableStatement dtv)
+                {
+                    var body = dtv.Body;
+                    var t = new LocalTableInfo { Name = body?.VariableName?.Value };
+                    foreach (var col in body?.Definition?.ColumnDefinitions ?? Enumerable.Empty<ColumnDefinition>())
+                    {
+                        t.ColumnNames.Add(col.ColumnIdentifier?.Value);
+                    }
+                    if (t.Name != null) local.TableVariables.Add(t);
+                }
+                else if (stmt is DeclareVariableStatement dvs)
+                {
+                    foreach (var decl in dvs.Declarations)
+                    {
+                        if (decl.VariableName?.Value != null)
+                        {
+                            local.ScalarVariables.Add(decl.VariableName.Value);
+                        }
+                    }
+                }
+                else if (stmt is CreateTableStatement cts)
+                {
+                    var name = cts.SchemaObjectName;
+                    string tableName = GetLastIdentifier(name);
+                    if (!string.IsNullOrEmpty(tableName) && tableName.StartsWith("#"))
+                    {
+                        var t = new LocalTableInfo { Name = tableName };
+                        foreach (var def in cts.Definition.ColumnDefinitions)
+                        {
+                            t.ColumnNames.Add(def.ColumnIdentifier?.Value);
+                        }
+                        local.TempTables.Add(t);
+                    }
+                }
+                else if (stmt is SelectStatement ss)
+                {
+                    // CTE 定义
+                    if (ss.WithCtesAndXmlNamespaces != null)
+                    {
+                        foreach (var cte in ss.WithCtesAndXmlNamespaces.CommonTableExpressions)
+                        {
+                            var info = new CteInfo { Name = cte.ExpressionName?.Value };
+                            if (cte.Columns != null)
+                            {
+                                foreach (var col in cte.Columns)
+                                {
+                                    info.ColumnNames.Add(col.Value);
+                                }
+                            }
+                            if (info.Name != null) local.Ctes.Add(info);
+                        }
+                    }
+                    // SELECT INTO #t
+                    if (ss.Into != null)
+                    {
+                        string intoName = GetLastIdentifier(ss.Into);
+                        if (!string.IsNullOrEmpty(intoName) && intoName.StartsWith("#"))
+                        {
+                            local.TempTables.Add(new LocalTableInfo { Name = intoName });
+                        }
+                    }
+                }
+            }
+
+            private static string GetLastIdentifier(SchemaObjectName sobj)
+            {
+                if (sobj == null) return null;
+                var ids = sobj.Identifiers;
+                if (ids == null || ids.Count == 0) return null;
+                return ids[ids.Count - 1].Value;
+            }
+
+            /// <summary>收集光标所在语句的 FROM 别名映射。</summary>
+            private void CollectAliases(TSqlScript script, int localOffset, LocalSymbols local, List<TSqlParserToken> tokens)
+            {
+                local.Aliases.Clear();
+                TSqlStatement target = null;
+                TSqlStatement nearest = null;
+                int nearestStart = -1;
+                if (script != null)
+                {
+                    foreach (var batch in script.Batches)
+                    {
+                        foreach (var stmt in batch.Statements)
+                        {
+                            if (GetFromClause(stmt) == null) continue;
+                            int start = stmt.StartOffset;
+                            int end = start + Math.Max(0, stmt.FragmentLength);
+                            if (localOffset >= start && localOffset <= end)
+                                target = stmt;
+                            // 残缺 WHERE（如 and d.）时 FragmentLength 可能短于光标：取光标前最近带 FROM 的语句
+                            if (localOffset >= start && start >= nearestStart)
+                            {
+                                nearestStart = start;
+                                nearest = stmt;
+                            }
+                        }
+                    }
+                }
+                if (target == null) target = nearest;
+
+                // ScriptDom 常只解析出分号前完整句，后继残缺 SELECT 不进 AST；
+                // 若 token 定位到的 FROM 已越过该语句末尾，说明选中了上一句，必须丢弃。
+                if (target != null && tokens != null)
+                {
+                    int fromIdx = FindFromClauseTokenIndex(tokens, localOffset);
+                    if (fromIdx >= 0 && fromIdx < tokens.Count && tokens[fromIdx] != null)
+                    {
+                        int fromOff = tokens[fromIdx].Offset;
+                        int targetEnd = target.StartOffset + Math.Max(0, target.FragmentLength);
+                        if (fromOff >= targetEnd)
+                            target = null;
+                    }
+                    else
+                    {
+                        // SELECT * fro|：当前句无 FROM，光标已越过上一句末尾 → 清空别名
+                        int targetEnd = target.StartOffset + Math.Max(0, target.FragmentLength);
+                        if (localOffset > targetEnd)
+                            target = null;
+                    }
+                }
+
+                if (target != null)
+                {
+                    var from = GetFromClause(target);
+                    foreach (var tr in from.TableReferences ?? Enumerable.Empty<TableReference>())
+                    {
+                        CollectFromClause(tr, local);
+                    }
+                }
+                // 始终用 token 补全 JOIN 别名（ScriptDom 对 kucun(nolock) 等可能丢别名）
+                if (tokens != null)
+                    CollectAliasesFromTokens(tokens, localOffset, local);
+                // INSERT INTO t (|)：把目标表登记进别名，便于列/全字段补全
+                if (tokens != null)
+                    CollectInsertTargetFromTokens(tokens, localOffset, local);
+            }
+
+            /// <summary>INSERT INTO [db.][schema.]table ( 列清单内时，登记目标表。</summary>
+            private static void CollectInsertTargetFromTokens(
+                List<TSqlParserToken> tokens, int localOffset, LocalSymbols local)
+            {
+                if (local == null || !TryParseInsertColumnList(tokens, localOffset, out TableRef tref))
+                    return;
+                if (tref == null || string.IsNullOrEmpty(tref.Name)) return;
+                if (!local.Aliases.ContainsKey(tref.Name))
+                    local.Aliases[tref.Name] = tref;
+            }
+
+            /// <summary>
+            /// 光标是否在 INSERT INTO table ( ... ) 列清单内（非 VALUES）。
+            /// </summary>
+            private static bool TryParseInsertColumnList(
+                List<TSqlParserToken> tokens, int localOffset, out TableRef tableRef)
+            {
+                tableRef = null;
+                if (tokens == null || tokens.Count == 0) return false;
+                int caretIdx = FindTokenIndexBefore(tokens, localOffset);
+                if (caretIdx < 0) return false;
+                int depth = 0;
+                int openParenIdx = -1;
+                for (int i = caretIdx; i >= 0; i--)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.TokenType == TSqlTokenType.RightParenthesis)
+                    {
+                        depth++;
+                        continue;
+                    }
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                    {
+                        if (depth == 0)
+                        {
+                            openParenIdx = i;
+                            break;
+                        }
+                        depth--;
+                        continue;
+                    }
+                    if (depth > 0) continue;
+                    string text = t.Text;
+                    if (string.IsNullOrEmpty(text)) continue;
+                    if (text == ";" || text.Equals("GO", StringComparison.OrdinalIgnoreCase))
+                        return false;
+                    // 尚未找到开括号就遇到 VALUES/SELECT → 不在列清单
+                    string up = text.ToUpperInvariant();
+                    if (up == "VALUES" || up == "SELECT" || up == "WHERE" || up == "SET")
+                        return false;
+                }
+                if (openParenIdx < 0) return false;
+                // 开括号前解析 [db.][schema.]table，再确认 INSERT [INTO]
+                var segs = new List<string>();
+                bool lastWasDot = false;
+                bool usesDoubleDot = false;
+                int j = openParenIdx - 1;
+                while (j >= 0)
+                {
+                    var t = tokens[j];
+                    if (t == null || IsInsignificantToken(t)) { j--; continue; }
+                    if (t.TokenType == TSqlTokenType.Dot || t.Text == ".")
+                    {
+                        if (lastWasDot) usesDoubleDot = true;
+                        lastWasDot = true;
+                        j--;
+                        continue;
+                    }
+                    if (IsWordLikeToken(t) || t.TokenType == TSqlTokenType.QuotedIdentifier
+                        || (t.Text != null && t.Text.Length > 0 && t.Text[0] == '['))
+                    {
+                        string id = UnbracketIdentifier(t.Text);
+                        if (string.IsNullOrEmpty(id)) { j--; continue; }
+                        string up = id.ToUpperInvariant();
+                        if (up == "INTO" || up == "INSERT" || up == "VALUES" || up == "SELECT"
+                            || up == "WITH" || up == "TOP" || up == "AS")
+                            break;
+                        segs.Insert(0, id);
+                        lastWasDot = false;
+                        j--;
+                        // 最多三段：db.schema.table
+                        if (segs.Count >= 3) break;
+                        continue;
+                    }
+                    break;
+                }
+                if (segs.Count == 0) return false;
+                // 跳过表名后应能看到 INTO / INSERT
+                bool sawInsert = false;
+                while (j >= 0)
+                {
+                    var t = tokens[j];
+                    if (t == null || IsInsignificantToken(t)) { j--; continue; }
+                    string up = t.Text?.ToUpperInvariant();
+                    if (string.IsNullOrEmpty(up)) { j--; continue; }
+                    if (up == "INTO") { j--; continue; }
+                    if (up == "INSERT") { sawInsert = true; break; }
+                    if (up == ";" || up == "GO") break;
+                    // TOP (n) 等噪声
+                    if (up == "TOP" || t.TokenType == TSqlTokenType.Integer) { j--; continue; }
+                    break;
+                }
+                if (!sawInsert) return false;
+                // 开括号与光标之间不应出现 VALUES（列清单之后才是 VALUES）
+                for (int k = openParenIdx + 1; k <= caretIdx && k < tokens.Count; k++)
+                {
+                    var t = tokens[k];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset >= localOffset) break;
+                    string up = t.Text?.ToUpperInvariant();
+                    if (up == "VALUES") return false;
+                }
+                tableRef = new TableRef();
+                if (usesDoubleDot && segs.Count == 2)
+                {
+                    tableRef.Database = segs[0];
+                    tableRef.Schema = "dbo";
+                    tableRef.Name = segs[1];
+                }
+                else if (segs.Count == 1)
+                {
+                    tableRef.Name = segs[0];
+                }
+                else if (segs.Count == 2)
+                {
+                    tableRef.Schema = segs[0];
+                    tableRef.Name = segs[1];
+                }
+                else
+                {
+                    tableRef.Database = segs[0];
+                    tableRef.Schema = segs[1];
+                    tableRef.Name = segs[2];
+                }
+                return true;
+            }
+
+            /// <summary>定位当前 SELECT 对应的 FROM（允许 FROM 在光标之后；支持误写分号后继续 AND 条件）。</summary>
+            private static int FindFromClauseTokenIndex(List<TSqlParserToken> tokens, int localOffset)
+            {
+                int selectIdx = -1;
+                int selectBeforeSemi = -1;
+                int lastSemiIdx = -1;
+                for (int i = 0; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset > localOffset) break;
+                    string text = t.Text?.ToUpperInvariant();
+                    if (text == ";" || text == "GO")
+                    {
+                        selectBeforeSemi = selectIdx;
+                        lastSemiIdx = i;
+                        selectIdx = -1;
+                        continue;
+                    }
+                    if (text == "SELECT")
+                        selectIdx = i;
+                }
+                // where ... ; and alias.col → 分号后无新 SELECT，沿用分号前的查询别名
+                if (selectIdx < 0 && selectBeforeSemi >= 0 && lastSemiIdx >= 0
+                    && IsClauseContinuationAfter(tokens, lastSemiIdx, localOffset))
+                {
+                    selectIdx = selectBeforeSemi;
+                }
+                if (selectIdx >= 0)
+                {
+                    for (int i = selectIdx + 1; i < tokens.Count; i++)
+                    {
+                        var t = tokens[i];
+                        if (t == null || IsInsignificantToken(t)) continue;
+                        // 允许越过误写的分号去找 FROM（FROM 一定在分号前）— 仅限续写；新 SELECT 不跨句
+                        string kw = t.Text?.ToUpperInvariant();
+                        if (kw == ";" || kw == "GO")
+                            break;
+                        if (kw == "SELECT")
+                            break;
+                        if (string.Equals(t.Text, "FROM", StringComparison.OrdinalIgnoreCase))
+                            return i;
+                        if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
+                            || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT")
+                            break;
+                    }
+                    // 当前 SELECT 尚无 FROM（SELECT * fro|）：勿回退到上一句 FROM，否则串列/误成 WhereClause
+                    return -1;
+                }
+                int lastFrom = -1;
+                int fromBeforeSemi = -1;
+                for (int i = 0; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset > localOffset) break;
+                    string text = t.Text?.ToUpperInvariant();
+                    if (text == ";" || text == "GO")
+                    {
+                        fromBeforeSemi = lastFrom;
+                        lastSemiIdx = i;
+                        lastFrom = -1;
+                        continue;
+                    }
+                    if (text == "FROM")
+                        lastFrom = i;
+                }
+                if (lastFrom >= 0) return lastFrom;
+                if (fromBeforeSemi >= 0 && lastSemiIdx >= 0
+                    && IsClauseContinuationAfter(tokens, lastSemiIdx, localOffset))
+                    return fromBeforeSemi;
+                return -1;
+            }
+
+            /// <summary>分号后是否为 AND/OR/别名.列 等子句续写（而非新的 SELECT 语句）。</summary>
+            private static bool IsClauseContinuationAfter(List<TSqlParserToken> tokens, int semiIdx, int localOffset)
+            {
+                for (int i = semiIdx + 1; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset >= localOffset) break;
+                    string kw = t.Text?.ToUpperInvariant();
+                    if (kw == "AND" || kw == "OR" || kw == "WHERE" || kw == "ORDER" || kw == "GROUP"
+                        || kw == "HAVING" || kw == "ON")
+                        return true;
+                    if (kw == "SELECT" || kw == "INSERT" || kw == "UPDATE" || kw == "DELETE"
+                        || kw == "MERGE" || kw == "CREATE" || kw == "ALTER" || kw == "DROP"
+                        || kw == "EXEC" || kw == "EXECUTE" || kw == "USE" || kw == "DECLARE" || kw == "SET")
+                        return false;
+                    if (IsWordLikeToken(t) || IsPartialObjectNameToken(t) || IsIdentifierLike(t))
+                        return true;
+                    if (t.TokenType == TSqlTokenType.Dot)
+                        return true;
+                    return false;
+                }
+                return false;
+            }
+
+            private static int FindFromRegionEnd(List<TSqlParserToken> tokens, int fromIdx)
+            {
+                for (int i = fromIdx + 1; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    string kw = t.Text?.ToUpperInvariant();
+                    if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
+                        || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT"
+                        || kw == ";" || kw == "GO" || kw == "SELECT")
+                    {
+                        return t.Offset;
+                    }
+                }
+                for (int i = tokens.Count - 1; i >= 0; i--)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    return t.Offset + t.Text.Length;
+                }
+                return int.MaxValue;
+            }
+
+            /// <summary>从当前语句整个 FROM…WHERE 区间收集所有表/JOIN 别名（含 db..table、table(nolock) alias）。</summary>
+            private void CollectAliasesFromTokens(List<TSqlParserToken> tokens, int localOffset, LocalSymbols local)
+            {
+                int fromIdx = FindFromClauseTokenIndex(tokens, localOffset);
+                if (fromIdx < 0) return;
+                int regionEnd = FindFromRegionEnd(tokens, fromIdx);
+                int i = fromIdx + 1;
+                while (i < tokens.Count)
+                {
+                    var t0 = tokens[i];
+                    if (t0 == null || IsInsignificantToken(t0)) { i++; continue; }
+                    if (t0.Offset >= regionEnd) break;
+                    string kw0 = t0.Text?.ToUpperInvariant();
+                    if (kw0 == "INNER" || kw0 == "LEFT" || kw0 == "RIGHT" || kw0 == "FULL"
+                        || kw0 == "CROSS" || kw0 == "OUTER" || kw0 == "JOIN" || kw0 == ",")
+                    {
+                        i++;
+                        continue;
+                    }
+                    if (kw0 == "ON")
+                    {
+                        i++;
+                        while (i < tokens.Count)
+                        {
+                            var ot = tokens[i];
+                            if (ot == null || IsInsignificantToken(ot)) { i++; continue; }
+                            if (ot.Offset >= regionEnd) return;
+                            string okw = ot.Text?.ToUpperInvariant();
+                            if (okw == "INNER" || okw == "LEFT" || okw == "RIGHT" || okw == "FULL"
+                                || okw == "CROSS" || okw == "OUTER" || okw == "JOIN" || okw == ",")
+                                break;
+                            i++;
+                        }
+                        continue;
+                    }
+                    if (kw0 == "AS") { i++; continue; }
+
+                    string database = null;
+                    string schema = null;
+                    string table = null;
+                    string alias = null;
+                    int dotRun = 0;
+                    int partCount = 0;
+                    int segmentStartI = i;
+                    while (i < tokens.Count)
+                    {
+                        var t = tokens[i];
+                        if (t == null || IsInsignificantToken(t)) { i++; continue; }
+                        if (t.Offset >= regionEnd) break;
+                        string kw = t.Text?.ToUpperInvariant();
+                        if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
+                            || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT" || kw == ";"
+                            || kw == "INNER" || kw == "LEFT" || kw == "RIGHT" || kw == "FULL"
+                            || kw == "CROSS" || kw == "OUTER" || kw == "JOIN" || kw == "," || kw == "ON" || kw == "AS")
+                        {
+                            break;
+                        }
+                        if (kw == "WITH") { i++; continue; }
+                        if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                        {
+                            // 跳过 (nolock) 等表提示
+                            int depth = 0;
+                            int parenStart = i;
+                            for (; i < tokens.Count; i++)
+                            {
+                                var pt = tokens[i];
+                                if (pt == null) continue;
+                                if (pt.TokenType == TSqlTokenType.LeftParenthesis) depth++;
+                                else if (pt.TokenType == TSqlTokenType.RightParenthesis)
+                                {
+                                    depth--;
+                                    if (depth <= 0) { i++; break; }
+                                }
+                            }
+                            if (i == parenStart) i++;
+                            continue;
+                        }
+                        if (t.TokenType == TSqlTokenType.Dot)
+                        {
+                            dotRun++;
+                            i++;
+                            continue;
+                        }
+                        if (!(IsWordLikeToken(t) || IsPartialObjectNameToken(t) || IsIdentifierLike(t)))
+                        {
+                            i++;
+                            continue;
+                        }
+                        string name = UnbracketIdentifier(t.Text);
+                        if (IsSqlTableKeyword(name)) { i++; continue; }
+                        if (table != null && dotRun == 0)
+                        {
+                            alias = name;
+                            i++;
+                            break;
+                        }
+                        if (dotRun >= 2 && partCount == 1)
+                        {
+                            database = table;
+                            schema = "dbo";
+                            table = name;
+                            partCount = 2;
+                            dotRun = 0;
+                            i++;
+                            continue;
+                        }
+                        if (dotRun >= 1 && partCount >= 1)
+                        {
+                            if (partCount == 1)
+                            {
+                                schema = table;
+                                table = name;
+                                partCount = 2;
+                            }
+                            else if (partCount == 2 && database == null)
+                            {
+                                database = schema;
+                                schema = table;
+                                table = name;
+                                partCount = 3;
+                            }
+                            else
+                            {
+                                table = name;
+                            }
+                            dotRun = 0;
+                            i++;
+                            continue;
+                        }
+                        table = name;
+                        partCount = 1;
+                        dotRun = 0;
+                        i++;
+                    }
+                    // i 未前进时强制步进，避免空表名 continue 导致外层死循环
+                    if (string.IsNullOrEmpty(table) || IsSqlTableKeyword(table))
+                    {
+                        if (i <= segmentStartI) i = segmentStartI + 1;
+                        continue;
+                    }
+                    var tref = new TableRef { Database = database, Schema = schema, Name = table };
+                    NormalizeTableRef(tref);
+                    if (!string.IsNullOrEmpty(alias) && !IsSqlTableKeyword(alias))
+                        MergeAlias(local, alias, tref);
+                    MergeAlias(local, tref.Name, tref);
+                    if (!string.IsNullOrEmpty(tref.Schema))
+                        MergeAlias(local, tref.Schema + "." + tref.Name, tref);
+                    if (!string.IsNullOrEmpty(tref.Database))
+                        MergeAlias(local, tref.Database + "." + (tref.Schema ?? "dbo") + "." + tref.Name, tref);
+                }
+            }
+
+            private static void MergeAlias(LocalSymbols local, string key, TableRef tref)
+            {
+                if (string.IsNullOrEmpty(key) || tref == null) return;
+                TableRef existing;
+                if (!local.Aliases.TryGetValue(key, out existing))
+                {
+                    local.Aliases[key] = tref;
+                    return;
+                }
+                if (string.IsNullOrEmpty(existing.Database) && !string.IsNullOrEmpty(tref.Database))
+                    local.Aliases[key] = tref;
+            }
+
+            private static bool IsSqlTableKeyword(string name)
+            {
+                if (string.IsNullOrEmpty(name)) return true;
+                switch (name.ToUpperInvariant())
+                {
+                    case "AS":
+                    case "ON":
+                    case "WITH":
+                    case "NOLOCK":
+                    case "READUNCOMMITTED":
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+
+            private static void NormalizeTableRef(TableRef tref)
+            {
+                if (tref == null) return;
+                if (!string.IsNullOrEmpty(tref.Database) && string.IsNullOrEmpty(tref.Schema))
+                    tref.Schema = "dbo";
+            }
+
+            private FromClause GetFromClause(TSqlStatement stmt)
+            {
+                if (stmt is SelectStatement ss)
+                {
+                    return (ss.QueryExpression as QuerySpecification)?.FromClause;
+                }
+                if (stmt is UpdateStatement us) return us.UpdateSpecification?.FromClause;
+                if (stmt is DeleteStatement ds) return ds.DeleteSpecification?.FromClause;
+                return null;
+            }
+
+            private static TableRef BuildTableRef(SchemaObjectName sobj)
+            {
+                if (sobj == null) return null;
+                var tref = new TableRef
+                {
+                    Database = sobj.DatabaseIdentifier?.Value,
+                    Schema = sobj.SchemaIdentifier?.Value,
+                    Name = sobj.BaseIdentifier?.Value ?? GetLastIdentifier(sobj)
+                };
+                if (string.IsNullOrEmpty(tref.Name))
+                {
+                    int count = sobj.Identifiers?.Count ?? 0;
+                    if (count == 0) return null;
+                    if (count == 1)
+                    {
+                        tref.Name = sobj.Identifiers[0].Value;
+                    }
+                    else if (count == 2)
+                    {
+                        if (!string.IsNullOrEmpty(sobj.DatabaseIdentifier?.Value))
+                        {
+                            tref.Database = sobj.DatabaseIdentifier.Value;
+                            tref.Name = sobj.Identifiers[1].Value;
+                        }
+                        else
+                        {
+                            tref.Schema = sobj.Identifiers[0].Value;
+                            tref.Name = sobj.Identifiers[1].Value;
+                        }
+                    }
+                    else
+                    {
+                        tref.Database = sobj.Identifiers[0].Value;
+                        tref.Schema = sobj.Identifiers[1].Value;
+                        tref.Name = sobj.Identifiers[count - 1].Value;
+                    }
+                }
+                NormalizeTableRef(tref);
+                return string.IsNullOrEmpty(tref.Name) ? null : tref;
+            }
+
+            private void CollectFromClause(TableReference tableRef, LocalSymbols local)
+            {
+                if (tableRef == null) return;
+
+                if (tableRef is NamedTableReference ntr)
+                {
+                    var alias = ntr.Alias?.Value;
+                    var tref = BuildTableRef(ntr.SchemaObject);
+                    if (tref == null || string.IsNullOrEmpty(tref.Name)) return;
+                    if (!string.IsNullOrEmpty(alias))
+                    {
+                        local.Aliases[alias] = tref;
+                    }
+                    local.Aliases[tref.Name] = tref;
+                    if (!string.IsNullOrEmpty(tref.Schema))
+                    {
+                        local.Aliases[tref.Schema + "." + tref.Name] = tref;
+                    }
+                    if (!string.IsNullOrEmpty(tref.Database))
+                    {
+                        local.Aliases[tref.Database + "." + tref.Schema + "." + tref.Name] = tref;
+                    }
+                }
+                else if (tableRef is QualifiedJoin qj)
+                {
+                    CollectFromClause(qj.FirstTableReference, local);
+                    CollectFromClause(qj.SecondTableReference, local);
+                }
+                else if (tableRef is UnqualifiedJoin uj)
+                {
+                    CollectFromClause(uj.FirstTableReference, local);
+                    CollectFromClause(uj.SecondTableReference, local);
+                }
+                else if (tableRef is JoinParenthesisTableReference pj)
+                {
+                    CollectFromClause(pj.Join, local);
+                }
+            }
+
+            #endregion
+        }
+    }
+}
