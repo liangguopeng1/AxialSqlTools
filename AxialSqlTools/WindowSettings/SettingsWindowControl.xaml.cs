@@ -65,6 +65,13 @@ as select 1;
 
             this.Loaded += UserControl_Loaded;
             this.Unloaded += UserControl_Unloaded;
+            this.IsVisibleChanged += (s, e) =>
+            {
+                if (this.IsVisible)
+                {
+                    try { AxialSqlTools.IntelliSense.IntelliSenseManager.CloseAllPopups(); } catch { }
+                }
+            };
 
             SourceQueryPreview.Text = tsqlFormatExample;
 
@@ -291,6 +298,7 @@ as select 1;
 
         private void UserControl_Loaded(object sender, System.Windows.RoutedEventArgs e)
         {
+            try { AxialSqlTools.IntelliSense.IntelliSenseManager.CloseAllPopups(); } catch { }
             SubscribeToUpdateResultChanges();
             LoadSavedSettings();
         }

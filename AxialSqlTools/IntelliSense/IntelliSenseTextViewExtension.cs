@@ -39,6 +39,8 @@ namespace AxialSqlTools.IntelliSense
         /// <summary>补全提交后抑制悬停，直到鼠标移开。</summary>
         private bool _suppressHoverUntilMouseMove;
         private Point _suppressHoverAnchor = new Point(-1, -1);
+        /// <summary>鼠标离开本编辑器的起始时间（移向弹框的短暂间隙）。</summary>
+        private DateTime _awayFromEditorSince = DateTime.MinValue;
 
         public event Action<IntPtr> EditorFocusLost;
         public event Action EditorPointerDown;
@@ -195,11 +197,25 @@ namespace AxialSqlTools.IntelliSense
 
                 if (!TryUpdateCursorFromScreen())
                 {
-                    // 鼠标不在本编辑器：只关自己打开的弹框，别关其他标签的
+                    // 鼠标不在本编辑器：钉住时若也不在弹框上，稍候强制关（切设置页）
+                    if (QuickInfoTooltip.IsOwnedBy(this) && !QuickInfoTooltip.IsPointerOverPopup())
+                    {
+                        if (_awayFromEditorSince == DateTime.MinValue)
+                            _awayFromEditorSince = DateTime.UtcNow;
+                        if ((DateTime.UtcNow - _awayFromEditorSince).TotalMilliseconds >= 400)
+                        {
+                            _awayFromEditorSince = DateTime.MinValue;
+                            _tooltipShowing = false;
+                            QuickInfoTooltip.CloseIfOwnedBy(this);
+                        }
+                        return;
+                    }
+                    _awayFromEditorSince = DateTime.MinValue;
                     if (!QuickInfoTooltip.ShouldKeepOpen)
                         CloseTooltip();
                     return;
                 }
+                _awayFromEditorSince = DateTime.MinValue;
 
                 if (QuickInfoTooltip.ShouldKeepOpen)
                     return;
@@ -239,6 +255,7 @@ namespace AxialSqlTools.IntelliSense
                 // 刚输入过：勿把光标附近的词当成悬停（输入 a 别名会误弹表信息框）
                 if ((DateTime.UtcNow - _lastTypeTime).TotalMilliseconds < threshold) return;
 
+                LogHoverBlock("try", "pos={0},{1}", _lastMovePos.X, _lastMovePos.Y);
                 TryShowQuickInfo();
             }
             catch (Exception ex)
@@ -318,6 +335,7 @@ namespace AxialSqlTools.IntelliSense
             NativePoint clientPt = screenPt;
             if (!ScreenToClient(_editorHwnd, ref clientPt)) return false;
             if (!GetClientRect(_editorHwnd, out RECT rc)) return false;
+            // 客户区内按坐标判定（SSMS 命中 HWND 常是兄弟窗，不能强依赖 IsRelatedHwnd）
             if (clientPt.x < rc.Left || clientPt.y < rc.Top || clientPt.x >= rc.Right || clientPt.y >= rc.Bottom)
             {
                 if (hwndAtPoint == IntPtr.Zero || !IsRelatedHwnd(_editorHwnd, hwndAtPoint))
@@ -349,6 +367,7 @@ namespace AxialSqlTools.IntelliSense
             return false;
         }
 
+
         private void TryShowQuickInfo()
         {
             if (_textView == null) return;
@@ -363,12 +382,13 @@ namespace AxialSqlTools.IntelliSense
 
                 if (!TryGetHoverLineColumn(out int line, out int col))
                 {
-                    LogDiag("line/col resolve failed pos={0},{1}", _lastMovePos.X, _lastMovePos.Y);
+                    LogHoverBlock("linecol", "pos={0},{1}", _lastMovePos.X, _lastMovePos.Y);
                     return;
                 }
 
                 if (!TryGetWordSpanAtLineColumn(line, col, out int wordStart, out string word))
                 {
+                    LogHoverBlock("word", "line={0} col={1}", line, col);
                     CloseTooltip();
                     return;
                 }
@@ -377,6 +397,8 @@ namespace AxialSqlTools.IntelliSense
                 int wordEnd = wordStart + word.Length;
                 if (!IsPointerOverWordGlyph(line, wordStart, wordEnd, _lastMovePos.X, _lastMovePos.Y))
                 {
+                    LogHoverBlock("glyph", "word={0} pos={1},{2} span={3}-{4}",
+                        word, _lastMovePos.X, _lastMovePos.Y, wordStart, wordEnd);
                     CloseTooltip();
                     return;
                 }
@@ -389,6 +411,8 @@ namespace AxialSqlTools.IntelliSense
                 MetadataCatalog catalog = null;
                 if (connInfo != null)
                 {
+                    // 悬停跨库对象前也预热引用库
+                    MetadataCatalogService.Instance.EnsureCatalogsReferencedInSql(connInfo, text);
                     catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo);
                     if (catalog == null)
                         MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo);
@@ -440,6 +464,13 @@ namespace AxialSqlTools.IntelliSense
             if ((DateTime.UtcNow - _lastDiagLog).TotalSeconds < 2) return;
             _lastDiagLog = DateTime.UtcNow;
             _logger.Debug(format, args);
+        }
+
+        private void LogHoverBlock(string reason, string format, params object[] args)
+        {
+            if ((DateTime.UtcNow - _lastDiagLog).TotalSeconds < 1) return;
+            _lastDiagLog = DateTime.UtcNow;
+            _logger.Info("QuickInfo blocked ({0}): {1}", reason, string.Format(format, args));
         }
 
         /// <summary>打字时调用：关掉悬停框；鼠标未真正移动前不再弹出（避免 =1 后仍对着旧词弹元数据）。</summary>

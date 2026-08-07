@@ -35,6 +35,9 @@
                 <DataTrigger Binding="{Binding Kind}" Value="{x:Static local:CompletionKind.Column}">
                     <Setter Property="Background" Value="#2B7CD3"/>
                 </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static local:CompletionKind.AllColumns}">
+                    <Setter Property="Background" Value="#1565C0"/>
+                </DataTrigger>
                 <DataTrigger Binding="{Binding Kind}" Value="{x:Static local:CompletionKind.Table}">
                     <Setter Property="Background" Value="#2E7D32"/>
                 </DataTrigger>

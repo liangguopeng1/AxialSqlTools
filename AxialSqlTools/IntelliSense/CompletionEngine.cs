@@ -171,28 +171,101 @@ namespace AxialSqlTools
                         return result;
                     }
 
-                    // 行首输入：多表 JOIN 后写 in/where，或新语句写 s
+                    // 行首输入：多表 JOIN 后写 in/where，或 WHERE 后写 ord/gr，或新语句写 s
                     int caretTokenIndex = FindTokenIndexForPrefix(tokens, localOffset);
                     if (atLineStart && !string.IsNullOrEmpty(rawPrefix))
                     {
-                        // 已越过 WHERE/GROUP 等时，新行上的 gr/or 是子句关键字，不能因有 FROM 锁死 FromClause
                         int beforeIdx = FindTokenIndexBefore(tokens, localOffset);
-                        string nearKw = beforeIdx >= 0
-                            ? FindNearestClauseKeyword(tokens, beforeIdx, localOffset)
+                        // 跳过 AND/OR，区分 JOIN ON 后续写 vs WHERE 后写
+                        string majorKw = beforeIdx >= 0
+                            ? FindNearestMajorClauseKeyword(tokens, beforeIdx, localOffset)
                             : null;
-                        bool pastFromClause = nearKw == "WHERE" || nearKw == "HAVING" || nearKw == "ON"
-                            || nearKw == "GROUP" || nearKw == "ORDER"
-                            || nearKw == "UNION" || nearKw == "EXCEPT" || nearKw == "INTERSECT";
+                        bool inJoinOn = majorKw == "ON";
+                        bool pastFromClause = majorKw == "WHERE" || majorKw == "HAVING"
+                            || majorKw == "GROUP" || majorKw == "ORDER"
+                            || majorKw == "UNION" || majorKw == "EXCEPT" || majorKw == "INTERSECT";
+                        if (inJoinOn && !afterStmtBreak)
+                        {
+                            // ON 后 ss/se 开新语句；in/wh/le 仍续写 JOIN/WHERE
+                            if (LooksLikeNewBatchPrefix(rawPrefix))
+                            {
+                                result.Context = CompletionContext.BatchStart;
+                                result.Prefix = rawPrefix;
+                                result.Items = BuildItems(CompletionContext.BatchStart, rawPrefix, null, local, catalog, settings, connInfo);
+                                result.Items = FilterAndSort(result.Items, rawPrefix, settings, connInfo, null);
+                                result.ReplaceStartOffset = caretOffset - rawPrefix.Length;
+                                result.ReplaceEndOffset = caretOffset;
+                                return result;
+                            }
+                            // ON 条件后仍可 INNER JOIN / WHERE，勿当成 WhereClause（否则 in→IN 不是 INNER JOIN）
+                            bool hasFrom = HasFromKeywordBefore(tokens, localOffset) || hasFromRaw;
+                            result.Context = CompletionContext.FromClause;
+                            result.Prefix = rawPrefix;
+                            FromObjectNameContext fromNameOn = ParseFromObjectName(tokens, localOffset);
+                            if (!fromNameOn.InFromClause)
+                            {
+                                fromNameOn = hasFromRaw
+                                    ? fromNameRaw
+                                    : new FromObjectNameContext { InFromClause = true, Partial = rawPrefix };
+                            }
+                            else if (string.IsNullOrEmpty(fromNameOn.Partial))
+                                fromNameOn.Partial = rawPrefix;
+                            if (!fromNameOn.InFromClause && hasFrom)
+                                fromNameOn.InFromClause = true;
+                            result.Items = BuildItems(CompletionContext.FromClause, rawPrefix, fromNameOn, local, catalog, settings, connInfo);
+                            result.Items = FilterAndSort(result.Items, rawPrefix, settings, connInfo, fromNameOn);
+                            result.ReplaceStartOffset = caretOffset - rawPrefix.Length;
+                            result.ReplaceEndOffset = caretOffset;
+                            return result;
+                        }
+                        if (pastFromClause && !afterStmtBreak)
+                        {
+                            // 无分号时行首常开新语句：se→SELECT、ss→ssf；ord/gr/un 仍续写当前句
+                            if (LooksLikeNewBatchPrefix(rawPrefix))
+                            {
+                                result.Context = CompletionContext.BatchStart;
+                                result.Prefix = rawPrefix;
+                                result.Items = BuildItems(CompletionContext.BatchStart, rawPrefix, null, local, catalog, settings, connInfo);
+                                result.Items = FilterAndSort(result.Items, rawPrefix, settings, connInfo, null);
+                                result.ReplaceStartOffset = caretOffset - rawPrefix.Length;
+                                result.ReplaceEndOffset = caretOffset;
+                                return result;
+                            }
+                            // 勿再走 IsAtLineStartTypingKeyword→BatchStart，否则 ord 不进 WhereClause
+                            var pastCtx = (majorKw == "GROUP" || majorKw == "ORDER")
+                                ? CompletionContext.OrderByGroupBy
+                                : CompletionContext.WhereClause;
+                            result.Context = pastCtx;
+                            result.Prefix = rawPrefix;
+                            result.Items = BuildItems(pastCtx, rawPrefix, null, local, catalog, settings, connInfo);
+                            result.Items = FilterAndSort(result.Items, rawPrefix, settings, connInfo, null);
+                            result.ReplaceStartOffset = caretOffset - rawPrefix.Length;
+                            result.ReplaceEndOffset = caretOffset;
+                            return result;
+                        }
                         if (!pastFromClause)
                         {
                             bool hasFrom = HasFromKeywordBefore(tokens, localOffset) || hasFromRaw;
-                            result.Context = hasFrom && !afterStmtBreak
+                            // FROM/JOIN 表写完后行首：ss/se/upd 开新句；in/wh/le 续写 JOIN/WHERE
+                            bool newBatch = LooksLikeNewBatchPrefix(rawPrefix);
+                            result.Context = hasFrom && !afterStmtBreak && !newBatch
                                 ? CompletionContext.FromClause
                                 : CompletionContext.BatchStart;
                             result.Prefix = rawPrefix;
-                            var fromNameEarly = hasFrom && !afterStmtBreak
-                                ? (hasFromRaw ? fromNameRaw : new FromObjectNameContext { InFromClause = true, Partial = rawPrefix })
-                                : null;
+                            FromObjectNameContext fromNameEarly = null;
+                            if (result.Context == CompletionContext.FromClause)
+                            {
+                                // 行首 in/wh 时表名常在上一行：必须用 token 解析拿 Segments，不能只用 Partial 空壳
+                                fromNameEarly = ParseFromObjectName(tokens, localOffset);
+                                if (!fromNameEarly.InFromClause)
+                                {
+                                    fromNameEarly = hasFromRaw
+                                        ? fromNameRaw
+                                        : new FromObjectNameContext { InFromClause = true, Partial = rawPrefix };
+                                }
+                                else if (string.IsNullOrEmpty(fromNameEarly.Partial))
+                                    fromNameEarly.Partial = rawPrefix;
+                            }
                             if (result.Context == CompletionContext.FromClause)
                             {
                                 result.Items = BuildItems(CompletionContext.FromClause, rawPrefix, fromNameEarly, local, catalog, settings, connInfo);
@@ -230,22 +303,36 @@ namespace AxialSqlTools
                         && (fromName.AfterDot || (fromName.Segments != null && fromName.Segments.Count > 0)
                             || !string.IsNullOrEmpty(fromName.Partial));
 
-                    if (!fromQualifiedName && TryGetMemberAccessPrefix(tokens, localOffset, out string memberPrefix))
+                    // JOIN ON / WHERE 多条件：and dd.| 是别名.列，不能被 FROM 限定名抢走
+                    if (TryGetMemberAccessPrefix(tokens, localOffset, out string memberPrefix))
                     {
                         string owner = GetOwnerBeforeDot(memberPrefix);
                         if (!string.IsNullOrEmpty(owner) && !local.Aliases.ContainsKey(owner))
                             CollectAliasesFromTokens(tokens, localOffset, local);
 
-                        result.Context = CompletionContext.MemberAccess;
-                        result.Prefix = memberPrefix;
-                        result.Items = BuildItems(CompletionContext.MemberAccess, memberPrefix, null, local, catalog, settings, connInfo);
-                        result.Items = FilterAndSort(result.Items, memberPrefix, settings, connInfo, null);
-                        result.ReplaceStartOffset = ComputeReplaceStartOffset(batchStart, localOffset, memberPrefix, null, tokens);
-                        result.ReplaceEndOffset = caretOffset;
-                        return result;
+                        bool aliasMember = !string.IsNullOrEmpty(owner) && local.Aliases.ContainsKey(owner);
+                        int memBeforeIdx = FindTokenIndexBefore(tokens, localOffset);
+                        string majorForMember = memBeforeIdx >= 0
+                            ? FindNearestMajorClauseKeyword(tokens, memBeforeIdx, localOffset)
+                            : null;
+                        bool inExprClause = majorForMember == "ON" || majorForMember == "WHERE"
+                            || majorForMember == "HAVING" || majorForMember == "GROUP"
+                            || majorForMember == "ORDER" || majorForMember == "SET";
+
+                        if (aliasMember || inExprClause || !fromQualifiedName)
+                        {
+                            result.Context = CompletionContext.MemberAccess;
+                            result.Prefix = memberPrefix;
+                            result.Items = BuildItems(CompletionContext.MemberAccess, memberPrefix, null, local, catalog, settings, connInfo);
+                            result.Items = FilterAndSort(result.Items, memberPrefix, settings, connInfo, null);
+                            result.ReplaceStartOffset = ComputeReplaceStartOffset(batchStart, localOffset, memberPrefix, null, tokens);
+                            result.ReplaceEndOffset = caretOffset;
+                            return result;
+                        }
                     }
 
-                    if (caretTokenIndex >= 0 && IsAtLineStartTypingKeyword(tokens, localOffset, caretTokenIndex))
+                    if (caretTokenIndex >= 0 && IsAtLineStartTypingKeyword(tokens, localOffset, caretTokenIndex)
+                        && (afterStmtBreak || !HasFromKeywordBefore(tokens, localOffset)))
                     {
                         prefix = ExtractPrefix(tokens, localOffset);
                         if (string.IsNullOrEmpty(prefix)) prefix = rawPrefix;
@@ -493,6 +580,28 @@ namespace AxialSqlTools
                     }
                 }
                 if (target == null) target = nearest;
+
+                // ScriptDom 常只解析出分号前完整句，后继残缺 SELECT 不进 AST；
+                // 若 token 定位到的 FROM 已越过该语句末尾，说明选中了上一句，必须丢弃。
+                if (target != null && tokens != null)
+                {
+                    int fromIdx = FindFromClauseTokenIndex(tokens, localOffset);
+                    if (fromIdx >= 0 && fromIdx < tokens.Count && tokens[fromIdx] != null)
+                    {
+                        int fromOff = tokens[fromIdx].Offset;
+                        int targetEnd = target.StartOffset + Math.Max(0, target.FragmentLength);
+                        if (fromOff >= targetEnd)
+                            target = null;
+                    }
+                    else
+                    {
+                        // SELECT * fro|：当前句无 FROM，光标已越过上一句末尾 → 清空别名
+                        int targetEnd = target.StartOffset + Math.Max(0, target.FragmentLength);
+                        if (localOffset > targetEnd)
+                            target = null;
+                    }
+                }
+
                 if (target != null)
                 {
                     var from = GetFromClause(target);
@@ -504,6 +613,147 @@ namespace AxialSqlTools
                 // 始终用 token 补全 JOIN 别名（ScriptDom 对 kucun(nolock) 等可能丢别名）
                 if (tokens != null)
                     CollectAliasesFromTokens(tokens, localOffset, local);
+                // INSERT INTO t (|)：把目标表登记进别名，便于列/全字段补全
+                if (tokens != null)
+                    CollectInsertTargetFromTokens(tokens, localOffset, local);
+            }
+
+            /// <summary>INSERT INTO [db.][schema.]table ( 列清单内时，登记目标表。</summary>
+            private static void CollectInsertTargetFromTokens(
+                List<TSqlParserToken> tokens, int localOffset, LocalSymbols local)
+            {
+                if (local == null || !TryParseInsertColumnList(tokens, localOffset, out TableRef tref))
+                    return;
+                if (tref == null || string.IsNullOrEmpty(tref.Name)) return;
+                if (!local.Aliases.ContainsKey(tref.Name))
+                    local.Aliases[tref.Name] = tref;
+            }
+
+            /// <summary>
+            /// 光标是否在 INSERT INTO table ( ... ) 列清单内（非 VALUES）。
+            /// </summary>
+            private static bool TryParseInsertColumnList(
+                List<TSqlParserToken> tokens, int localOffset, out TableRef tableRef)
+            {
+                tableRef = null;
+                if (tokens == null || tokens.Count == 0) return false;
+                int caretIdx = FindTokenIndexBefore(tokens, localOffset);
+                if (caretIdx < 0) return false;
+                int depth = 0;
+                int openParenIdx = -1;
+                for (int i = caretIdx; i >= 0; i--)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.TokenType == TSqlTokenType.RightParenthesis)
+                    {
+                        depth++;
+                        continue;
+                    }
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                    {
+                        if (depth == 0)
+                        {
+                            openParenIdx = i;
+                            break;
+                        }
+                        depth--;
+                        continue;
+                    }
+                    if (depth > 0) continue;
+                    string text = t.Text;
+                    if (string.IsNullOrEmpty(text)) continue;
+                    if (text == ";" || text.Equals("GO", StringComparison.OrdinalIgnoreCase))
+                        return false;
+                    // 尚未找到开括号就遇到 VALUES/SELECT → 不在列清单
+                    string up = text.ToUpperInvariant();
+                    if (up == "VALUES" || up == "SELECT" || up == "WHERE" || up == "SET")
+                        return false;
+                }
+                if (openParenIdx < 0) return false;
+                // 开括号前解析 [db.][schema.]table，再确认 INSERT [INTO]
+                var segs = new List<string>();
+                bool lastWasDot = false;
+                bool usesDoubleDot = false;
+                int j = openParenIdx - 1;
+                while (j >= 0)
+                {
+                    var t = tokens[j];
+                    if (t == null || IsInsignificantToken(t)) { j--; continue; }
+                    if (t.TokenType == TSqlTokenType.Dot || t.Text == ".")
+                    {
+                        if (lastWasDot) usesDoubleDot = true;
+                        lastWasDot = true;
+                        j--;
+                        continue;
+                    }
+                    if (IsWordLikeToken(t) || t.TokenType == TSqlTokenType.QuotedIdentifier
+                        || (t.Text != null && t.Text.Length > 0 && t.Text[0] == '['))
+                    {
+                        string id = UnbracketIdentifier(t.Text);
+                        if (string.IsNullOrEmpty(id)) { j--; continue; }
+                        string up = id.ToUpperInvariant();
+                        if (up == "INTO" || up == "INSERT" || up == "VALUES" || up == "SELECT"
+                            || up == "WITH" || up == "TOP" || up == "AS")
+                            break;
+                        segs.Insert(0, id);
+                        lastWasDot = false;
+                        j--;
+                        // 最多三段：db.schema.table
+                        if (segs.Count >= 3) break;
+                        continue;
+                    }
+                    break;
+                }
+                if (segs.Count == 0) return false;
+                // 跳过表名后应能看到 INTO / INSERT
+                bool sawInsert = false;
+                while (j >= 0)
+                {
+                    var t = tokens[j];
+                    if (t == null || IsInsignificantToken(t)) { j--; continue; }
+                    string up = t.Text?.ToUpperInvariant();
+                    if (string.IsNullOrEmpty(up)) { j--; continue; }
+                    if (up == "INTO") { j--; continue; }
+                    if (up == "INSERT") { sawInsert = true; break; }
+                    if (up == ";" || up == "GO") break;
+                    // TOP (n) 等噪声
+                    if (up == "TOP" || t.TokenType == TSqlTokenType.Integer) { j--; continue; }
+                    break;
+                }
+                if (!sawInsert) return false;
+                // 开括号与光标之间不应出现 VALUES（列清单之后才是 VALUES）
+                for (int k = openParenIdx + 1; k <= caretIdx && k < tokens.Count; k++)
+                {
+                    var t = tokens[k];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset >= localOffset) break;
+                    string up = t.Text?.ToUpperInvariant();
+                    if (up == "VALUES") return false;
+                }
+                tableRef = new TableRef();
+                if (usesDoubleDot && segs.Count == 2)
+                {
+                    tableRef.Database = segs[0];
+                    tableRef.Schema = "dbo";
+                    tableRef.Name = segs[1];
+                }
+                else if (segs.Count == 1)
+                {
+                    tableRef.Name = segs[0];
+                }
+                else if (segs.Count == 2)
+                {
+                    tableRef.Schema = segs[0];
+                    tableRef.Name = segs[1];
+                }
+                else
+                {
+                    tableRef.Database = segs[0];
+                    tableRef.Schema = segs[1];
+                    tableRef.Name = segs[2];
+                }
+                return true;
             }
 
             /// <summary>定位当前 SELECT 对应的 FROM（允许 FROM 在光标之后；支持误写分号后继续 AND 条件）。</summary>
@@ -540,14 +790,20 @@ namespace AxialSqlTools
                     {
                         var t = tokens[i];
                         if (t == null || IsInsignificantToken(t)) continue;
-                        // 允许越过误写的分号去找 FROM（FROM 一定在分号前）
+                        // 允许越过误写的分号去找 FROM（FROM 一定在分号前）— 仅限续写；新 SELECT 不跨句
+                        string kw = t.Text?.ToUpperInvariant();
+                        if (kw == ";" || kw == "GO")
+                            break;
+                        if (kw == "SELECT")
+                            break;
                         if (string.Equals(t.Text, "FROM", StringComparison.OrdinalIgnoreCase))
                             return i;
-                        string kw = t.Text?.ToUpperInvariant();
                         if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
                             || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT")
                             break;
                     }
+                    // 当前 SELECT 尚无 FROM（SELECT * fro|）：勿回退到上一句 FROM，否则串列/误成 WhereClause
+                    return -1;
                 }
                 int lastFrom = -1;
                 int fromBeforeSemi = -1;
@@ -971,9 +1227,9 @@ namespace AxialSqlTools
                 {
                     if (++guard > maxGuard)
                         break;
-                    while (i >= 0 && (text[i] == ' ' || text[i] == '\t')) i--;
+                    while (i >= 0 && (text[i] == ' ' || text[i] == '\t' || text[i] == '\n' || text[i] == '\r')) i--;
                     if (i < 0) break;
-                    if (text[i] == '\n' || text[i] == '\r' || text[i] == ';') break;
+                    if (text[i] == ';') break;
 
                     if (text[i] == '.')
                     {
@@ -1021,7 +1277,7 @@ namespace AxialSqlTools
                         segments.Insert(0, seg);
                 }
 
-                while (i >= 0 && (text[i] == ' ' || text[i] == '\t')) i--;
+                while (i >= 0 && (text[i] == ' ' || text[i] == '\t' || text[i] == '\n' || text[i] == '\r')) i--;
                 if (i < 0) return false;
 
                 // 逗号分隔的下一张表：FROM a, [b
@@ -1043,8 +1299,10 @@ namespace AxialSqlTools
                     return false;
 
                 // 「FROM t where|」：partial 本身是子句关键字，且前面已有表名 → 不是在输表名
+                // in/le/ri 等可能是 INNER/LEFT/RIGHT JOIN 前缀，仍算 FROM 子句
                 if (!isExec && segments.Count > 0
-                    && IsFromObjectNameTerminatorKeyword(ctx.Partial))
+                    && IsFromObjectNameTerminatorKeyword(ctx.Partial)
+                    && !IsFromJoinOrClausePrefix(ctx.Partial))
                     return false;
 
                 if (!isExec)
@@ -1053,6 +1311,82 @@ namespace AxialSqlTools
                 ctx.AfterDot = afterDot;
                 ctx.UsesDoubleDot = doubleDot;
                 return true;
+            }
+
+            /// <summary>FROM 后 JOIN/子句关键字的前缀（in→INNER JOIN、wh→WHERE、ord→ORDER BY）。</summary>
+            private static bool IsFromJoinOrClausePrefix(string partial)
+            {
+                if (string.IsNullOrEmpty(partial)) return false;
+                string p = partial.ToUpperInvariant();
+                string[] candidates =
+                {
+                    "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "OUTER", "JOIN", "APPLY",
+                    "WHERE", "GROUP", "ORDER", "HAVING", "UNION", "EXCEPT", "INTERSECT",
+                    "PIVOT", "UNPIVOT"
+                };
+                foreach (var c in candidates)
+                {
+                    if (c.StartsWith(p, StringComparison.Ordinal))
+                        return true;
+                }
+                return false;
+            }
+
+            /// <summary>
+            /// 行首像新开一批：语句关键字（se→SELECT）或片段（ss→ssf）。
+            /// JOIN/WHERE/ORDER 续写前缀不算（in/wh/ord 仍留在当前句）。
+            /// </summary>
+            private static bool LooksLikeNewBatchPrefix(string partial)
+            {
+                if (string.IsNullOrEmpty(partial)) return false;
+                if (IsFromJoinOrClausePrefix(partial) || IsClauseContinuationPrefix(partial))
+                    return false;
+                return IsTopLevelStatementPrefix(partial) || HasMatchingSnippetPrefix(partial);
+            }
+
+            /// <summary>行首像新语句：se→SELECT、up→UPDATE（相对 SESSION_USER 等函数优先）。</summary>
+            private static bool IsTopLevelStatementPrefix(string partial)
+            {
+                if (string.IsNullOrEmpty(partial)) return false;
+                string p = partial.ToUpperInvariant();
+                foreach (var kw in TopLevelKeywords)
+                {
+                    if (kw.StartsWith(p, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                return false;
+            }
+
+            /// <summary>是否有代码片段前缀匹配（ss→ssf）；用于无分号行首保持 BatchStart。</summary>
+            private static bool HasMatchingSnippetPrefix(string partial)
+            {
+                if (string.IsNullOrEmpty(partial) || !SettingsManager.GetUseSnippets())
+                    return false;
+                foreach (var snippet in SnippetService.GetAllSnippets())
+                {
+                    if (string.IsNullOrEmpty(snippet.Prefix)) continue;
+                    if (snippet.Prefix.StartsWith(partial, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                return false;
+            }
+
+            /// <summary>WHERE/ORDER 后行首续写前缀（ord→ORDER BY），与新开 SELECT 区分。</summary>
+            private static bool IsClauseContinuationPrefix(string partial)
+            {
+                if (string.IsNullOrEmpty(partial)) return false;
+                string p = partial.ToUpperInvariant();
+                string[] candidates =
+                {
+                    "ORDER", "GROUP", "HAVING", "UNION", "EXCEPT", "INTERSECT",
+                    "AND", "OR", "WHERE", "ASC", "DESC", "OFFSET", "FETCH"
+                };
+                foreach (var c in candidates)
+                {
+                    if (c.StartsWith(p, StringComparison.Ordinal))
+                        return true;
+                }
+                return false;
             }
 
             private static bool IsRawObjectNameAnchorKeyword(string kw, bool isExec)
@@ -1280,14 +1614,30 @@ namespace AxialSqlTools
                 prefix = ExtractPrefix(tokens, localOffset);
                 int caretTokenIndex = FindTokenIndexBefore(tokens, localOffset);
 
+                // JOIN ON / WHERE 中 alias. → 列（含 and dd.| 多条件），优先于 FROM 限定名
+                if (TryGetMemberAccessPrefix(tokens, localOffset, out string memberPrefixEarly))
+                {
+                    string majorForDot = caretTokenIndex >= 0
+                        ? FindNearestMajorClauseKeyword(tokens, caretTokenIndex, localOffset)
+                        : null;
+                    bool exprDot = majorForDot == "ON" || majorForDot == "WHERE" || majorForDot == "HAVING"
+                        || majorForDot == "GROUP" || majorForDot == "ORDER" || majorForDot == "SET";
+                    if (exprDot)
+                    {
+                        prefix = memberPrefixEarly;
+                        return CompletionContext.MemberAccess;
+                    }
+                }
+
                 // FROM 目标名（含未闭合 [）优先；但若已越过 WHERE/GROUP/ORDER，不能再锁死 FromClause
+                // JOIN ON 仍属 FROM 区域（可继续 INNER JOIN）——不含 alias. 列访问
                 if (fromName != null && fromName.InFromClause)
                 {
-                    string nearKw = caretTokenIndex >= 0
-                        ? FindNearestClauseKeyword(tokens, caretTokenIndex, localOffset)
+                    string majorKw = caretTokenIndex >= 0
+                        ? FindNearestMajorClauseKeyword(tokens, caretTokenIndex, localOffset)
                         : null;
-                    if (nearKw != "WHERE" && nearKw != "HAVING" && nearKw != "GROUP" && nearKw != "ORDER"
-                        && nearKw != "UNION" && nearKw != "EXCEPT" && nearKw != "INTERSECT")
+                    if (majorKw != "WHERE" && majorKw != "HAVING" && majorKw != "GROUP" && majorKw != "ORDER"
+                        && majorKw != "UNION" && majorKw != "EXCEPT" && majorKw != "INTERSECT")
                     {
                         prefix = fromName.Partial ?? string.Empty;
                         return CompletionContext.FromClause;
@@ -1308,6 +1658,10 @@ namespace AxialSqlTools
                 // 注意：函数实参内仍要提示列（ISNULL(h|, )），插入后防重弹靠 KeyHandler 短时抑制
                 if (string.IsNullOrEmpty(prefix) && IsImmediatelyAfterClosedGroup(tokens, localOffset))
                     return CompletionContext.Unknown;
+
+                // INSERT INTO t (|) 列清单（优先于 INSERT 目标表上下文）
+                if (TryParseInsertColumnList(tokens, localOffset, out _))
+                    return CompletionContext.InsertColumnList;
 
                 if (caretTokenIndex < 0)
                 {
@@ -1332,8 +1686,8 @@ namespace AxialSqlTools
                     case "GO":
                         return CompletionContext.BatchStart;
                     case "SELECT":
-                        // SELECT 后若已有 FROM，则可能在列区；简化：SELECT 后未到 FROM 视为 SelectElements
-                        if (!SeenKeywordAfter(tokens, caretTokenIndex, "FROM"))
+                        // 仅看「当前 SELECT」之后是否已有 FROM，勿扫上一句
+                        if (!SeenFromAfterCurrentSelect(tokens, caretTokenIndex, localOffset))
                         {
                             return CompletionContext.SelectElements;
                         }
@@ -1356,11 +1710,19 @@ namespace AxialSqlTools
                             return CompletionContext.FromClause;
                         }
                     case "WHERE":
-                    case "ON":
                     case "HAVING":
+                        return CompletionContext.WhereClause;
+                    case "ON":
+                        // JOIN ON 后仍可续写 AND 或下一 INNER JOIN / WHERE
+                        return CompletionContext.FromClause;
                     case "AND":
                     case "OR":
-                        return CompletionContext.WhereClause;
+                        {
+                            string major = FindNearestMajorClauseKeyword(tokens, caretTokenIndex, localOffset);
+                            if (major == "ON" || major == "FROM" || major == "JOIN")
+                                return CompletionContext.FromClause;
+                            return CompletionContext.WhereClause;
+                        }
                     case "ORDER":
                     case "GROUP":
                         return CompletionContext.OrderByGroupBy;
@@ -1637,8 +1999,6 @@ namespace AxialSqlTools
                 int idx = FindTokenIndexBefore(tokens, localOffset);
                 if (idx < 0) return ctx;
 
-                int lineStartOffset = GetLineStartOffset(tokens, localOffset);
-
                 var parts = new List<string>();
                 string partial = string.Empty;
                 // AfterDot：仅表示光标在点号后继续输段（dbo.| / dbo.Ta|），
@@ -1690,7 +2050,8 @@ namespace AxialSqlTools
 
                     if (tok.TokenType == TSqlTokenType.Dot)
                     {
-                        if (parenDepth > 0 || tok.Offset < lineStartOffset) { i--; continue; }
+                        // 允许跨行收集：FROM db.table aa\nin| 的表名在上一行
+                        if (parenDepth > 0) { i--; continue; }
                         i--;
                         while (i >= 0 && IsInsignificantToken(tokens[i])) i--;
                         if (i >= 0 && tokens[i].TokenType == TSqlTokenType.Dot)
@@ -1699,8 +2060,7 @@ namespace AxialSqlTools
                             i--;
                             while (i >= 0 && IsInsignificantToken(tokens[i])) i--;
                         }
-                        if (i >= 0 && parenDepth == 0 && tokens[i].Offset >= lineStartOffset
-                            && IsPartialObjectNameToken(tokens[i]))
+                        if (i >= 0 && parenDepth == 0 && IsPartialObjectNameToken(tokens[i]))
                         {
                             parts.Insert(0, UnbracketIdentifier(tokens[i].Text));
                             i--;
@@ -1716,6 +2076,14 @@ namespace AxialSqlTools
                             ctx.InFromClause = true;
                             break;
                         }
+                        // ON 条件仍属 FROM：清空 ON 右侧表达式误收的标识符，继续找 JOIN 表
+                        if (parenDepth == 0 && text == "ON")
+                        {
+                            ctx.InFromClause = true;
+                            parts.Clear();
+                            i--;
+                            continue;
+                        }
                         if (parenDepth == 0 && IsFromScanStopKeyword(text))
                             break;
                         // 逗号：继续向前找 FROM（SELECT a,b FR 不能当 FROM 子句）
@@ -1724,8 +2092,8 @@ namespace AxialSqlTools
                             i--;
                             continue;
                         }
-                        // 标识符段不跨行收集
-                        if (parenDepth == 0 && tok.Offset >= lineStartOffset && IsPartialObjectNameToken(tok))
+                        // 表名/别名可跨行（FROM t aa\nin|）；partial 本身已在上方截取
+                        if (parenDepth == 0 && IsPartialObjectNameToken(tok))
                         {
                             parts.Insert(0, UnbracketIdentifier(tok.Text));
                         }
@@ -1758,7 +2126,6 @@ namespace AxialSqlTools
                     case "SELECT":
                     case "WHERE":
                     case "SET":
-                    case "ON":
                     case "INTO":
                     case "UPDATE":
                     case "DELETE":
@@ -1971,7 +2338,7 @@ namespace AxialSqlTools
                 return FindTokenIndexBefore(tokens, localOffset);
             }
 
-            private int FindTokenIndexBefore(List<TSqlParserToken> tokens, int offset)
+            private static int FindTokenIndexBefore(List<TSqlParserToken> tokens, int offset)
             {
                 for (int i = tokens.Count - 1; i >= 0; i--)
                 {
@@ -2082,6 +2449,18 @@ namespace AxialSqlTools
             /// </summary>
             private static string FindNearestClauseKeyword(List<TSqlParserToken> tokens, int caretTokenIndex, int localOffset)
             {
+                return FindNearestClauseKeywordCore(tokens, caretTokenIndex, localOffset, skipAndOr: false);
+            }
+
+            /// <summary>跳过 AND/OR，用于区分 JOIN ON 区域与 WHERE 区域。</summary>
+            private static string FindNearestMajorClauseKeyword(List<TSqlParserToken> tokens, int caretTokenIndex, int localOffset)
+            {
+                return FindNearestClauseKeywordCore(tokens, caretTokenIndex, localOffset, skipAndOr: true);
+            }
+
+            private static string FindNearestClauseKeywordCore(
+                List<TSqlParserToken> tokens, int caretTokenIndex, int localOffset, bool skipAndOr)
+            {
                 if (tokens == null || caretTokenIndex < 0) return null;
                 int parenDepth = 0;
                 for (int i = caretTokenIndex; i >= 0; i--)
@@ -2106,7 +2485,10 @@ namespace AxialSqlTools
                             && t.Offset < localOffset
                             && t.Offset + t.Text.Length >= localOffset)
                             continue;
-                        return t.Text.ToUpperInvariant();
+                        string kw = t.Text.ToUpperInvariant();
+                        if (skipAndOr && (kw == "AND" || kw == "OR"))
+                            continue;
+                        return kw;
                     }
                     string text = t.Text;
                     if (string.IsNullOrEmpty(text)) continue;
@@ -2138,6 +2520,53 @@ namespace AxialSqlTools
                     {
                         return true;
                     }
+                }
+                return false;
+            }
+
+            /// <summary>当前 SELECT 与光标之间是否已出现 FROM（不跨越 ;/GO/上一句）。</summary>
+            private static bool SeenFromAfterCurrentSelect(List<TSqlParserToken> tokens, int caretTokenIndex, int localOffset)
+            {
+                if (tokens == null || caretTokenIndex < 0) return false;
+                int selectIdx = -1;
+                int parenDepth = 0;
+                for (int i = caretTokenIndex; i >= 0; i--)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.TokenType == TSqlTokenType.RightParenthesis)
+                    {
+                        parenDepth++;
+                        continue;
+                    }
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                    {
+                        if (parenDepth > 0) parenDepth--;
+                        continue;
+                    }
+                    if (parenDepth > 0) continue;
+                    string text = t.Text;
+                    if (string.IsNullOrEmpty(text)) continue;
+                    if (text == ";" || text.Equals("GO", StringComparison.OrdinalIgnoreCase))
+                        break;
+                    if (text.Equals("SELECT", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (IsWordLikeToken(t) && t.Offset < localOffset && t.Offset + t.Text.Length >= localOffset)
+                            continue;
+                        selectIdx = i;
+                        break;
+                    }
+                }
+                if (selectIdx < 0) return false;
+                for (int i = selectIdx + 1; i <= caretTokenIndex && i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    string text = t.Text?.ToUpperInvariant();
+                    if (text == ";" || text == "GO" || text == "SELECT")
+                        break;
+                    if (text == "FROM")
+                        return true;
                 }
                 return false;
             }
@@ -2197,12 +2626,22 @@ namespace AxialSqlTools
                     case CompletionContext.FromClause:
                         AddFromClauseItems(items, fromName, catalog, settings, connInfo, prefix);
                         if (settings.includeKeywords && ShouldSuggestAfterFromKeywords(fromName, prefix))
+                        {
                             AddKeywords(items, AfterFromKeywords);
+                            // JOIN ON 条件续写
+                            if (!string.IsNullOrEmpty(prefix))
+                                AddKeywords(items, new[] { "AND", "OR" });
+                        }
                         break;
 
                     case CompletionContext.InsertTarget:
                         if (settings.includeKeywords) AddKeywords(items, InsertKeywords);
                         AddTablesAndViews(items, catalog, settings);
+                        break;
+
+                    case CompletionContext.InsertColumnList:
+                        AddColumnsFromFromAliases(items, catalog, local, settings, connInfo);
+                        AddAllColumnsCompletions(items, catalog, local, settings, connInfo, withAliasPrefix: false);
                         break;
 
                     case CompletionContext.UpdateTarget:
@@ -2641,12 +3080,97 @@ namespace AxialSqlTools
                 // 列：来自 FROM 别名表 + CTE + 临时表 + 表变量
                 AddColumnsFromFromAliases(items, catalog, local, settings, connInfo);
                 AddLocalColumns(items, local, settings);
+                // IDEA 风格：展开全部列（逗号分隔）
+                AddAllColumnsCompletions(items, catalog, local, settings, connInfo, withAliasPrefix: true);
                 // 星号
                 items.Add(new CompletionItem("*", "*", CompletionKind.Column, "所有列"));
                 // 内建函数与关键字解耦：关闭关键字提示时仍可补 ISNULL/CAST 等
                 AddBuiltInFunctions(items);
                 if (settings.includeKeywords)
                     AddKeywords(items, new[] { "CASE" });
+            }
+
+            /// <summary>
+            /// 为每张可解析表生成「全部列」候选项（显示截断列表，插入完整逗号分隔列名）。
+            /// </summary>
+            private void AddAllColumnsCompletions(
+                List<CompletionItem> items,
+                MetadataCatalog catalog,
+                LocalSymbols local,
+                IntelliSenseSettings settings,
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                bool withAliasPrefix)
+            {
+                if (items == null || local?.Aliases == null || local.Aliases.Count == 0) return;
+                var preferredAlias = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var tables = new Dictionary<string, TableRef>(StringComparer.OrdinalIgnoreCase);
+                foreach (var kv in local.Aliases)
+                {
+                    var tref = kv.Value;
+                    if (tref == null || string.IsNullOrEmpty(tref.Name)) continue;
+                    string tableKey = (tref.Database ?? string.Empty) + "|" + (tref.Schema ?? string.Empty) + "|" + tref.Name;
+                    tables[tableKey] = tref;
+                    string aliasKey = kv.Key;
+                    if (string.IsNullOrEmpty(aliasKey) || aliasKey.IndexOf('.') >= 0) continue;
+                    if (string.Equals(aliasKey, tref.Name, StringComparison.OrdinalIgnoreCase)) continue;
+                    string existing;
+                    if (!preferredAlias.TryGetValue(tableKey, out existing) || aliasKey.Length < existing.Length)
+                        preferredAlias[tableKey] = aliasKey;
+                }
+                foreach (var kv in tables)
+                {
+                    var tcol = ResolveTableRef(connInfo, catalog, kv.Value);
+                    if (tcol?.Columns == null || tcol.Columns.Count == 0) continue;
+                    string alias = null;
+                    if (withAliasPrefix)
+                        preferredAlias.TryGetValue(kv.Key, out alias);
+                    var insertParts = new List<string>(tcol.Columns.Count);
+                    var displayParts = new List<string>(tcol.Columns.Count);
+                    foreach (var col in tcol.Columns)
+                    {
+                        if (col == null || string.IsNullOrEmpty(col.Name)) continue;
+                        string colInsert = FormatColumnInsert(col.Name, settings);
+                        string insert = string.IsNullOrEmpty(alias)
+                            ? colInsert
+                            : FormatIdentifier(alias, settings) + "." + colInsert;
+                        insertParts.Add(insert);
+                        displayParts.Add(col.Name);
+                    }
+                    if (insertParts.Count == 0) continue;
+                    string insertText = string.Join(", ", insertParts);
+                    string displayText = TruncateColumnListDisplay(displayParts, 56);
+                    string desc = "全部列 (" + insertParts.Count + ")\n选中后展开为逗号分隔的列清单";
+                    var item = new CompletionItem(displayText, insertText, CompletionKind.AllColumns, desc);
+                    item.SourceDatabase = ResolveSourceDatabase(kv.Value, catalog, connInfo);
+                    item.SourceTable = FormatSourceTable(tcol, kv.Value);
+                    items.Add(item);
+                }
+            }
+
+            private static string TruncateColumnListDisplay(List<string> columnNames, int maxLen)
+            {
+                if (columnNames == null || columnNames.Count == 0) return string.Empty;
+                var sb = new StringBuilder();
+                for (int i = 0; i < columnNames.Count; i++)
+                {
+                    string part = columnNames[i];
+                    if (i > 0)
+                    {
+                        if (sb.Length + 2 + part.Length > maxLen)
+                        {
+                            sb.Append(", ...");
+                            break;
+                        }
+                        sb.Append(", ");
+                    }
+                    else if (part.Length > maxLen)
+                    {
+                        sb.Append(part.Substring(0, Math.Max(1, maxLen - 3))).Append("...");
+                        break;
+                    }
+                    sb.Append(part);
+                }
+                return sb.ToString();
             }
 
             private void AddBuiltInFunctions(List<CompletionItem> items)
@@ -3169,6 +3693,7 @@ namespace AxialSqlTools
             {
                 switch (kind)
                 {
+                    case CompletionKind.AllColumns: return -4; // 全字段置顶（类似 IDEA）
                     case CompletionKind.Column: return -3;
                     case CompletionKind.Procedure: return -2;
                     case CompletionKind.Database: return -1;
@@ -3206,6 +3731,21 @@ namespace AxialSqlTools
                 if (IsNumericOrIpPrefix(filterPrefix))
                 {
                     if (displayText.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 100;
+                    return 0;
+                }
+                // 全字段：空前缀已在外层保留；有前缀时任一列名前缀命中则保留（略低于精确列）
+                if (item != null && item.Kind == CompletionKind.AllColumns)
+                {
+                    if (displayText.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase))
+                        return 90;
+                    string insert = item.InsertText ?? string.Empty;
+                    foreach (var part in insert.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        string col = UnbracketIdentifier(GetLastSegment(part.Trim()));
+                        if (string.IsNullOrEmpty(col)) continue;
+                        if (col.Equals(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 95;
+                        if (col.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 90;
+                    }
                     return 0;
                 }
                 string name = displayText;
@@ -3564,11 +4104,13 @@ namespace AxialSqlTools
             {
                 // 正在输限定名下一段（dbo.|）时不夹 JOIN/WHERE
                 if (fromName != null && fromName.AfterDot) return false;
-                // 仍在敲 FROM 后第一个对象名：只提示表/库，勿夹 LEFT JOIN 等
-                if (fromName == null || fromName.Segments == null || fromName.Segments.Count == 0)
-                    return false;
-                // 已有表名后再提示 JOIN / WHERE / GROUP BY（如 FROM dbo.t gr）
-                return !string.IsNullOrEmpty(prefix);
+                if (string.IsNullOrEmpty(prefix)) return false;
+                if (fromName == null || !fromName.InFromClause) return false;
+                // 已有表名后再提示 JOIN / WHERE（如 FROM dbo.t gr）
+                if (fromName.Segments != null && fromName.Segments.Count > 0)
+                    return true;
+                // JOIN ON 后换行 in|：Segments 可能仍空，但前缀已是 JOIN/WHERE 类
+                return IsFromJoinOrClausePrefix(prefix);
             }
 
             private sealed class BuiltInFunctionInfo

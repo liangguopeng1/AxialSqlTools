@@ -10,7 +10,7 @@ namespace AxialSqlTools
     /// </summary>
     public static class BuildInfo
     {
-        public const string BuildTime = "2026-08-07 08:29:29";
+        public const string BuildTime = "2026-08-07 16:33:54";
 
         public static string AssemblyVersion
         {

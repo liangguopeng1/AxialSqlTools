@@ -39,15 +39,24 @@ namespace AxialSqlTools
         /// 禁止在 IOleCommandTarget.Exec 同步路径上 new KeyHandler（第二个标签首次按键会卡死退出）。
         /// 一律排到 ApplicationIdle 再建。
         /// </summary>
-        private void ScheduleEnsureIntelliSense()
+        private void ScheduleEnsureIntelliSense(bool warmupAfterCreate = false)
         {
-            if (_intelliSense != null || _intelliSenseInitTried || _intelliSenseInitPending) return;
+            if (_intelliSense != null)
+                return;
+            if (_intelliSenseInitTried || _intelliSenseInitPending)
+            {
+                if (warmupAfterCreate)
+                    _pendingPasteWarmup = true;
+                return;
+            }
             if (!UiSettingsStore.GetIntelliSenseEnabled())
             {
                 _intelliSenseInitTried = true;
                 return;
             }
             _intelliSenseInitPending = true;
+            if (warmupAfterCreate)
+                _pendingPasteWarmup = true;
             try
             {
                 var dispatcher = System.Windows.Application.Current?.Dispatcher
@@ -63,6 +72,11 @@ namespace AxialSqlTools
                         _logger.Info("IntelliSense KeyHandler created ok");
                         // 首次按键时 Handler 尚未就绪，补一次自动触发调度
                         _intelliSense.MaybeScheduleAutoTrigger((uint)VSConstants.VSStd2KCmdID.TYPECHAR);
+                        if (_pendingPasteWarmup)
+                        {
+                            _pendingPasteWarmup = false;
+                            SchedulePasteCatalogWarmup();
+                        }
                         LogManager.Flush();
                     }
                     catch (Exception ex)
@@ -85,11 +99,40 @@ namespace AxialSqlTools
             }
         }
 
+        private bool _pendingPasteWarmup;
+
+        /// <summary>粘贴完成后延迟扫描脚本并预热跨库缓存（等缓冲区写入完成）。</summary>
+        private void SchedulePasteCatalogWarmup()
+        {
+            try
+            {
+                var dispatcher = System.Windows.Application.Current?.Dispatcher
+                    ?? Dispatcher.CurrentDispatcher;
+                dispatcher.BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        _intelliSense?.ScheduleCatalogWarmupFromDocument();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warn(ex, "Paste catalog warmup failed");
+                    }
+                }), DispatcherPriority.ApplicationIdle);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "SchedulePasteCatalogWarmup failed");
+            }
+        }
+
         public int Exec(ref Guid cmdGroup, uint nCmdID, uint nCmdexecopt, IntPtr pvaIn, IntPtr pvaOut)
         {
             // 首次有实际输入/补全相关命令时再初始化，避开新建标签的创建窗口窗口期
+            bool isPaste = IsPasteCommand(cmdGroup, nCmdID);
             bool mayNeedIntelliSense =
-                cmdGroup == VSConstants.VSStd2K &&
+                isPaste ||
+                (cmdGroup == VSConstants.VSStd2K &&
                 (nCmdID == (uint)VSConstants.VSStd2KCmdID.TYPECHAR
                  || nCmdID == (uint)VSConstants.VSStd2KCmdID.BACKSPACE
                  || nCmdID == (uint)VSConstants.VSStd2KCmdID.DELETE
@@ -97,9 +140,9 @@ namespace AxialSqlTools
                  || nCmdID == (uint)VSConstants.VSStd2KCmdID.SHOWMEMBERLIST
                  || nCmdID == (uint)VSConstants.VSStd2KCmdID.RETURN
                  || nCmdID == (uint)VSConstants.VSStd2KCmdID.TAB
-                 || nCmdID == (uint)VSConstants.VSStd2KCmdID.CANCEL);
+                 || nCmdID == (uint)VSConstants.VSStd2KCmdID.CANCEL));
             if (mayNeedIntelliSense)
-                ScheduleEnsureIntelliSense();
+                ScheduleEnsureIntelliSense(warmupAfterCreate: isPaste);
 
             if (IntelliSenseManager.IsExecuteCommand(cmdGroup, nCmdID))
             {
@@ -181,7 +224,11 @@ namespace AxialSqlTools
                 _intelliSense.MaybeScheduleAutoTrigger(nCmdID, typed);
             }
 
-            return nextCommandTarget?.Exec(ref cmdGroup, nCmdID, nCmdexecopt, pvaIn, pvaOut) ?? VSConstants.S_OK;
+            int hr = nextCommandTarget?.Exec(ref cmdGroup, nCmdID, nCmdexecopt, pvaIn, pvaOut) ?? VSConstants.S_OK;
+            // 粘贴完成后预热：须在 Exec 之后，缓冲区才有新文本
+            if (isPaste)
+                SchedulePasteCatalogWarmup();
+            return hr;
         }
 
         private bool IsSupportedKey(uint nCmdID)
@@ -196,6 +243,17 @@ namespace AxialSqlTools
         {
             return cmdGroup == typeof(VSConstants.VSStd97CmdID).GUID
                 && nCmdID == (uint)VSConstants.VSStd97CmdID.Copy;
+        }
+
+        private static bool IsPasteCommand(Guid cmdGroup, uint nCmdID)
+        {
+            if (cmdGroup == typeof(VSConstants.VSStd97CmdID).GUID
+                && nCmdID == (uint)VSConstants.VSStd97CmdID.Paste)
+                return true;
+            // 部分宿主走 OLE / VSStd2K
+            if (cmdGroup == VSConstants.VSStd2K && nCmdID == (uint)VSConstants.VSStd2KCmdID.PASTE)
+                return true;
+            return false;
         }
 
         private bool ShouldProcessSnippetKey(uint nCmdID)

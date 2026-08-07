@@ -22,7 +22,13 @@ $get = $engineType.GetMethod('GetCompletion')
 
 $cases = New-Object System.Collections.Generic.List[object]
 function Add-Case([string]$name, [string]$sql, [string[]]$expect, [string]$ctx = '', [string[]]$mustNot = @()) {
-    [void]$script:cases.Add([pscustomobject]@{ Name = $name; Sql = $sql; Expect = $expect; Ctx = $ctx; MustNot = $mustNot })
+    $caret = $sql.Length
+    $marker = $sql.IndexOf('|')
+    if ($marker -ge 0) {
+        $caret = $marker
+        $sql = $sql.Remove($marker, 1)
+    }
+    [void]$script:cases.Add([pscustomobject]@{ Name = $name; Sql = $sql; Expect = $expect; Ctx = $ctx; MustNot = $mustNot; Caret = $caret })
 }
 
 Add-Case '01' 's' @('SELECT') 'BatchStart'; Add-Case '02' 'se' @('SELECT') 'BatchStart'; Add-Case '03' 'in' @('INSERT') 'BatchStart'
@@ -97,22 +103,87 @@ Add-Case '112' 'SELECT json_v' @('JSON_VALUE') 'SelectElements'
 Add-Case '113' 'SELECT abs' @('ABS') 'SelectElements'
 Add-Case '114' 'SELECT datedi' @('DATEDIFF') 'SelectElements'
 Add-Case '115' 'SELECT * FROM t WHERE try_con' @('TRY_CONVERT') 'WhereClause'
+# 行首 in/ord：跨行表别名后仍提示 JOIN / ORDER BY
+Add-Case '116' ("SELECT aa.* FROM huizong.dbo.tab_dingdan aa" + [char]10 + "in") @('INNER JOIN') 'FromClause'
+Add-Case '117' ("SELECT aa.* FROM huizong.dbo.tab_dingdan aa" + [char]10 + "where aa.x = 1" + [char]10 + "ord") @('ORDER BY') 'WhereClause'
+Add-Case '118' ("SELECT * FROM t aa" + [char]10 + "le") @('LEFT JOIN') 'FromClause'
+Add-Case '119' ("SELECT * FROM t" + [char]10 + "where x=1 and y=2" + [char]10 + "ord") @('ORDER BY') 'WhereClause'
+# 多表 JOIN ON 后再写 in → INNER JOIN（勿落成 WhereClause 的 IN）
+Add-Case '120' ("SELECT bb.* FROM a aa" + [char]10 + "inner join b bb on aa.id = bb.id" + [char]10 + "in") @('INNER JOIN') 'FromClause'
+Add-Case '121' 'SELECT * FROM a aa INNER JOIN b bb ON aa.id=bb.id in' @('INNER JOIN') 'FromClause'
+Add-Case '122' ("SELECT * FROM a aa INNER JOIN b bb ON aa.id=bb.id and aa.x=1" + [char]10 + "in") @('INNER JOIN') 'FromClause'
+Add-Case '123' ("SELECT * FROM a aa INNER JOIN b bb ON aa.id=bb.id" + [char]10 + "wh") @('WHERE') 'FromClause'
+# 无分号时行首新开 SELECT（勿被 ORDER BY 上下文 + SESSION_USER 抢走）
+Add-Case '124' ("SELECT * FROM t" + [char]10 + "order by id" + [char]10 + [char]10 + "se") @('SELECT') 'BatchStart'
+Add-Case '125' ("SELECT * FROM t where x=1" + [char]10 + [char]10 + "se") @('SELECT') 'BatchStart'
+Add-Case '126' ("SELECT * FROM t" + [char]10 + "order by id" + [char]10 + "ord") @('ORDER BY') 'OrderByGroupBy'
+# 无分号 ORDER BY 后行首 ss → 片段 ssf（勿掉进 OrderByGroupBy）
+Add-Case '127' ("SELECT * FROM t" + [char]10 + "order by id" + [char]10 + [char]10 + "ss") @('ssf') 'BatchStart'
+# JOIN ON 多条件 and alias. → 列（MemberAccess）
+Add-Case '128' 'SELECT * FROM a aa INNER JOIN b bb ON aa.id = bb.id and aa.' @() 'MemberAccess'
+Add-Case '129' ("SELECT * FROM a aa" + [char]10 + "INNER JOIN b bb ON aa.id = bb.id and bb.") @() 'MemberAccess'
+Add-Case '130' 'SELECT * FROM a aa INNER JOIN b bb ON aa.id = bb.id and aa.x = 1 in' @('INNER JOIN') 'FromClause'
+# 仅 FROM 后无 WHERE/ORDER：行首 ss/se 开新句；in/wh 仍续写
+Add-Case '131' ("SELECT * FROM rt_fenjian..FJ_Daitui_Items" + [char]10 + [char]10 + "ss") @('ssf') 'BatchStart'
+Add-Case '132' ("SELECT * FROM t" + [char]10 + [char]10 + "se") @('SELECT') 'BatchStart'
+Add-Case '133' ("SELECT * FROM t" + [char]10 + "in") @('INNER JOIN') 'FromClause'
+Add-Case '134' ("SELECT * FROM t" + [char]10 + "wh") @('WHERE') 'FromClause'
+Add-Case '135' ("SELECT * FROM a" + [char]10 + "inner join b on a.id=b.id" + [char]10 + [char]10 + "ss") @('ssf') 'BatchStart'
+Add-Case '136' ("SELECT * FROM t" + [char]10 + [char]10 + "up") @('UPDATE') 'BatchStart'
+# 上一句无分号时，新 SELECT * fro → FROM，勿串上一句列
+Add-Case '137' ("SELECT * FROM t where x=1 order by x" + [char]10 + [char]10 + "SELECT * fro") @('FROM') 'SelectElements'
+Add-Case '138' ("SELECT a.F_PrimaryCode FROM dbo.CGD_NeiPei_Items a" + [char]10 + [char]10 + "SELECT * fro") @('FROM') 'SelectElements'
+Add-Case '139' ("SELECT * FROM t where x=1;" + [char]10 + "SELECT * fro") @('FROM') 'SelectElements'
+Add-Case '140' 'SELECT * fro' @('FROM') 'SelectElements'
+# 全字段（AllColumns）：需注入元数据目录；| 表示光标
+Add-Case '141' 'SELECT | FROM dbo.DemoT' @() 'SelectElements'
+Add-Case '142' 'INSERT INTO dbo.DemoT (|' @() 'InsertColumnList'
+Add-Case '143' 'INSERT INTO dbo.DemoT (id, |' @() 'InsertColumnList'
+Add-Case '144' 'INSERT INTO dbo.DemoT VALUES (|' @() 'InsertTarget'
 
 Write-Host "Cases=$($cases.Count)"
+
+# 供全字段用例使用的假目录
+$catalogType = $asm.GetType('AxialSqlTools.IntelliSense.MetadataCatalog')
+$tableType = $asm.GetType('AxialSqlTools.IntelliSense.TableColumnInfo')
+$colType = $asm.GetType('AxialSqlTools.IntelliSense.ColumnInfo')
+$mockCatalog = [Activator]::CreateInstance($catalogType)
+$mockCatalog.Database = 'RtBase'
+$demo = [Activator]::CreateInstance($tableType)
+$demo.Schema = 'dbo'
+$demo.Name = 'DemoT'
+foreach ($cn in @('id','k_id','h_id','CreateRen')) {
+    $col = [Activator]::CreateInstance($colType)
+    $col.Name = $cn
+    $col.DataType = 'int'
+    [void]$demo.Columns.Add($col)
+}
+[void]$mockCatalog.Tables.Add($demo)
+
 $fail = New-Object System.Collections.Generic.List[string]
 $pass = 0
 foreach ($c in $cases) {
     $e = [Activator]::CreateInstance($engineType)
     $s = [Activator]::CreateInstance($settingsType)
     $s.includeKeywords = $true
+    $useCatalog = $c.Name -in @('141','142','143','144')
+    $cat = if ($useCatalog) { $mockCatalog } else { $null }
     try {
-        $r = $get.Invoke($e, @($c.Sql, $c.Sql.Length, $null, $s, $null))
+        $r = $get.Invoke($e, @($c.Sql, $c.Caret, $cat, $s, $null))
     } catch {
         [void]$fail.Add("$($c.Name) EX=$($_.Exception.Message)")
         continue
     }
     $n = New-Object System.Collections.Generic.List[string]
-    if ($r.Items) { foreach ($it in $r.Items) { [void]$n.Add([string]$it.DisplayText) } }
+    $kinds = New-Object System.Collections.Generic.List[string]
+    $allInsert = $null
+    if ($r.Items) {
+        foreach ($it in $r.Items) {
+            [void]$n.Add([string]$it.DisplayText)
+            [void]$kinds.Add([string]$it.Kind)
+            if ([string]$it.Kind -eq 'AllColumns') { $allInsert = [string]$it.InsertText }
+        }
+    }
     $ok = $true
     $why = ''
     if ($c.Ctx -and $r.Context.ToString() -ne $c.Ctx) { $ok = $false; $why = "ctx=$($r.Context)" }
@@ -126,10 +197,23 @@ foreach ($c in $cases) {
     foreach ($mn in $c.MustNot) {
         if ($mn -and $n.Contains($mn)) { $ok = $false; $why = "has $mn" }
     }
+    if ($useCatalog -and $c.Name -ne '144') {
+        if (-not $kinds.Contains('AllColumns')) {
+            $ok = $false
+            $why = "miss AllColumns kinds=[$($kinds | Select-Object -First 10)]"
+        } elseif ($allInsert -notmatch 'id' -or $allInsert -notmatch 'k_id' -or $allInsert -notmatch 'CreateRen') {
+            $ok = $false
+            $why = "AllColumns insert incomplete: $allInsert"
+        }
+    }
+    if ($c.Name -eq '144' -and $kinds.Contains('AllColumns')) {
+        $ok = $false
+        $why = 'VALUES should not have AllColumns'
+    }
     if ($ok) { $pass++ } else { [void]$fail.Add("$($c.Name) $why prefix=[$($r.Prefix)]") }
 }
 Write-Host "PASS=$pass FAIL=$($fail.Count)"
 $fail | ForEach-Object { Write-Host "  $_" }
 if ($fail.Count -gt 0) { exit 1 }
-Write-Host 'ALL 100 PASS'
+Write-Host "ALL $($cases.Count) PASS"
 exit 0

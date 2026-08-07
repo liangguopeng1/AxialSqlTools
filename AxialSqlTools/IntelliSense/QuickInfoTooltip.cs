@@ -55,11 +55,15 @@ namespace AxialSqlTools.IntelliSense
         /// <summary>用户已点击弹框：移开鼠标不关闭，点其他地方才关。</summary>
         public static bool IsPinned => _isPinned && _isOpen;
 
-        /// <summary>应保持打开：已钉住 / 正在缩放 / 右键菜单 / 鼠标在弹框上。</summary>
+        /// <summary>应保持打开：已钉住 / 正在缩放 / 右键菜单 / 鼠标在弹框上。
+        /// 切走文档后由编辑器 timer 在「不在编辑器且不在弹框」时强制关闭。</summary>
         public static bool ShouldKeepOpen =>
             _isOpen && (_isPinned || _isResizing || _contextMenuOpen
                 || DateTime.UtcNow < _suppressDeactivateCloseUntil
                 || IsMouseOverPopup());
+
+        /// <summary>指针是否在悬停弹框上（供编辑器 timer 判断是否离开）。</summary>
+        public static bool IsPointerOverPopup() => IsMouseOverPopup();
 
         /// <summary>当前弹框是否由指定悬停源打开（多标签共用一个弹框时防互关闪烁）。</summary>
         public static bool IsOwnedBy(object owner) =>

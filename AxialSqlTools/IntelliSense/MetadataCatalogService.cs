@@ -108,6 +108,101 @@ namespace AxialSqlTools
                 });
             }
 
+            /// <summary>
+            /// 扫描脚本中的三段名 / db..table，后台预热当前库 + 引用到的跨库目录。
+            /// 粘贴整段 SQL 后调用，避免悬停/补全时跨库缓存尚未加载。
+            /// </summary>
+            public void EnsureCatalogsReferencedInSql(ScriptFactoryAccess.ConnectionInfo connInfo, string sql)
+            {
+                if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
+                    return;
+                EnsureCatalogBuilding(connInfo);
+                if (string.IsNullOrEmpty(sql)) return;
+                foreach (var db in ExtractReferencedDatabaseNames(sql))
+                {
+                    if (string.IsNullOrEmpty(db)) continue;
+                    if (string.Equals(db, connInfo.Database, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    EnsureCatalogBuilding(connInfo, db);
+                }
+            }
+
+            /// <summary>从 SQL 提取可能的库名（db.schema.obj / db..obj / [db].[schema].[obj]）。</summary>
+            internal static List<string> ExtractReferencedDatabaseNames(string sql)
+            {
+                var result = new List<string>();
+                if (string.IsNullOrEmpty(sql)) return result;
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                // db.schema.obj 或 [db].[schema].[obj]
+                foreach (Match m in ThreePartNameRegex.Matches(sql))
+                {
+                    string db = UnbracketSqlIdent(m.Groups["db"].Value);
+                    if (IsPlausibleDatabaseName(db) && seen.Add(db))
+                        result.Add(db);
+                }
+                // db..obj
+                foreach (Match m in DoubleDotNameRegex.Matches(sql))
+                {
+                    string db = UnbracketSqlIdent(m.Groups["db"].Value);
+                    if (IsPlausibleDatabaseName(db) && seen.Add(db))
+                        result.Add(db);
+                }
+                return result;
+            }
+
+            private static readonly Regex ThreePartNameRegex = new Regex(
+                @"\[?(?<db>[A-Za-z_@#][\w@#$]*)\]?\s*\.\s*\[?(?<schema>[A-Za-z_@#][\w@#$]*)\]?\s*\.\s*\[?(?<obj>[A-Za-z_@#][\w@#$]*)\]?",
+                RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+            private static readonly Regex DoubleDotNameRegex = new Regex(
+                @"\[?(?<db>[A-Za-z_@#][\w@#$]*)\]?\s*\.\.\s*\[?(?<obj>[A-Za-z_@#][\w@#$]*)\]?",
+                RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+            private static string UnbracketSqlIdent(string text)
+            {
+                if (string.IsNullOrEmpty(text)) return text;
+                if (text.Length >= 2 && text[0] == '[' && text[text.Length - 1] == ']')
+                    return text.Substring(1, text.Length - 2);
+                return text;
+            }
+
+            private static bool IsPlausibleDatabaseName(string name)
+            {
+                if (string.IsNullOrEmpty(name) || name.Length > 128) return false;
+                switch (name.ToUpperInvariant())
+                {
+                    case "SELECT":
+                    case "FROM":
+                    case "JOIN":
+                    case "INNER":
+                    case "LEFT":
+                    case "RIGHT":
+                    case "FULL":
+                    case "CROSS":
+                    case "OUTER":
+                    case "WHERE":
+                    case "ON":
+                    case "AND":
+                    case "OR":
+                    case "INSERT":
+                    case "UPDATE":
+                    case "DELETE":
+                    case "INTO":
+                    case "VALUES":
+                    case "SET":
+                    case "EXEC":
+                    case "EXECUTE":
+                    case "WITH":
+                    case "AS":
+                    case "NULL":
+                    case "SYS":
+                    case "INFORMATION_SCHEMA":
+                        return false;
+                    default:
+                        return true;
+                }
+            }
+
             /// <summary>取或构建目录。connInfo 为当前活动连接；dbOverride 用于三段名跨库。</summary>
             /// <param name="requireRoutines">为 true 时，若缓存缺 RoutinesLoaded 则只补过程，不丢弃表缓存（供 EXEC）。</param>
             public MetadataCatalog GetOrBuildCatalog(

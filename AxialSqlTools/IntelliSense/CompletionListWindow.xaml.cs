@@ -453,6 +453,7 @@ namespace AxialSqlTools.IntelliSense
             switch (kind)
             {
                 case CompletionKind.Column: return Color.FromRgb(0x2B, 0x7C, 0xD3);
+                case CompletionKind.AllColumns: return Color.FromRgb(0x15, 0x65, 0xC0);
                 case CompletionKind.Table: return Color.FromRgb(0x2E, 0x7D, 0x32);
                 case CompletionKind.View: return Color.FromRgb(0x00, 0x89, 0x7B);
                 case CompletionKind.Database: return Color.FromRgb(0xEF, 0x6C, 0x00);

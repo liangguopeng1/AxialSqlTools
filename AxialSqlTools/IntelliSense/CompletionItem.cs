@@ -37,6 +37,7 @@ namespace AxialSqlTools
                     case CompletionKind.Table: return "T";
                     case CompletionKind.View: return "V";
                     case CompletionKind.Column: return "C";
+                    case CompletionKind.AllColumns: return "≡";
                     case CompletionKind.Procedure: return "P";
                     case CompletionKind.ScalarFunction: return "F";
                     case CompletionKind.TableFunction: return "F";
@@ -57,6 +58,7 @@ namespace AxialSqlTools
                     case CompletionKind.Table: return "表";
                     case CompletionKind.View: return "视图";
                     case CompletionKind.Column: return "列";
+                    case CompletionKind.AllColumns: return "全部列";
                     case CompletionKind.Procedure: return "存储过程";
                     case CompletionKind.ScalarFunction: return "函数";
                     case CompletionKind.TableFunction: return "表值函数";
@@ -99,6 +101,7 @@ namespace AxialSqlTools
             Table,
             View,
             Column,
+            AllColumns,          // 展开表全部列（逗号分隔）
             Procedure,
             ScalarFunction,
             TableFunction,
@@ -122,6 +125,7 @@ namespace AxialSqlTools
             MemberAccess,        // schema.name. 或 alias.
             AfterExec,           // EXEC / EXECUTE 后
             InsertTarget,        // INSERT INTO 后
+            InsertColumnList,    // INSERT INTO t (|) 列清单
             UpdateTarget,        // UPDATE 后、SET 前
             DeleteTarget,        // DELETE FROM 后
             WhereClause,         // WHERE / ON / HAVING / AND / OR 后

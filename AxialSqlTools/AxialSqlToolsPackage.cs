@@ -725,16 +725,31 @@ namespace AxialSqlTools
 
         private static bool ShouldCloseIntelliSensePopups(EnvDTE.Window gotFocus, EnvDTE.Window lostFocus)
         {
-            // 无 LostFocus：应用内焦点抖动（如弹出补全窗），不关
-            if (lostFocus == null) return false;
             try
             {
-                if (gotFocus != null && gotFocus == lostFocus) return false;
+                if (gotFocus != null && lostFocus != null && gotFocus == lostFocus)
+                    return false;
+                // 设置等工具窗：即使 LostFocus 为空也要关（菜单打开时常见）
+                if (gotFocus != null)
+                {
+                    string kind = null;
+                    try { kind = gotFocus.Kind; } catch { }
+                    if (!string.Equals(kind, "Document", StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                // 文档 ↔ 文档切换
+                if (lostFocus != null && gotFocus != null)
+                    return true;
+                // 文档失焦
+                if (lostFocus != null)
+                    return true;
             }
             catch
             {
+                return true;
             }
-            return true;
+            // lostFocus 为空且仍是文档：可能是补全窗焦点抖动，不关
+            return false;
         }
 
         private void WindowClosing_Event(EnvDTE.Window Window)

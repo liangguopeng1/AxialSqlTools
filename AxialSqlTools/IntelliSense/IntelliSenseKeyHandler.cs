@@ -582,6 +582,8 @@ namespace AxialSqlTools.IntelliSense
                 MetadataCatalog catalog = null;
                 if (connInfo != null)
                 {
+                    // 粘贴/打开的跨库 SQL：预热 rt_fenjian / rt_kucun 等引用库
+                    MetadataCatalogService.Instance.EnsureCatalogsReferencedInSql(connInfo, text);
                     bool likelyExec = LooksLikeExecContext(text, caret);
                     catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo);
                     if (catalog == null || (likelyExec && !catalog.RoutinesLoaded))
@@ -807,6 +809,38 @@ namespace AxialSqlTools.IntelliSense
             if (endLine != line) return false;
 
             return SnippetExpansionHelper.TryExpandInView(_textView, line, wordStart, wordEnd, snippet);
+        }
+
+        /// <summary>粘贴整段 SQL 后：扫描跨库引用并后台预热元数据缓存。</summary>
+        public void ScheduleCatalogWarmupFromDocument()
+        {
+            try
+            {
+                var settings = UiSettingsStore.GetIntelliSenseSettings();
+                if (!settings.enabled) return;
+                string text = GetFullText();
+                var connInfo = SafeGetCurrentConnection();
+                if (connInfo == null || string.IsNullOrWhiteSpace(text)) return;
+                _logger.Info("Catalog warmup from document len={0} db={1}", text.Length, connInfo.Database);
+                // 拷贝连接信息，避免后台线程读 UI 状态
+                var snap = connInfo;
+                var sql = text;
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    try
+                    {
+                        MetadataCatalogService.Instance.EnsureCatalogsReferencedInSql(snap, sql);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warn(ex, "Catalog warmup from document failed");
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "ScheduleCatalogWarmupFromDocument failed");
+            }
         }
 
         private string GetTextAtReplaceRange()
