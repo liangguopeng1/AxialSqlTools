@@ -3796,8 +3796,20 @@ namespace AxialSqlTools
                     || item.Kind == CompletionKind.ScalarFunction))
                     return 0;
 
-                // 短前缀不做缩写/包含匹配，避免 aa 命中 CreateDate、a 命中大量列
-                if (filterPrefix.Length <= 2)
+                // 下划线段前缀：rt_fenjian ← fe（≥2 即可；单字母仍不做，避免 a 扫到过多段）
+                if (filterPrefix.Length >= 2)
+                {
+                    var segments = name.Split(new[] { '_' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var seg in segments)
+                    {
+                        if (seg.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 60;
+                    }
+                }
+
+                // 短前缀不做缩写/包含匹配，避免 aa 命中 CreateDate、a 命中大量列；
+                // 数据库通常很少（十几个），不设此限制。
+                if (filterPrefix.Length <= 2
+                    && (item == null || item.Kind != CompletionKind.Database))
                     return 0;
 
                 if (name.IndexOf(filterPrefix, StringComparison.OrdinalIgnoreCase) >= 0) return 80;
@@ -3811,10 +3823,9 @@ namespace AxialSqlTools
                     if (MatchesAbbreviation(collapsedName, collapsedFilter)) return 50;
                 }
 
-                var segments = name.Split(new[] { '_' }, StringSplitOptions.RemoveEmptyEntries);
-                foreach (var seg in segments)
+                var segs = name.Split(new[] { '_' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var seg in segs)
                 {
-                    if (seg.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 60;
                     if (seg.IndexOf(filterPrefix, StringComparison.OrdinalIgnoreCase) >= 0) return 40;
                 }
                 return 0;

@@ -820,7 +820,7 @@ namespace AxialSqlTools.IntelliSense
         }
 
         private string GetFullText()
-        {
+        {ss
             if (_textView.GetBuffer(out IVsTextLines textLines) != S_OK) return string.Empty;
             textLines.GetLastLineIndex(out int lastLine, out int lastCol);
             var sb = new StringBuilder();
