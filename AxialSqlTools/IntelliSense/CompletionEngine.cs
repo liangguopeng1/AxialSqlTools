@@ -175,26 +175,37 @@ namespace AxialSqlTools
                     int caretTokenIndex = FindTokenIndexForPrefix(tokens, localOffset);
                     if (atLineStart && !string.IsNullOrEmpty(rawPrefix))
                     {
-                        bool hasFrom = HasFromKeywordBefore(tokens, localOffset) || hasFromRaw;
-                        result.Context = hasFrom && !afterStmtBreak
-                            ? CompletionContext.FromClause
-                            : CompletionContext.BatchStart;
-                        result.Prefix = rawPrefix;
-                        var fromNameEarly = hasFrom && !afterStmtBreak
-                            ? (hasFromRaw ? fromNameRaw : new FromObjectNameContext { InFromClause = true, Partial = rawPrefix })
+                        // 已越过 WHERE/GROUP 等时，新行上的 gr/or 是子句关键字，不能因有 FROM 锁死 FromClause
+                        int beforeIdx = FindTokenIndexBefore(tokens, localOffset);
+                        string nearKw = beforeIdx >= 0
+                            ? FindNearestClauseKeyword(tokens, beforeIdx, localOffset)
                             : null;
-                        if (result.Context == CompletionContext.FromClause)
+                        bool pastFromClause = nearKw == "WHERE" || nearKw == "HAVING" || nearKw == "ON"
+                            || nearKw == "GROUP" || nearKw == "ORDER"
+                            || nearKw == "UNION" || nearKw == "EXCEPT" || nearKw == "INTERSECT";
+                        if (!pastFromClause)
                         {
-                            result.Items = BuildItems(CompletionContext.FromClause, rawPrefix, fromNameEarly, local, catalog, settings, connInfo);
+                            bool hasFrom = HasFromKeywordBefore(tokens, localOffset) || hasFromRaw;
+                            result.Context = hasFrom && !afterStmtBreak
+                                ? CompletionContext.FromClause
+                                : CompletionContext.BatchStart;
+                            result.Prefix = rawPrefix;
+                            var fromNameEarly = hasFrom && !afterStmtBreak
+                                ? (hasFromRaw ? fromNameRaw : new FromObjectNameContext { InFromClause = true, Partial = rawPrefix })
+                                : null;
+                            if (result.Context == CompletionContext.FromClause)
+                            {
+                                result.Items = BuildItems(CompletionContext.FromClause, rawPrefix, fromNameEarly, local, catalog, settings, connInfo);
+                            }
+                            else
+                            {
+                                result.Items = BuildItems(CompletionContext.BatchStart, rawPrefix, null, local, catalog, settings, connInfo);
+                            }
+                            result.Items = FilterAndSort(result.Items, rawPrefix, settings, connInfo, fromNameEarly);
+                            result.ReplaceStartOffset = caretOffset - rawPrefix.Length;
+                            result.ReplaceEndOffset = caretOffset;
+                            return result;
                         }
-                        else
-                        {
-                            result.Items = BuildItems(CompletionContext.BatchStart, rawPrefix, null, local, catalog, settings, connInfo);
-                        }
-                        result.Items = FilterAndSort(result.Items, rawPrefix, settings, connInfo, fromNameEarly);
-                        result.ReplaceStartOffset = caretOffset - rawPrefix.Length;
-                        result.ReplaceEndOffset = caretOffset;
-                        return result;
                     }
 
                     // FROM 多段名（库.表 / 库.架构.表）须先于成员访问，否则 jichushuju.cip 会被当成别名.列
@@ -1267,11 +1278,20 @@ namespace AxialSqlTools
             private CompletionContext GetContext(List<TSqlParserToken> tokens, int localOffset, FromObjectNameContext fromName, out string prefix)
             {
                 prefix = ExtractPrefix(tokens, localOffset);
+                int caretTokenIndex = FindTokenIndexBefore(tokens, localOffset);
 
+                // FROM 目标名（含未闭合 [）优先；但若已越过 WHERE/GROUP/ORDER，不能再锁死 FromClause
                 if (fromName != null && fromName.InFromClause)
                 {
-                    prefix = fromName.Partial ?? string.Empty;
-                    return CompletionContext.FromClause;
+                    string nearKw = caretTokenIndex >= 0
+                        ? FindNearestClauseKeyword(tokens, caretTokenIndex, localOffset)
+                        : null;
+                    if (nearKw != "WHERE" && nearKw != "HAVING" && nearKw != "GROUP" && nearKw != "ORDER"
+                        && nearKw != "UNION" && nearKw != "EXCEPT" && nearKw != "INTERSECT")
+                    {
+                        prefix = fromName.Partial ?? string.Empty;
+                        return CompletionContext.FromClause;
+                    }
                 }
 
                 if (TryGetMemberAccessPrefix(tokens, localOffset, out string memberPrefix))
@@ -1289,8 +1309,6 @@ namespace AxialSqlTools
                 if (string.IsNullOrEmpty(prefix) && IsImmediatelyAfterClosedGroup(tokens, localOffset))
                     return CompletionContext.Unknown;
 
-                // 找光标前最近的非空白 token（FindTokenIndexBefore 已跳过空白）
-                int caretTokenIndex = FindTokenIndexBefore(tokens, localOffset);
                 if (caretTokenIndex < 0)
                 {
                     return CompletionContext.BatchStart;
@@ -1306,7 +1324,7 @@ namespace AxialSqlTools
 
                 // 越过表达式噪声（=1、列名、点号等）找到最近的子句关键字
                 // 否则 where col=1 an| 会落成 Unknown，a/an 不提示 AND
-                string kw = FindNearestClauseKeyword(tokens, caretTokenIndex);
+                string kw = FindNearestClauseKeyword(tokens, caretTokenIndex, localOffset);
 
                 switch (kw)
                 {
@@ -1650,14 +1668,29 @@ namespace AxialSqlTools
                     i--;
                 }
 
+                int parenDepth = 0;
                 while (i >= 0)
                 {
                     while (i >= 0 && IsInsignificantToken(tokens[i])) i--;
                     if (i < 0) break;
-                    if (tokens[i].Offset < lineStartOffset) break;
 
-                    if (tokens[i].TokenType == TSqlTokenType.Dot)
+                    var tok = tokens[i];
+                    if (tok.TokenType == TSqlTokenType.RightParenthesis)
                     {
+                        parenDepth++;
+                        i--;
+                        continue;
+                    }
+                    if (tok.TokenType == TSqlTokenType.LeftParenthesis)
+                    {
+                        if (parenDepth > 0) parenDepth--;
+                        i--;
+                        continue;
+                    }
+
+                    if (tok.TokenType == TSqlTokenType.Dot)
+                    {
+                        if (parenDepth > 0 || tok.Offset < lineStartOffset) { i--; continue; }
                         i--;
                         while (i >= 0 && IsInsignificantToken(tokens[i])) i--;
                         if (i >= 0 && tokens[i].TokenType == TSqlTokenType.Dot)
@@ -1666,7 +1699,8 @@ namespace AxialSqlTools
                             i--;
                             while (i >= 0 && IsInsignificantToken(tokens[i])) i--;
                         }
-                        if (i >= 0 && IsPartialObjectNameToken(tokens[i]))
+                        if (i >= 0 && parenDepth == 0 && tokens[i].Offset >= lineStartOffset
+                            && IsPartialObjectNameToken(tokens[i]))
                         {
                             parts.Insert(0, UnbracketIdentifier(tokens[i].Text));
                             i--;
@@ -1674,36 +1708,76 @@ namespace AxialSqlTools
                         continue;
                     }
 
-                    if (IsPartialObjectNameToken(tokens[i]))
+                    if (IsPartialObjectNameToken(tok) || IsWordLikeToken(tok))
                     {
-                        parts.Insert(0, UnbracketIdentifier(tokens[i].Text));
+                        string text = tok.Text?.ToUpperInvariant();
+                        if (parenDepth == 0 && IsFromClauseAnchorKeyword(text))
+                        {
+                            ctx.InFromClause = true;
+                            break;
+                        }
+                        if (parenDepth == 0 && IsFromScanStopKeyword(text))
+                            break;
+                        // 逗号：继续向前找 FROM（SELECT a,b FR 不能当 FROM 子句）
+                        if (parenDepth == 0 && text == ",")
+                        {
+                            i--;
+                            continue;
+                        }
+                        // 标识符段不跨行收集
+                        if (parenDepth == 0 && tok.Offset >= lineStartOffset && IsPartialObjectNameToken(tok))
+                        {
+                            parts.Insert(0, UnbracketIdentifier(tok.Text));
+                        }
                         i--;
                         continue;
                     }
 
-                    string text = tokens[i].Text?.ToUpperInvariant();
-                    if (text == ";" || text == "GO")
-                    {
+                    string sym = tok.Text?.ToUpperInvariant();
+                    if (sym == ";" || sym == "GO")
                         break;
-                    }
-                    if (text == "FROM" || text == "JOIN" || text == "APPLY" || text == ",")
-                    {
-                        ctx.InFromClause = true;
-                        break;
-                    }
-                    if (text == "SELECT" || text == "WHERE" || text == "SET" || text == "ON" ||
-                        text == "INTO" || text == "UPDATE" || text == "DELETE" || text == "INSERT" ||
-                        text == "EXEC" || text == "EXECUTE" || text == "USE" || text == "CREATE" || text == "ALTER")
-                    {
-                        break;
-                    }
-                    break;
+                    i--;
                 }
 
                 ctx.Segments = parts;
                 ctx.Partial = partial;
                 ctx.AfterDot = afterDot;
                 return ctx;
+            }
+
+            private static bool IsFromClauseAnchorKeyword(string text)
+            {
+                return text == "FROM" || text == "JOIN" || text == "APPLY";
+            }
+
+            private static bool IsFromScanStopKeyword(string text)
+            {
+                if (string.IsNullOrEmpty(text)) return false;
+                switch (text)
+                {
+                    case "SELECT":
+                    case "WHERE":
+                    case "SET":
+                    case "ON":
+                    case "INTO":
+                    case "UPDATE":
+                    case "DELETE":
+                    case "INSERT":
+                    case "EXEC":
+                    case "EXECUTE":
+                    case "USE":
+                    case "CREATE":
+                    case "ALTER":
+                    case "GROUP":
+                    case "ORDER":
+                    case "HAVING":
+                    case "UNION":
+                    case "EXCEPT":
+                    case "INTERSECT":
+                        return true;
+                    default:
+                        return false;
+                }
             }
 
             private int ComputeReplaceStartOffset(int batchStart, int localOffset, string prefix, FromObjectNameContext fromName, List<TSqlParserToken> tokens)
@@ -2004,16 +2078,36 @@ namespace AxialSqlTools
             /// <summary>
             /// 从光标 token 向前越过表达式（字面量/标识符/运算符），取最近的子句关键字。
             /// 例：WHERE cc.CreateDate=1 an| → WHERE。
+            /// 正在输入的词本身被标成关键字时（or→OR）跳过；括号内的 FROM/SELECT 不作为外层锚点。
             /// </summary>
-            private static string FindNearestClauseKeyword(List<TSqlParserToken> tokens, int caretTokenIndex)
+            private static string FindNearestClauseKeyword(List<TSqlParserToken> tokens, int caretTokenIndex, int localOffset)
             {
                 if (tokens == null || caretTokenIndex < 0) return null;
+                int parenDepth = 0;
                 for (int i = caretTokenIndex; i >= 0; i--)
                 {
                     var t = tokens[i];
                     if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.TokenType == TSqlTokenType.RightParenthesis)
+                    {
+                        parenDepth++;
+                        continue;
+                    }
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                    {
+                        if (parenDepth > 0) parenDepth--;
+                        continue;
+                    }
+                    if (parenDepth > 0) continue;
                     if (IsContextKeywordToken(t))
+                    {
+                        // 光标落在该词上（正在输入前缀）不当锚点：or| 可能是 ORDER BY
+                        if (IsWordLikeToken(t)
+                            && t.Offset < localOffset
+                            && t.Offset + t.Text.Length >= localOffset)
+                            continue;
                         return t.Text.ToUpperInvariant();
+                    }
                     string text = t.Text;
                     if (string.IsNullOrEmpty(text)) continue;
                     if (text == ";" || text.Equals("GO", StringComparison.OrdinalIgnoreCase))
@@ -2125,10 +2219,23 @@ namespace AxialSqlTools
                         break;
 
                     case CompletionContext.WhereClause:
+                        AddAliasCompletions(items, local, settings, prefix);
+                        AddColumnsFromFromAliases(items, catalog, local, settings, connInfo);
+                        AddBuiltInFunctions(items);
+                        if (settings.includeKeywords && !string.IsNullOrEmpty(prefix))
+                        {
+                            // 别名仅抑制 AND/OR 等运算符，不抑制 GROUP BY/WHERE 子句关键字
+                            if (!PrefixLooksLikeAlias(prefix, local))
+                                AddKeywords(items, WhereOperatorKeywords);
+                            AddKeywords(items, CaseKeywords);
+                            AddKeywords(items, AfterWhereKeywords);
+                        }
+                        break;
+
                     case CompletionContext.UpdateSet:
                         AddAliasCompletions(items, local, settings, prefix);
                         AddColumnsFromFromAliases(items, catalog, local, settings, connInfo);
-                        // 正在输入表别名（如 aa）时不要夹 AND/OR（a→AND 误匹配）
+                        AddBuiltInFunctions(items);
                         if (settings.includeKeywords && !string.IsNullOrEmpty(prefix)
                             && !PrefixLooksLikeAlias(prefix, local))
                             AddKeywords(items, OperatorKeywords);
@@ -2137,11 +2244,15 @@ namespace AxialSqlTools
                     case CompletionContext.OrderByGroupBy:
                         AddAliasCompletions(items, local, settings, prefix);
                         AddColumnsFromFromAliases(items, catalog, local, settings, connInfo);
+                        AddBuiltInFunctions(items);
                         if (settings.includeKeywords)
                         {
                             AddKeywords(items, GroupOrderByKeywords);
                             if (!string.IsNullOrEmpty(prefix) && !PrefixLooksLikeAlias(prefix, local))
+                            {
                                 AddKeywords(items, OperatorKeywords);
+                                AddKeywords(items, AfterGroupOrderKeywords);
+                            }
                         }
                         break;
 
@@ -2532,16 +2643,20 @@ namespace AxialSqlTools
                 AddLocalColumns(items, local, settings);
                 // 星号
                 items.Add(new CompletionItem("*", "*", CompletionKind.Column, "所有列"));
-                // 内建函数（常用）
+                // 内建函数与关键字解耦：关闭关键字提示时仍可补 ISNULL/CAST 等
+                AddBuiltInFunctions(items);
                 if (settings.includeKeywords)
-                {
-                    foreach (var fn in BuiltInFunctionInfos)
-                    {
-                        var item = new CompletionItem(fn.Name, fn.InsertText, CompletionKind.ScalarFunction, BuildBuiltInFunctionDescription(fn));
-                        item.SnippetCursorOffset = fn.CursorOffset;
-                        items.Add(item);
-                    }
                     AddKeywords(items, new[] { "CASE" });
+            }
+
+            private void AddBuiltInFunctions(List<CompletionItem> items)
+            {
+                if (items == null) return;
+                foreach (var fn in BuiltInFunctionInfos)
+                {
+                    var item = new CompletionItem(fn.Name, fn.InsertText, CompletionKind.ScalarFunction, BuildBuiltInFunctionDescription(fn));
+                    item.SnippetCursorOffset = fn.CursorOffset;
+                    items.Add(item);
                 }
             }
 
@@ -3058,13 +3173,13 @@ namespace AxialSqlTools
                     case CompletionKind.Procedure: return -2;
                     case CompletionKind.Database: return -1;
                     case CompletionKind.Keyword: return 0;
-                    case CompletionKind.Snippet: return 1;
-                    case CompletionKind.Table: return 2;
-                    case CompletionKind.View: return 3;
-                    case CompletionKind.Synonym: return 4;
-                    case CompletionKind.TableFunction: return 5;
-                    case CompletionKind.Schema: return 6;
-                    case CompletionKind.ScalarFunction: return 7;
+                    case CompletionKind.ScalarFunction: return 1; // 有前缀时靠 GetMatchScore；空前缀紧随关键字，避免被表挤掉
+                    case CompletionKind.Snippet: return 2;
+                    case CompletionKind.Table: return 3;
+                    case CompletionKind.View: return 4;
+                    case CompletionKind.Synonym: return 5;
+                    case CompletionKind.TableFunction: return 6;
+                    case CompletionKind.Schema: return 7;
                     default: return 10;
                 }
             }
@@ -3121,13 +3236,20 @@ namespace AxialSqlTools
                 {
                     return item != null && item.Kind == CompletionKind.Snippet ? 110 : 100;
                 }
-                if (name.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 100;
+                if (name.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    // 子句关键字略高于 CASE 片段：wh → WHERE 优先于 WHEN
+                    if (item != null && item.Kind == CompletionKind.Keyword && IsClauseTrailingKeyword(name))
+                        return 105;
+                    return 100;
+                }
                 // 多词关键字：in → INNER JOIN、group → GROUP BY
                 if (item != null && item.Kind == CompletionKind.Keyword && name.IndexOf(' ') >= 0)
                 {
                     int sp = name.IndexOf(' ');
                     string first = sp > 0 ? name.Substring(0, sp) : name;
-                    if (first.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 95;
+                    if (first.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase))
+                        return IsClauseTrailingKeyword(name) ? 100 : 95;
                 }
                 // 片段/关键字/内建函数只做前缀匹配，避免 pr 命中 DATEPART 等缩写误匹配
                 if (item != null && (item.Kind == CompletionKind.Snippet || item.Kind == CompletionKind.Keyword
@@ -3156,6 +3278,38 @@ namespace AxialSqlTools
                     if (seg.IndexOf(filterPrefix, StringComparison.OrdinalIgnoreCase) >= 0) return 40;
                 }
                 return 0;
+            }
+
+            private static bool IsClauseTrailingKeyword(string name)
+            {
+                if (string.IsNullOrEmpty(name)) return false;
+                switch (name.ToUpperInvariant())
+                {
+                    case "WHERE":
+                    case "HAVING":
+                    case "GROUP BY":
+                    case "ORDER BY":
+                    case "UNION":
+                    case "UNION ALL":
+                    case "EXCEPT":
+                    case "INTERSECT":
+                    case "JOIN":
+                    case "INNER JOIN":
+                    case "LEFT JOIN":
+                    case "RIGHT JOIN":
+                    case "FULL JOIN":
+                    case "CROSS JOIN":
+                    case "LEFT OUTER JOIN":
+                    case "RIGHT OUTER JOIN":
+                    case "FULL OUTER JOIN":
+                    case "CROSS APPLY":
+                    case "OUTER APPLY":
+                    case "DISTINCT":
+                    case "TOP":
+                        return true;
+                    default:
+                        return false;
+                }
             }
 
             private static string CollapseForMatch(string text)
@@ -3365,6 +3519,21 @@ namespace AxialSqlTools
                 "UNION", "UNION ALL", "EXCEPT", "INTERSECT"
             };
 
+            /// <summary>WHERE/HAVING/ON 条件之后可接的子句关键字。</summary>
+            public static readonly string[] AfterWhereKeywords =
+            {
+                "WHERE", // ON/JOIN 条件后常见；WHERE 后再输 wh 也会匹配，可接受
+                "GROUP BY", "ORDER BY", "HAVING",
+                "UNION", "UNION ALL", "EXCEPT", "INTERSECT"
+            };
+
+            /// <summary>GROUP BY / ORDER BY 列表之后可接的子句关键字。</summary>
+            public static readonly string[] AfterGroupOrderKeywords =
+            {
+                "HAVING", "ORDER BY",
+                "UNION", "UNION ALL", "EXCEPT", "INTERSECT"
+            };
+
             public static readonly string[] CreateObjectKeywords =
             {
                 "TABLE", "VIEW", "PROCEDURE", "FUNCTION", "INDEX", "SCHEMA", "TYPE", "TRIGGER"
@@ -3378,6 +3547,17 @@ namespace AxialSqlTools
             public static readonly string[] OperatorKeywords =
             {
                 "AND", "OR", "NOT", "IN", "BETWEEN", "LIKE", "IS", "NULL", "EXISTS", "CASE", "WHEN", "THEN", "ELSE", "END"
+            };
+
+            /// <summary>WHERE/HAVING/ON 条件运算符（不含 CASE/WHEN，避免 wh→WHEN 压过 WHERE）。</summary>
+            public static readonly string[] WhereOperatorKeywords =
+            {
+                "AND", "OR", "NOT", "IN", "BETWEEN", "LIKE", "IS", "NULL", "EXISTS"
+            };
+
+            public static readonly string[] CaseKeywords =
+            {
+                "CASE", "WHEN", "THEN", "ELSE", "END"
             };
 
             private static bool ShouldSuggestAfterFromKeywords(FromObjectNameContext fromName, string prefix)
@@ -3400,24 +3580,73 @@ namespace AxialSqlTools
                 public string[] Parameters;
             }
 
-            /// <summary>内建函数：插入完整括号/参数占位，右侧展示签名。</summary>
+            /// <summary>内建函数：插入完整括号/参数占位，右侧展示签名。覆盖日常高频标量/聚合/窗口函数。</summary>
             private static readonly BuiltInFunctionInfo[] BuiltInFunctionInfos = BuildBuiltInFunctionInfos();
 
             private static BuiltInFunctionInfo[] BuildBuiltInFunctionInfos()
             {
                 return new[]
                 {
+                    // —— 聚合 ——
                     Fn("COUNT", "COUNT(expression)", "COUNT()", 6, "expression"),
+                    Fn("COUNT_BIG", "COUNT_BIG(expression)", "COUNT_BIG()", 10, "expression"),
                     Fn("SUM", "SUM(expression)", "SUM()", 4, "expression"),
                     Fn("AVG", "AVG(expression)", "AVG()", 4, "expression"),
                     Fn("MIN", "MIN(expression)", "MIN()", 4, "expression"),
                     Fn("MAX", "MAX(expression)", "MAX()", 4, "expression"),
+                    Fn("STDEV", "STDEV(expression)", "STDEV()", 6, "expression"),
+                    Fn("STDEVP", "STDEVP(expression)", "STDEVP()", 7, "expression"),
+                    Fn("VAR", "VAR(expression)", "VAR()", 4, "expression"),
+                    Fn("VARP", "VARP(expression)", "VARP()", 5, "expression"),
+                    Fn("STRING_AGG", "STRING_AGG(expression, separator)", "STRING_AGG(, )", 11,
+                        "expression", "separator"),
+                    Fn("GROUPING", "GROUPING(column_expression)", "GROUPING()", 9, "column_expression"),
+                    Fn("GROUPING_ID", "GROUPING_ID(column_expression [, ...n])", "GROUPING_ID()", 12,
+                        "column_expression"),
+                    Fn("CHECKSUM_AGG", "CHECKSUM_AGG(expression)", "CHECKSUM_AGG()", 13, "expression"),
+
+                    // —— 空值 / 逻辑 ——
+                    Fn("ISNULL", "ISNULL(check_expression, replacement_value)", "ISNULL(, )", 7,
+                        "check_expression", "replacement_value"),
+                    Fn("COALESCE", "COALESCE(expression1, expression2 [, ...n])", "COALESCE(, )", 9,
+                        "expression1", "expression2", "..."),
+                    Fn("NULLIF", "NULLIF(expression, expression)", "NULLIF(, )", 7,
+                        "expression", "expression"),
+                    Fn("IIF", "IIF(boolean_expression, true_value, false_value)", "IIF(, , )", 4,
+                        "boolean_expression", "true_value", "false_value"),
+                    Fn("CHOOSE", "CHOOSE(index, val_1, val_2 [, ...])", "CHOOSE(, )", 7,
+                        "index", "val_1", "val_2", "..."),
+
+                    // —— 类型转换 ——
+                    Fn("CAST", "CAST(expression AS data_type)", "CAST( AS )", 5,
+                        "expression", "data_type"),
+                    Fn("CONVERT", "CONVERT(data_type, expression [, style])", "CONVERT(, )", 8,
+                        "data_type", "expression", "style (optional)"),
+                    Fn("TRY_CAST", "TRY_CAST(expression AS data_type)", "TRY_CAST( AS )", 9,
+                        "expression", "data_type"),
+                    Fn("TRY_CONVERT", "TRY_CONVERT(data_type, expression [, style])", "TRY_CONVERT(, )", 12,
+                        "data_type", "expression", "style (optional)"),
+                    Fn("PARSE", "PARSE(string_value AS data_type [USING culture])", "PARSE( AS )", 6,
+                        "string_value", "data_type", "culture (optional)"),
+                    Fn("TRY_PARSE", "TRY_PARSE(string_value AS data_type [USING culture])", "TRY_PARSE( AS )", 10,
+                        "string_value", "data_type", "culture (optional)"),
+                    Fn("STR", "STR(float_expression [, length [, decimal]])", "STR()", 4,
+                        "float_expression", "length (optional)", "decimal (optional)"),
+                    Fn("FORMAT", "FORMAT(value, format [, culture])", "FORMAT(, )", 7,
+                        "value", "format", "culture (optional)"),
+
+                    // —— 日期时间 ——
                     Fn("GETDATE", "GETDATE()", "GETDATE()", -1),
                     Fn("GETUTCDATE", "GETUTCDATE()", "GETUTCDATE()", -1),
                     Fn("SYSDATETIME", "SYSDATETIME()", "SYSDATETIME()", -1),
+                    Fn("SYSUTCDATETIME", "SYSUTCDATETIME()", "SYSUTCDATETIME()", -1),
+                    Fn("SYSDATETIMEOFFSET", "SYSDATETIMEOFFSET()", "SYSDATETIMEOFFSET()", -1),
+                    Fn("CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP", -1),
                     Fn("DATEADD", "DATEADD(datepart, number, date)", "DATEADD(, , )", 8,
                         "datepart", "number", "date"),
                     Fn("DATEDIFF", "DATEDIFF(datepart, startdate, enddate)", "DATEDIFF(, , )", 9,
+                        "datepart", "startdate", "enddate"),
+                    Fn("DATEDIFF_BIG", "DATEDIFF_BIG(datepart, startdate, enddate)", "DATEDIFF_BIG(, , )", 13,
                         "datepart", "startdate", "enddate"),
                     Fn("DATENAME", "DATENAME(datepart, date)", "DATENAME(, )", 9,
                         "datepart", "date"),
@@ -3426,6 +3655,32 @@ namespace AxialSqlTools
                     Fn("YEAR", "YEAR(date)", "YEAR()", 5, "date"),
                     Fn("MONTH", "MONTH(date)", "MONTH()", 6, "date"),
                     Fn("DAY", "DAY(date)", "DAY()", 4, "date"),
+                    Fn("EOMONTH", "EOMONTH(start_date [, month_to_add])", "EOMONTH()", 8,
+                        "start_date", "month_to_add (optional)"),
+                    Fn("DATEFROMPARTS", "DATEFROMPARTS(year, month, day)", "DATEFROMPARTS(, , )", 14,
+                        "year", "month", "day"),
+                    Fn("DATETIMEFROMPARTS", "DATETIMEFROMPARTS(year, month, day, hour, minute, seconds, milliseconds)",
+                        "DATETIMEFROMPARTS(, , , , , , )", 18,
+                        "year", "month", "day", "hour", "minute", "seconds", "milliseconds"),
+                    Fn("DATETIME2FROMPARTS", "DATETIME2FROMPARTS(year, month, day, hour, minute, seconds, fractions, precision)",
+                        "DATETIME2FROMPARTS(, , , , , , , )", 19,
+                        "year", "month", "day", "hour", "minute", "seconds", "fractions", "precision"),
+                    Fn("SMALLDATETIMEFROMPARTS", "SMALLDATETIMEFROMPARTS(year, month, day, hour, minute)",
+                        "SMALLDATETIMEFROMPARTS(, , , , )", 23,
+                        "year", "month", "day", "hour", "minute"),
+                    Fn("TIMEFROMPARTS", "TIMEFROMPARTS(hour, minute, seconds, fractions, precision)",
+                        "TIMEFROMPARTS(, , , , )", 14,
+                        "hour", "minute", "seconds", "fractions", "precision"),
+                    Fn("DATETIMEOFFSETFROMPARTS", "DATETIMEOFFSETFROMPARTS(year, month, day, hour, minute, seconds, fractions, hour_offset, minute_offset, precision)",
+                        "DATETIMEOFFSETFROMPARTS(, , , , , , , , , )", 24,
+                        "year", "month", "day", "hour", "minute", "seconds", "fractions", "hour_offset", "minute_offset", "precision"),
+                    Fn("ISDATE", "ISDATE(expression)", "ISDATE()", 7, "expression"),
+                    Fn("SWITCHOFFSET", "SWITCHOFFSET(datetimeoffset_expression, timezoneoffset)", "SWITCHOFFSET(, )", 13,
+                        "datetimeoffset_expression", "timezoneoffset"),
+                    Fn("TODATETIMEOFFSET", "TODATETIMEOFFSET(datetime_expression, timezoneoffset)", "TODATETIMEOFFSET(, )", 17,
+                        "datetime_expression", "timezoneoffset"),
+
+                    // —— 字符串 ——
                     Fn("LEN", "LEN(string_expression)", "LEN()", 4, "string_expression"),
                     Fn("DATALENGTH", "DATALENGTH(expression)", "DATALENGTH()", 11, "expression"),
                     Fn("SUBSTRING", "SUBSTRING(expression, start, length)", "SUBSTRING(, , )", 10,
@@ -3446,18 +3701,73 @@ namespace AxialSqlTools
                     Fn("LOWER", "LOWER(character_expression)", "LOWER()", 6, "character_expression"),
                     Fn("LTRIM", "LTRIM(character_expression)", "LTRIM()", 6, "character_expression"),
                     Fn("RTRIM", "RTRIM(character_expression)", "RTRIM()", 6, "character_expression"),
+                    Fn("TRIM", "TRIM([characters FROM] string)", "TRIM()", 5, "string"),
                     Fn("CONCAT", "CONCAT(string_value1, string_value2 [, ...n])", "CONCAT(, )", 7,
                         "string_value1", "string_value2", "..."),
-                    Fn("COALESCE", "COALESCE(expression1, expression2 [, ...n])", "COALESCE(, )", 9,
-                        "expression1", "expression2", "..."),
-                    Fn("NULLIF", "NULLIF(expression, expression)", "NULLIF(, )", 7,
-                        "expression", "expression"),
-                    Fn("ISNULL", "ISNULL(check_expression, replacement_value)", "ISNULL(, )", 7,
-                        "check_expression", "replacement_value"),
-                    Fn("CAST", "CAST(expression AS data_type)", "CAST( AS )", 5,
-                        "expression", "data_type"),
-                    Fn("CONVERT", "CONVERT(data_type, expression [, style])", "CONVERT(, )", 8,
-                        "data_type", "expression", "style (optional)"),
+                    Fn("CONCAT_WS", "CONCAT_WS(separator, argument1, argument2 [, ...n])", "CONCAT_WS(, )", 10,
+                        "separator", "argument1", "argument2", "..."),
+                    Fn("REVERSE", "REVERSE(string_expression)", "REVERSE()", 8, "string_expression"),
+                    Fn("REPLICATE", "REPLICATE(string_expression, integer_expression)", "REPLICATE(, )", 10,
+                        "string_expression", "integer_expression"),
+                    Fn("SPACE", "SPACE(integer_expression)", "SPACE()", 6, "integer_expression"),
+                    Fn("CHAR", "CHAR(integer_expression)", "CHAR()", 5, "integer_expression"),
+                    Fn("NCHAR", "NCHAR(integer_expression)", "NCHAR()", 6, "integer_expression"),
+                    Fn("ASCII", "ASCII(character_expression)", "ASCII()", 6, "character_expression"),
+                    Fn("UNICODE", "UNICODE(character_expression)", "UNICODE()", 8, "character_expression"),
+                    Fn("QUOTENAME", "QUOTENAME(character_string [, quote_character])", "QUOTENAME()", 9,
+                        "character_string", "quote_character (optional)"),
+                    Fn("SOUNDEX", "SOUNDEX(character_expression)", "SOUNDEX()", 8, "character_expression"),
+                    Fn("DIFFERENCE", "DIFFERENCE(character_expression, character_expression)", "DIFFERENCE(, )", 11,
+                        "character_expression", "character_expression"),
+                    Fn("TRANSLATE", "TRANSLATE(inputString, characters, translations)", "TRANSLATE(, , )", 10,
+                        "inputString", "characters", "translations"),
+                    Fn("STRING_ESCAPE", "STRING_ESCAPE(text, type)", "STRING_ESCAPE(, )", 14,
+                        "text", "type"),
+
+                    // —— 数值 ——
+                    Fn("ABS", "ABS(numeric_expression)", "ABS()", 4, "numeric_expression"),
+                    Fn("CEILING", "CEILING(numeric_expression)", "CEILING()", 8, "numeric_expression"),
+                    Fn("FLOOR", "FLOOR(numeric_expression)", "FLOOR()", 6, "numeric_expression"),
+                    Fn("ROUND", "ROUND(numeric_expression, length [, function])", "ROUND(, )", 6,
+                        "numeric_expression", "length", "function (optional)"),
+                    Fn("POWER", "POWER(float_expression, y)", "POWER(, )", 6,
+                        "float_expression", "y"),
+                    Fn("SQRT", "SQRT(float_expression)", "SQRT()", 5, "float_expression"),
+                    Fn("SQUARE", "SQUARE(float_expression)", "SQUARE()", 7, "float_expression"),
+                    Fn("EXP", "EXP(float_expression)", "EXP()", 4, "float_expression"),
+                    Fn("LOG", "LOG(float_expression [, base])", "LOG()", 4,
+                        "float_expression", "base (optional)"),
+                    Fn("LOG10", "LOG10(float_expression)", "LOG10()", 6, "float_expression"),
+                    Fn("SIGN", "SIGN(numeric_expression)", "SIGN()", 5, "numeric_expression"),
+                    Fn("RAND", "RAND([seed])", "RAND()", 5, "seed (optional)"),
+                    Fn("PI", "PI()", "PI()", -1),
+                    Fn("SIN", "SIN(float_expression)", "SIN()", 4, "float_expression"),
+                    Fn("COS", "COS(float_expression)", "COS()", 4, "float_expression"),
+                    Fn("TAN", "TAN(float_expression)", "TAN()", 4, "float_expression"),
+                    Fn("ASIN", "ASIN(float_expression)", "ASIN()", 5, "float_expression"),
+                    Fn("ACOS", "ACOS(float_expression)", "ACOS()", 5, "float_expression"),
+                    Fn("ATAN", "ATAN(float_expression)", "ATAN()", 5, "float_expression"),
+                    Fn("ATN2", "ATN2(float_expression, float_expression)", "ATN2(, )", 5,
+                        "float_expression", "float_expression"),
+                    Fn("COT", "COT(float_expression)", "COT()", 4, "float_expression"),
+                    Fn("DEGREES", "DEGREES(numeric_expression)", "DEGREES()", 8, "numeric_expression"),
+                    Fn("RADIANS", "RADIANS(numeric_expression)", "RADIANS()", 8, "numeric_expression"),
+                    Fn("ISNUMERIC", "ISNUMERIC(expression)", "ISNUMERIC()", 10, "expression"),
+                    Fn("CHECKSUM", "CHECKSUM(expression [, ...n])", "CHECKSUM()", 9, "expression"),
+                    Fn("HASHBYTES", "HASHBYTES(algorithm, expression)", "HASHBYTES(, )", 10,
+                        "algorithm", "expression"),
+
+                    // —— JSON ——
+                    Fn("ISJSON", "ISJSON(expression [, json_path])", "ISJSON()", 7,
+                        "expression", "json_path (optional)"),
+                    Fn("JSON_VALUE", "JSON_VALUE(expression, path)", "JSON_VALUE(, )", 11,
+                        "expression", "path"),
+                    Fn("JSON_QUERY", "JSON_QUERY(expression [, path])", "JSON_QUERY()", 11,
+                        "expression", "path (optional)"),
+                    Fn("JSON_MODIFY", "JSON_MODIFY(expression, path, newValue)", "JSON_MODIFY(, , )", 12,
+                        "expression", "path", "newValue"),
+
+                    // —— 窗口 ——
                     Fn("ROW_NUMBER", "ROW_NUMBER() OVER (ORDER BY ...)", "ROW_NUMBER() OVER (ORDER BY )", 27),
                     Fn("RANK", "RANK() OVER (ORDER BY ...)", "RANK() OVER (ORDER BY )", 21),
                     Fn("DENSE_RANK", "DENSE_RANK() OVER (ORDER BY ...)", "DENSE_RANK() OVER (ORDER BY )", 27),
@@ -3467,17 +3777,57 @@ namespace AxialSqlTools
                         "scalar_expression", "offset (optional)", "default (optional)"),
                     Fn("LAG", "LAG(scalar_expression [, offset [, default]]) OVER (ORDER BY ...)", "LAG() OVER (ORDER BY )", 4,
                         "scalar_expression", "offset (optional)", "default (optional)"),
+                    Fn("FIRST_VALUE", "FIRST_VALUE(scalar_expression) OVER (ORDER BY ...)", "FIRST_VALUE() OVER (ORDER BY )", 12,
+                        "scalar_expression"),
+                    Fn("LAST_VALUE", "LAST_VALUE(scalar_expression) OVER (ORDER BY ...)", "LAST_VALUE() OVER (ORDER BY )", 11,
+                        "scalar_expression"),
+                    Fn("PERCENT_RANK", "PERCENT_RANK() OVER (ORDER BY ...)", "PERCENT_RANK() OVER (ORDER BY )", 29),
+                    Fn("CUME_DIST", "CUME_DIST() OVER (ORDER BY ...)", "CUME_DIST() OVER (ORDER BY )", 26),
+
+                    // —— 标识 / 系统信息 ——
                     Fn("NEWID", "NEWID()", "NEWID()", -1),
+                    Fn("NEWSEQUENTIALID", "NEWSEQUENTIALID()", "NEWSEQUENTIALID()", -1),
                     Fn("SCOPE_IDENTITY", "SCOPE_IDENTITY()", "SCOPE_IDENTITY()", -1),
+                    Fn("IDENT_CURRENT", "IDENT_CURRENT(table_name)", "IDENT_CURRENT()", 14, "table_name"),
+                    Fn("IDENT_INCR", "IDENT_INCR(table_or_view)", "IDENT_INCR()", 11, "table_or_view"),
+                    Fn("IDENT_SEED", "IDENT_SEED(table_or_view)", "IDENT_SEED()", 11, "table_or_view"),
                     Fn("@@ROWCOUNT", "@@ROWCOUNT", "@@ROWCOUNT", -1),
                     Fn("@@IDENTITY", "@@IDENTITY", "@@IDENTITY", -1),
+                    Fn("@@ERROR", "@@ERROR", "@@ERROR", -1),
+                    Fn("@@TRANCOUNT", "@@TRANCOUNT", "@@TRANCOUNT", -1),
+                    Fn("@@SERVERNAME", "@@SERVERNAME", "@@SERVERNAME", -1),
+                    Fn("@@SPID", "@@SPID", "@@SPID", -1),
+                    Fn("@@VERSION", "@@VERSION", "@@VERSION", -1),
                     Fn("DB_NAME", "DB_NAME([database_id])", "DB_NAME()", 8, "database_id (optional)"),
+                    Fn("DB_ID", "DB_ID([database_name])", "DB_ID()", 6, "database_name (optional)"),
                     Fn("OBJECT_ID", "OBJECT_ID(object_name [, object_type])", "OBJECT_ID()", 10,
                         "object_name", "object_type (optional)"),
                     Fn("OBJECT_NAME", "OBJECT_NAME(object_id [, database_id])", "OBJECT_NAME()", 12,
                         "object_id", "database_id (optional)"),
+                    Fn("OBJECT_SCHEMA_NAME", "OBJECT_SCHEMA_NAME(object_id [, database_id])", "OBJECT_SCHEMA_NAME()", 19,
+                        "object_id", "database_id (optional)"),
+                    Fn("SCHEMA_NAME", "SCHEMA_NAME([schema_id])", "SCHEMA_NAME()", 12, "schema_id (optional)"),
+                    Fn("SCHEMA_ID", "SCHEMA_ID([schema_name])", "SCHEMA_ID()", 10, "schema_name (optional)"),
                     Fn("USER_NAME", "USER_NAME([id])", "USER_NAME()", 10, "id (optional)"),
-                    Fn("SUSER_NAME", "SUSER_NAME([server_user_id])", "SUSER_NAME()", 11, "server_user_id (optional)")
+                    Fn("USER_ID", "USER_ID([user])", "USER_ID()", 8, "user (optional)"),
+                    Fn("SUSER_NAME", "SUSER_NAME([server_user_id])", "SUSER_NAME()", 11, "server_user_id (optional)"),
+                    Fn("SUSER_SNAME", "SUSER_SNAME([server_user_sid])", "SUSER_SNAME()", 12, "server_user_sid (optional)"),
+                    Fn("SUSER_SID", "SUSER_SID([login [, param2]])", "SUSER_SID()", 10, "login (optional)"),
+                    Fn("SYSTEM_USER", "SYSTEM_USER", "SYSTEM_USER", -1),
+                    Fn("CURRENT_USER", "CURRENT_USER", "CURRENT_USER", -1),
+                    Fn("SESSION_USER", "SESSION_USER", "SESSION_USER", -1),
+                    Fn("ORIGINAL_LOGIN", "ORIGINAL_LOGIN()", "ORIGINAL_LOGIN()", -1),
+                    Fn("HOST_NAME", "HOST_NAME()", "HOST_NAME()", -1),
+                    Fn("APP_NAME", "APP_NAME()", "APP_NAME()", -1),
+                    Fn("TYPE_NAME", "TYPE_NAME(type_id)", "TYPE_NAME()", 10, "type_id"),
+                    Fn("TYPE_ID", "TYPE_ID(type_name)", "TYPE_ID()", 8, "type_name"),
+                    Fn("ERROR_NUMBER", "ERROR_NUMBER()", "ERROR_NUMBER()", -1),
+                    Fn("ERROR_MESSAGE", "ERROR_MESSAGE()", "ERROR_MESSAGE()", -1),
+                    Fn("ERROR_SEVERITY", "ERROR_SEVERITY()", "ERROR_SEVERITY()", -1),
+                    Fn("ERROR_STATE", "ERROR_STATE()", "ERROR_STATE()", -1),
+                    Fn("ERROR_LINE", "ERROR_LINE()", "ERROR_LINE()", -1),
+                    Fn("ERROR_PROCEDURE", "ERROR_PROCEDURE()", "ERROR_PROCEDURE()", -1),
+                    Fn("XACT_STATE", "XACT_STATE()", "XACT_STATE()", -1)
                 };
             }
 

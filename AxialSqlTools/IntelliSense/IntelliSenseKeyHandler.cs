@@ -321,7 +321,8 @@ namespace AxialSqlTools.IntelliSense
         }
 
         /// <summary>
-        /// 自动触发时：空行、或刚输入 ; / GO 后尚无标识符前缀 → 不弹框（Ctrl+Space 仍可手动）。
+        /// 自动触发时：须光标处正在输入标识符/成员前缀，或刚输入点号。
+        /// 空前缀（如删掉 SELECT * 后的 SELECT | FROM、运算符后空白）不弹；Ctrl+Space 仍可手动。
         /// </summary>
         private bool ShouldSuppressAutoPopup()
         {
@@ -337,25 +338,21 @@ namespace AxialSqlTools.IntelliSense
                 textLines.GetLineText(line, 0, line, Math.Min(col, lineLen), out string before);
                 if (string.IsNullOrEmpty(before)) return true;
 
+                // 必须紧贴光标有触发条件，不能跳过空白去认前面的 SELECT/WHERE 关键字
+                char last = before[before.Length - 1];
+                if (last == '.') return false; // dbo.| / alias.|
+                if (last == ';') return true;
+                if (last == ']') return true; // 方括号名已闭合
+                if (IsAutoPopupTerminatorChar(last)) return true;
+                // 空白、*、运算符、括号等：无活动前缀，不自动弹
+                if (!IsAutoTriggerPrefixChar(last))
+                    return true;
+
+                // 连续前缀仅空白前一段；单独 [ 也算开始输入括起标识符
                 int i = before.Length - 1;
-                while (i >= 0 && (before[i] == ' ' || before[i] == '\t')) i--;
-                if (i < 0) return true;
-
-                // 正在输入标识符前缀则允许弹
-                if (IsAutoTriggerIdentChar(before[i]))
-                    return false;
-
-                if (before[i] == ';') return true;
-
-                // GO 批分隔后
-                if ((before[i] == 'O' || before[i] == 'o') && i >= 1)
-                {
-                    char g = before[i - 1];
-                    if ((g == 'G' || g == 'g') &&
-                        (i == 1 || !IsAutoTriggerIdentChar(before[i - 2])))
-                        return true;
-                }
-                return false;
+                while (i >= 0 && IsAutoTriggerPrefixChar(before[i])) i--;
+                int prefixLen = before.Length - 1 - i;
+                return prefixLen <= 0;
             }
             catch
             {
@@ -363,9 +360,10 @@ namespace AxialSqlTools.IntelliSense
             }
         }
 
-        private static bool IsAutoTriggerIdentChar(char c)
+        /// <summary>构成正在输入的标识符前缀的字符（不含已闭合的 ]）。</summary>
+        private static bool IsAutoTriggerPrefixChar(char c)
         {
-            return char.IsLetterOrDigit(c) || c == '_' || c == '@' || c == '#' || c == '[' || c == ']';
+            return char.IsLetterOrDigit(c) || c == '_' || c == '@' || c == '#' || c == '[';
         }
 
         private static bool IsAutoPopupTerminatorChar(char c)
@@ -519,6 +517,13 @@ namespace AxialSqlTools.IntelliSense
             {
                 _debounceTimer.Stop();
                 if (_sessionOpen) CloseSession();
+                return;
+            }
+
+            // 弹框未开：退格/删除不新开（避免删 SELECT * 后弹出全量列/函数）；已开则刷新或按抑制逻辑关闭
+            if ((isBackspace || isDelete) && !_sessionOpen)
+            {
+                _debounceTimer.Stop();
                 return;
             }
 
