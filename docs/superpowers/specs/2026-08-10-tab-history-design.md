@@ -20,6 +20,7 @@
 | 采集时机 | 仅关键时机：窗口创建 / 激活 / 关闭 / 查询执行后（**不做定时轮询、不做按键级记录**） |
 | 存储 | JSONL 按天分文件：`%APPDATA%\AxialSqlTools\tab-history\tab-history-yyyy-MM-dd.jsonl` |
 | 内容去重 | 同一文档内容哈希与上一条相同 → 内容字段存空（UI 显示"无变化"） |
+| 旧文件清理 | 按保留天数配置（`tabHistory.retentionDays`，默认 90 天；0 = 不清理），启动时执行 |
 | 查看方式 | 新增 Tool Window「Tab History」，含筛选 + 列表 + 全文查看 |
 | 启用策略 | **默认关闭**，设置窗口加开关（settings.json 的 `tabHistory.enabled`） |
 | 设置后端 | `UiSettingsStore`（`%APPDATA%\AxialSqlTools\settings.json`），扩展 `UiSettings` 加 `TabHistorySettings` 节点 |
@@ -89,7 +90,7 @@ JSONL，一行一条记录，按天分文件：
 
 - 文件夹：`UserConfigPaths.TabHistoryDirectory`（新增属性，`Path.Combine(Root, "tab-history")`）
 - 文件名：`tab-history-yyyy-MM-dd.jsonl`（本地日期）
-- 启动清理：删除 `LastWriteTime` 早于 90 天前的 `tab-history-*.jsonl`
+- 启动清理：按 `TabHistorySettings.RetentionDays`（默认 90）删除 `LastWriteTime` 早于该天数的 `tab-history-*.jsonl`；`RetentionDays <= 0` 表示不清理（保留全部）
 - 读取：`LoadRecent(int max = 1000)` 从所有文件按行反序列化，损坏行跳过，按 Timestamp 倒序取最近 max 条
 
 ### 4.3 去重规则
@@ -164,14 +165,17 @@ public sealed class TabHistorySettings
 {
     [JsonProperty("enabled")]
     public bool Enabled { get; set; } = false;   // 默认关闭
+
+    [JsonProperty("retentionDays")]
+    public int RetentionDays { get; set; } = 90; // 保留天数，0 = 不清理
 }
 ```
 
-新增方法：`GetTabHistoryEnabled()` / `SaveTabHistoryEnabled(bool)`，`Normalize`/`Clone` 同步处理该节点（null 兼容旧 settings.json）。
+新增方法：`GetTabHistoryEnabled()` / `SaveTabHistoryEnabled(bool)` / `GetTabHistoryRetentionDays()` / `SaveTabHistoryRetentionDays(int)`，`Normalize`/`Clone` 同步处理该节点（null 兼容旧 settings.json，`RetentionDays` 非法值钳制到 0~3650）。
 
 ### 7.2 设置窗口（`WindowSettingsControl.xaml`）
 
-在现有设置 Tab 中新增一项 CheckBox「记录标签页历史（Tab History）」，默认不勾选；勾选即开始记录（无需重启）。文案 `Tag="loc:xxx"`。
+在现有设置 Tab 中新增一项 CheckBox「记录标签页历史（Tab History）」，默认不勾选；勾选即开始记录（无需重启）。勾选后下方显示「保留天数」输入框（整数，默认 90，0 = 不清理）。文案 `Tag="loc:xxx"`。
 
 ## 8. 本地化
 
@@ -182,7 +186,7 @@ public sealed class TabHistorySettings
 - `TabHistory_From/To/Server/Filter`（筛选标签）
 - `TabHistory_ContentUnchanged`（"(内容未变化)"占位）
 - `TabHistory_CopyAll/OpenFile/Refresh/ClearFilters`
-- 设置项 `Settings_TabHistoryEnabled`
+- 设置项 `Settings_TabHistoryEnabled`、`Settings_TabHistoryRetentionDays`
 
 工具：`tools/append-i18n-keys.ps1` / `rebuild-zh-hans-resx.ps1` 可辅助批量登记。
 
@@ -217,6 +221,7 @@ public sealed class TabHistorySettings
 1. **开关**：设置窗口默认不勾选 → 无文件产生；勾选后新建/切换/关闭标签页、执行查询 → `%APPDATA%\AxialSqlTools\tab-history\` 出现当天 JSONL
 2. **内容**：在标签页输入草稿但不执行 → 切换/关闭标签页后记录中包含全文；内容未变时出现 `Content=null` 记录
 3. **执行**：执行查询后产生 Executed 记录，Data Source/Database 与连接一致
-4. **UI**：Tab History 窗口筛选（日期/服务器/关键词）、选中看全文、复制、打开文件均正常
-5. **兼容**：snippets / IntelliSense 开关任意组合下功能正常；历史文件损坏行不影响加载
-6. **回归**：Query History 原有执行历史记录不受影响
+4. **保留天数**：设置 `retentionDays=2` 并存在 3 天前的 JSONL → 重启后旧文件被清理；设为 0 → 不清理
+5. **UI**：Tab History 窗口筛选（日期/服务器/关键词）、选中看全文、复制、打开文件均正常
+6. **兼容**：snippets / IntelliSense 开关任意组合下功能正常；历史文件损坏行不影响加载
+7. **回归**：Query History 原有执行历史记录不受影响
