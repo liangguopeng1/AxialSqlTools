@@ -487,6 +487,17 @@ as select 1;
             }
             catch { }
 
+            // Tab History 设置加载
+            try
+            {
+                var th = UiSettingsStore.GetTabHistorySettings();
+                TabHistoryEnabled.IsChecked = th.Enabled;
+                TabHistoryRetentionDays.Text = th.RetentionDays.ToString();
+            }
+            catch
+            {
+            }
+
         }
 
         private void Button_SaveScriptFolder_Click(object sender, RoutedEventArgs e)
@@ -846,6 +857,15 @@ as select 1;
 
             RefreshQueryHistoryCreateScript();
 
+        }
+
+        private void Button_SaveTabHistorySettings_Click(object sender, RoutedEventArgs e)
+        {
+            bool enabled = TabHistoryEnabled.IsChecked.GetValueOrDefault();
+            UiSettingsStore.SaveTabHistoryEnabled(enabled);
+            int retentionDays = int.TryParse(TabHistoryRetentionDays.Text, out var rd) ? rd : 90;
+            UiSettingsStore.SaveTabHistoryRetentionDays(retentionDays);
+            SavedMessage();
         }
 
         private void Button_SelectDatabaseFromObjectExplorer_Click(object sender, RoutedEventArgs e)

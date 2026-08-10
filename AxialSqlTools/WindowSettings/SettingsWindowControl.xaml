@@ -552,6 +552,32 @@
                 </Grid>
             </TabItem>
 
+            <TabItem x:Name="TabTabHistory" Header="Tab History">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="8">
+                    <StackPanel>
+                        <TextBlock Margin="5,0,5,10" TextWrapping="Wrap" Opacity="0.85"
+                                   Text="记录查询标签页的打开/切换/关闭与执行事件，并保存编辑器中的 SQL 内容快照。"/>
+                        <StackPanel Margin="5,0,5,4">
+                            <CheckBox x:Name="TabHistoryEnabled"
+                                      Content="记录标签页历史（Tab History）"/>
+                            <TextBlock Margin="22,2,0,0" Opacity="0.75" FontSize="11"
+                                       Text="生效：实时。默认关闭。内容快照保存在 %APPDATA%\AxialSqlTools\tab-history\。"/>
+                        </StackPanel>
+                        <StackPanel Margin="5,0,5,4"
+                                    IsEnabled="{Binding IsChecked, ElementName=TabHistoryEnabled}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="保留天数（0 = 不清理）:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBox x:Name="TabHistoryRetentionDays" Width="60" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <TextBlock Margin="0,2,0,0" Opacity="0.75" FontSize="11" Text="生效：重启 SSMS 后清理旧文件。"/>
+                        </StackPanel>
+                        <Button x:Name="button_SaveTabHistorySettings"
+                                Click="Button_SaveTabHistorySettings_Click"
+                                Width="80" Height="24" Margin="5,8,0,0"
+                                HorizontalAlignment="Left" FontWeight="Bold" Content="保存"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
 
             <TabItem x:Name="TabCodeFormat" Header="Code Format">
                 <Grid Margin="5">
