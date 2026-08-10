@@ -830,6 +830,24 @@ ORDER BY [name];";
             }
         }
 
+        public static string GetQueryWindowText(EnvDTE.Window window)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (window == null) return string.Empty;
+            try
+            {
+                if (window.Document == null) return string.Empty;
+                TextDocument doc = window.Document.Object("TextDocument") as TextDocument;
+                if (doc == null) return string.Empty;
+                EditPoint start = doc.StartPoint.CreateEditPoint();
+                return start.GetText(doc.EndPoint);
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
         public static string GetXmlFromUIConnectionInfo(UIConnectionInfo connectionInfo)
         {
             if (connectionInfo == null)
