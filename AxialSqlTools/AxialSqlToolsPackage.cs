@@ -63,6 +63,7 @@ namespace AxialSqlTools
     [ProvideToolWindow(typeof(DataTransferWindow))]
     [ProvideToolWindow(typeof(SqlServerBuildsWindow))]
     [ProvideToolWindow(typeof(QueryHistoryWindow))]
+    [ProvideToolWindow(typeof(TabHistoryWindow))]
     [ProvideToolWindow(typeof(StatisticsSummaryWindow))]
     [ProvideToolWindow(typeof(DatabaseScripterToolWindow))]
     [ProvideToolWindow(typeof(DataImportWindow))]
@@ -296,6 +297,16 @@ namespace AxialSqlTools
 
             InitializeLogging();
 
+            // Tab History: 启动时清理过期快照文件
+            try
+            {
+                TabHistoryStore.CleanupOldFiles();
+            }
+            catch (Exception ex)
+            {
+                _logger?.Warn(ex, "Failed to clean old tab history files.");
+            }
+
             // IntelliSense: 尝试禁用 SSMS 自带 IntelliSense（防双弹框）。
             // 禁用需重启 SSMS 才生效；本次会话若内建仍开，Manager 会抑制自动触发，仅 Ctrl+Space 可用。
             try
@@ -339,6 +350,7 @@ namespace AxialSqlTools
                 await ResultGridCopyAsInsertCommand.InitializeAsync(this);
                 await SqlServerBuildsWindowCommand.InitializeAsync(this);
                 await QueryHistoryWindowCommand.InitializeAsync(this);
+                await TabHistoryWindowCommand.InitializeAsync(this);
                 await StatisticsSummaryWindowCommand.InitializeAsync(this);
                 await DatabaseScripterToolWindowCommand.InitializeAsync(this);
                 await QuickSearchWindowCommand.InitializeAsync(this);
@@ -677,6 +689,16 @@ namespace AxialSqlTools
                 }
             }
 
+            // Tab History: 记录标签激活与当前内容快照
+            try
+            {
+                TabHistoryRecorder.RecordWindowEvent(TabHistoryEventType.Activated, GotFocus);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "Failed to record tab activation history.");
+            }
+
             // Apply connection-based coloring (document tab + status bar)
             try
             {
@@ -758,6 +780,7 @@ namespace AxialSqlTools
             // Re-color remaining tabs after a tab closes
             try
             {
+                TabHistoryRecorder.RecordWindowEvent(TabHistoryEventType.Closed, Window);
                 GridAccess.ScheduleReapplyAllTabColors();
             }
             catch (Exception ex)
@@ -774,6 +797,8 @@ namespace AxialSqlTools
             // subscribe to the execution completed event
             try
             {
+                TabHistoryRecorder.RecordWindowEvent(TabHistoryEventType.Opened, Window);
+
                 var sqlResultsControl = GridAccess.GetNonPublicField(Window.Object, "m_sqlResultsControl");
                 AttachStatisticsExecutionCompletedHandler(sqlResultsControl);
                 TryApplyConnectionColorForWindow(Window);
@@ -1018,6 +1043,27 @@ namespace AxialSqlTools
             catch (Exception ex)
             {
                 _logger.Error(ex, "An exception occurred");
+            }
+
+            // tab history: 执行后记录编辑器全文（含未执行草稿）
+            try
+            {
+                var mConn = GridAccess.GetNonPublicField(QEOLESQLExec, "m_conn");
+                string dataSource = string.Empty;
+                string database = string.Empty;
+                if (mConn != null)
+                {
+                    try { dataSource = (string)GridAccess.GetProperty(mConn, "DataSource"); } catch { }
+                    try { database = (string)GridAccess.GetProperty(mConn, "Database"); } catch { }
+                }
+                TabHistoryRecorder.RecordExecuted(
+                    ScriptFactoryAccess.GetActiveQueryWindowText(),
+                    dataSource,
+                    database);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "An exception occurred recording tab history after execute");
             }
 
             if (!StatisticsSummaryStore.IsWindowOpen())
