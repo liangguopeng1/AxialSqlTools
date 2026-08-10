@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
+using EnvDTE;
 using Microsoft.SqlServer.Management.UI.VSIntegration;
 
 namespace AxialSqlTools
@@ -38,14 +39,22 @@ namespace AxialSqlTools
                 }
                 LastContentHashes[documentKey] = hash;
 
+                // 关闭事件时连接已不可靠，规格要求不写活动连接
+                string dataSource = string.Empty;
+                string database = string.Empty;
+                if (eventType != TabHistoryEventType.Closed)
+                {
+                    TryGetActiveConnectionInfo(out dataSource, out database);
+                }
+
                 var record = new TabHistoryRecord
                 {
                     Timestamp = DateTime.Now,
                     EventType = eventType,
                     DocumentName = documentName,
                     DocumentPath = GetDocumentPath(window),
-                    DataSource = TryGetActiveDataSource(),
-                    DatabaseName = TryGetActiveDatabase(),
+                    DataSource = dataSource,
+                    DatabaseName = database,
                     Content = contentChanged ? content : null,
                     ContentHash = hash,
                     CharCount = contentChanged ? (content?.Length ?? 0) : 0
@@ -68,7 +77,8 @@ namespace AxialSqlTools
                 // Executed 不参与内容去重：执行内容必须保留
                 string documentName = TryGetActiveDocumentName();
                 string documentPath = TryGetActiveDocumentPath();
-                LastContentHashes[GetDocumentKey(documentName, documentPath)] = ComputeHash(content);
+                string hash = ComputeHash(content);
+                LastContentHashes[GetDocumentKey(documentName, documentPath)] = hash;
 
                 var record = new TabHistoryRecord
                 {
@@ -79,7 +89,7 @@ namespace AxialSqlTools
                     DataSource = dataSource,
                     DatabaseName = database,
                     Content = content,
-                    ContentHash = ComputeHash(content),
+                    ContentHash = hash,
                     CharCount = content?.Length ?? 0
                 };
 
@@ -96,7 +106,12 @@ namespace AxialSqlTools
             try
             {
                 // 仅记录文档窗口（SQL 查询编辑器 Kind == "Document"），跳过工具窗/对象资源管理器等
-                return string.Equals(window.Kind, "Document", StringComparison.OrdinalIgnoreCase);
+                if (!string.Equals(window.Kind, "Document", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+                // 校验底层确为文本文档，避免非查询文档（如设计器）也被记录
+                return window.Document?.Object("TextDocument") as TextDocument != null;
             }
             catch
             {
@@ -144,31 +159,20 @@ namespace AxialSqlTools
             return string.IsNullOrEmpty(key) ? "(unknown)" : key;
         }
 
-        private static string TryGetActiveDataSource()
+        private static void TryGetActiveConnectionInfo(out string dataSource, out string database)
         {
+            dataSource = string.Empty;
+            database = string.Empty;
             try
             {
+                // 一次调用同时取服务器与数据库，避免重复读取活动连接
                 var info = ScriptFactoryAccess.GetCurrentConnectionInfo();
-                return info?.ServerName ?? string.Empty;
+                dataSource = info?.ServerName ?? string.Empty;
+                database = info?.Database ?? string.Empty;
             }
             catch (Exception ex)
             {
                 AxialSqlToolsPackage._logger?.Warn(ex, "[TabHistory] failed to read active connection info");
-                return string.Empty;
-            }
-        }
-
-        private static string TryGetActiveDatabase()
-        {
-            try
-            {
-                var info = ScriptFactoryAccess.GetCurrentConnectionInfo();
-                return info?.Database ?? string.Empty;
-            }
-            catch (Exception ex)
-            {
-                AxialSqlToolsPackage._logger?.Warn(ex, "[TabHistory] failed to read active connection info");
-                return string.Empty;
             }
         }
 

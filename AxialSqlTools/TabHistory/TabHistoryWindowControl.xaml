@@ -93,7 +93,7 @@
                           RowStyle="{DynamicResource AxialThemedDataGridRowStyle}">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Time" Binding="{Binding Timestamp, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150"/>
-                        <DataGridTextColumn Header="Event" Binding="{Binding EventType}" Width="Auto"/>
+                        <DataGridTextColumn Header="Event" Binding="{Binding EventTypeDisplay}" Width="Auto"/>
                         <DataGridTextColumn Header="Document" Binding="{Binding DocumentName}" Width="160"/>
                         <DataGridTextColumn Header="Server" Binding="{Binding DataSource}" Width="140"/>
                         <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="140"/>
@@ -120,7 +120,7 @@
                     <Button Content="Open File" Tag="loc:TabHistory_OpenFile" Width="90" Margin="8,0,0,0" Click="OpenFile_Click"/>
                 </StackPanel>
                 <TextBox x:Name="FullContentBox"
-                         Text="{Binding SelectedRecord.Content}"
+                         Text="{Binding SelectedRecord.ContentDisplay}"
                          IsReadOnly="True"
                          TextWrapping="Wrap"
                          AcceptsReturn="True"

@@ -535,4 +535,9 @@ InnerException: {1}</value></data>
   <data name="TabHistory_OpenFile" xml:space="preserve"><value>Open File</value></data>
   <data name="TabHistory_Server" xml:space="preserve"><value>Server:</value></data>
   <data name="TabHistory_To" xml:space="preserve"><value>To:</value></data>
+
+  <data name="TabHistory_EventOpened" xml:space="preserve"><value>Opened</value></data>
+  <data name="TabHistory_EventActivated" xml:space="preserve"><value>Activated</value></data>
+  <data name="TabHistory_EventClosed" xml:space="preserve"><value>Closed</value></data>
+  <data name="TabHistory_EventExecuted" xml:space="preserve"><value>Executed</value></data>
 </root>

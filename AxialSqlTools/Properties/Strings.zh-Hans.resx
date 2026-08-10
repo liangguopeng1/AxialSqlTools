@@ -537,4 +537,9 @@
   <data name="TabHistory_OpenFile" xml:space="preserve"><value>打开文件</value></data>
   <data name="TabHistory_Server" xml:space="preserve"><value>服务器：</value></data>
   <data name="TabHistory_To" xml:space="preserve"><value>至：</value></data>
+
+  <data name="TabHistory_EventOpened" xml:space="preserve"><value>已打开</value></data>
+  <data name="TabHistory_EventActivated" xml:space="preserve"><value>已激活</value></data>
+  <data name="TabHistory_EventClosed" xml:space="preserve"><value>已关闭</value></data>
+  <data name="TabHistory_EventExecuted" xml:space="preserve"><value>已执行</value></data>
 </root>

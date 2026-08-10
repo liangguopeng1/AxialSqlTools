@@ -62,11 +62,7 @@ namespace AxialSqlTools
             {
                 if (DataContext is TabHistoryViewModel vm && vm.SelectedRecord != null)
                 {
-                    string text = vm.SelectedRecord.Content ?? string.Empty;
-                    if (text.Length == 0)
-                    {
-                        text = Strings.Get("TabHistory_ContentUnchanged");
-                    }
+                    string text = vm.SelectedRecord.ContentDisplay ?? string.Empty;
                     Clipboard.SetText(text);
                 }
             }

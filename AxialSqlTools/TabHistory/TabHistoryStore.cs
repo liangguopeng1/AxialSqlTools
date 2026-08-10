@@ -60,7 +60,8 @@ namespace AxialSqlTools
         {
             string folder = UserConfigPaths.TabHistoryDirectory;
             Directory.CreateDirectory(folder);
-            string fileName = $"tab-history-{DateTime.Now:yyyy-MM-dd}.jsonl";
+            // 按记录时间分天（而非写入时刻），使历史数据按事件日期归档
+            string fileName = $"tab-history-{record.Timestamp:yyyy-MM-dd}.jsonl";
             string filePath = Path.Combine(folder, fileName);
             string json = JsonConvert.SerializeObject(record);
             lock (FileSyncRoot)
@@ -75,25 +76,42 @@ namespace AxialSqlTools
             string folder = UserConfigPaths.TabHistoryDirectory;
             if (!Directory.Exists(folder)) return records;
 
-            foreach (string filePath in Directory.GetFiles(folder, "tab-history-*.jsonl", SearchOption.TopDirectoryOnly))
+            // 文件名按天命名，字典序即时间序；倒序遍历（新的在前），
+            // 每读一个文件后累积数量达到 max 即停止，避免全量物化
+            string[] files = Directory.GetFiles(folder, "tab-history-*.jsonl", SearchOption.TopDirectoryOnly);
+            Array.Sort(files, StringComparer.OrdinalIgnoreCase);
+            Array.Reverse(files);
+
+            foreach (string filePath in files)
             {
-                foreach (string line in File.ReadLines(filePath))
+                try
                 {
-                    if (string.IsNullOrWhiteSpace(line)) continue;
-                    try
+                    foreach (string line in File.ReadLines(filePath))
                     {
-                        var rec = JsonConvert.DeserializeObject<TabHistoryRecord>(line);
-                        if (rec == null) continue;
-                        rec.ContentShort = BuildShortText(rec.Content);
-                        records.Add(rec);
-                    }
-                    catch
-                    {
-                        // 忽略损坏行，继续
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+                        try
+                        {
+                            var rec = JsonConvert.DeserializeObject<TabHistoryRecord>(line);
+                            if (rec == null) continue;
+                            rec.ContentShort = BuildShortText(rec.Content);
+                            records.Add(rec);
+                        }
+                        catch
+                        {
+                            // 忽略损坏行，继续
+                        }
                     }
                 }
+                catch (Exception ex)
+                {
+                    // 单文件读取失败跳过该文件，不影响其他文件
+                    AxialSqlToolsPackage._logger?.Warn(ex, "[TabHistory] failed to read {0}", filePath);
+                    continue;
+                }
+                if (records.Count >= max) break;
             }
 
+            // 最终统一按 Timestamp 倒序（跨文件），取前 max 条
             return records
                 .OrderByDescending(r => r.Timestamp)
                 .Take(max)
@@ -120,8 +138,9 @@ namespace AxialSqlTools
                             File.Delete(filePath);
                         }
                     }
-                    catch
+                    catch (Exception ex)
                     {
+                        AxialSqlToolsPackage._logger?.Debug(ex, "[TabHistory] cleanup failed to delete {0}", filePath);
                     }
                 }
             }

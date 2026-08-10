@@ -1045,22 +1045,23 @@ namespace AxialSqlTools
                 _logger.Error(ex, "An exception occurred");
             }
 
-            // tab history: 执行后记录编辑器全文（含未执行草稿）
-            try
-            {
-                var mConn = GridAccess.GetNonPublicField(QEOLESQLExec, "m_conn");
-                string dataSource = string.Empty;
-                string database = string.Empty;
-                if (mConn != null)
+                // tab history: 执行后记录编辑器全文（含未执行草稿）
+                // 内容取自执行事件对应的 textSpan（避免用户执行期间切换标签导致取错窗口）
+                try
                 {
-                    try { dataSource = (string)GridAccess.GetProperty(mConn, "DataSource"); } catch { }
-                    try { database = (string)GridAccess.GetProperty(mConn, "Database"); } catch { }
+                    var textSpan = GridAccess.GetNonPublicField(QEOLESQLExec, "textSpan");
+                    string content = (string)GridAccess.GetProperty(textSpan, "Text");
+
+                    var mConn = GridAccess.GetNonPublicField(QEOLESQLExec, "m_conn");
+                    string dataSource = string.Empty;
+                    string database = string.Empty;
+                    if (mConn != null)
+                    {
+                        try { dataSource = (string)GridAccess.GetProperty(mConn, "DataSource"); } catch { }
+                        try { database = (string)GridAccess.GetProperty(mConn, "Database"); } catch { }
+                    }
+                    TabHistoryRecorder.RecordExecuted(content, dataSource, database);
                 }
-                TabHistoryRecorder.RecordExecuted(
-                    ScriptFactoryAccess.GetActiveQueryWindowText(),
-                    dataSource,
-                    database);
-            }
             catch (Exception ex)
             {
                 _logger.Error(ex, "An exception occurred recording tab history after execute");
