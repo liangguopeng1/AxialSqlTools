@@ -42,7 +42,7 @@
   <data name="Settings_Tab_Smtp" xml:space="preserve"><value>SMTP Settings</value></data>
   <data name="Settings_Tab_Updates" xml:space="preserve"><value>Updates</value></data>
   <data name="Settings_LanguageLabel" xml:space="preserve"><value>UI language</value></data>
-  <data name="Settings_Language_Chinese" xml:space="preserve"><value>涓枃</value></data>
+  <data name="Settings_Language_Chinese" xml:space="preserve"><value>中文</value></data>
   <data name="Settings_Language_English" xml:space="preserve"><value>English</value></data>
   <data name="Settings_LanguageHint" xml:space="preserve"><value>Tool windows, toolbar, and menus refresh immediately after saving.</value></data>
   <data name="Settings_SaveLanguage" xml:space="preserve"><value>Save language</value></data>
