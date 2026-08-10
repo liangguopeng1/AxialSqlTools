@@ -211,6 +211,10 @@
     <Compile Include="TabHistory\TabHistoryRecord.cs" />
     <Compile Include="TabHistory\TabHistoryRecorder.cs" />
     <Compile Include="TabHistory\TabHistoryStore.cs" />
+    <Compile Include="TabHistory\TabHistoryViewModel.cs" />
+    <Compile Include="TabHistory\TabHistoryWindowControl.xaml.cs">
+      <DependentUpon>TabHistoryWindowControl.xaml</DependentUpon>
+    </Compile>
     <Compile Include="StatisticsSummary\StatisticsSummary.cs" />
     <Compile Include="StatisticsSummary\StatisticsSummaryParser.cs" />
     <Compile Include="StatisticsSummary\StatisticsSummaryStore.cs" />
@@ -556,6 +560,10 @@
       <Generator>XamlIntelliSenseFileGenerator</Generator>
     </Page>
     <Page Include="QueryHistory\QueryHistoryWindowControl.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="TabHistory\TabHistoryWindowControl.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>
