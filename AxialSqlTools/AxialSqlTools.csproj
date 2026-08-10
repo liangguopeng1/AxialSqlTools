@@ -209,6 +209,7 @@
     </Compile>
     <Compile Include="QueryHistory\RelayCommand.cs" />
     <Compile Include="TabHistory\TabHistoryRecord.cs" />
+    <Compile Include="TabHistory\TabHistoryRecorder.cs" />
     <Compile Include="TabHistory\TabHistoryStore.cs" />
     <Compile Include="StatisticsSummary\StatisticsSummary.cs" />
     <Compile Include="StatisticsSummary\StatisticsSummaryParser.cs" />
