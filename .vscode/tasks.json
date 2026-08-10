@@ -64,6 +64,30 @@
         "clear": true
       },
       "problemMatcher": []
+    },
+    {
+      "label": "AxialSqlTools: Dev reload (build + install + SSMS)",
+      "type": "shell",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\tools\\dev-reload.ps1"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [
+        "$msCompile"
+      ]
     }
   ]
 }
