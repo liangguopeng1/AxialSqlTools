@@ -208,6 +208,8 @@
       <DependentUpon>QueryHistoryWindowControl.xaml</DependentUpon>
     </Compile>
     <Compile Include="QueryHistory\RelayCommand.cs" />
+    <Compile Include="TabHistory\TabHistoryRecord.cs" />
+    <Compile Include="TabHistory\TabHistoryStore.cs" />
     <Compile Include="StatisticsSummary\StatisticsSummary.cs" />
     <Compile Include="StatisticsSummary\StatisticsSummaryParser.cs" />
     <Compile Include="StatisticsSummary\StatisticsSummaryStore.cs" />
