@@ -215,6 +215,8 @@
     <Compile Include="TabHistory\TabHistoryWindowControl.xaml.cs">
       <DependentUpon>TabHistoryWindowControl.xaml</DependentUpon>
     </Compile>
+    <Compile Include="TabHistory\TabHistoryWindow.cs" />
+    <Compile Include="TabHistory\TabHistoryWindowCommand.cs" />
     <Compile Include="StatisticsSummary\StatisticsSummary.cs" />
     <Compile Include="StatisticsSummary\StatisticsSummaryParser.cs" />
     <Compile Include="StatisticsSummary\StatisticsSummaryStore.cs" />

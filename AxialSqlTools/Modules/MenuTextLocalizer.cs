@@ -30,6 +30,7 @@ namespace AxialSqlTools
             ("Select Current Statement", "Menu_SelectCurrentStatement"),
             ("Toggle Block Comment", "Menu_ToggleBlockComment"),
             ("Query History", "Menu_QueryHistory"),
+            ("Tab History", "Menu_TabHistory"),
             ("Statistics Summary", "Menu_StatisticsSummary"),
             ("Health Dashboard - Server", "Menu_HealthDashboardServer"),
             ("SQL Server Builds", "Menu_SqlServerBuilds"),
