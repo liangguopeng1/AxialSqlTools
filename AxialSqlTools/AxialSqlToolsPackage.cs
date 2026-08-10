@@ -400,31 +400,16 @@ namespace AxialSqlTools
                 CommandBar commandBar = m_plugin.AddCommandBar("Axial SQL Tools", MsoBarPosition.msoBarTop);
                 m_commandRegistry = new CommandRegistry(m_plugin, commandBar, new Guid(PackageGuidString), new Guid(PackageGuidGroup));
 
-                // Tab History 按钮：显式注册到工具栏（不依赖 vsct 命令表资源，保证 SSMS 22 下始终可达）
+                // Tab History 按钮：显式注册到 "Axial SQL Tools" 工具栏（不依赖 vsct 命令表资源），
+                // 与 Query History、片段管理器、快速搜索等同在工具栏溢出菜单分组。
+                // 注意：不要 Move 到最前——VS 工具栏布局算法会把"未指定前缀按钮"贪心排到独立条上，
+                // 离开 Axial SQL Tools 工具栏与其他项分家。
                 try
                 {
                     m_commandRegistry.RegisterCommand(
                         doBindings: false,
                         handler: new TabHistoryCommandProcessor(m_plugin, this),
                         onlyToolbar: true);
-
-                    // 把按钮移到工具栏最前并强制可见，避免被收进溢出菜单
-                    try
-                    {
-                        if (commandBar.Controls.Count > 0)
-                        {
-                            var tabBtn = commandBar.Controls["AxialSqlTools.TabHistory"] as Microsoft.VisualStudio.CommandBars.CommandBarButton;
-                            if (tabBtn != null)
-                            {
-                                tabBtn.Visible = true;
-                                tabBtn.Move(commandBar.Controls[0], true);
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Warn(ex, "Failed to position Tab History toolbar button.");
-                    }
                 }
                 catch (Exception ex)
                 {
