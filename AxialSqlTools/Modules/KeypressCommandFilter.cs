@@ -3,6 +3,7 @@ using Microsoft.VisualStudio.OLE.Interop;
 using Microsoft.VisualStudio.TextManager.Interop;
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Input;
 using System.Windows.Threading;
 using AxialSqlTools.IntelliSense;
@@ -19,6 +20,16 @@ namespace AxialSqlTools
         private IntelliSenseKeyHandler _intelliSense;
         private bool _intelliSenseInitTried;
         private bool _intelliSenseInitPending;
+        private bool _pendingPasteWarmup;
+        private bool _pendingAutoTriggerCatchup;
+        private DispatcherTimer _bufferWatch;
+        private int _lastSeenTextLen;
+        private int _lastWarmupTextLen;
+        private int _warmupRetryLeft;
+        private uint _textEventsCookie;
+        private IConnectionPoint _textEventsCp;
+        private BufferTextEvents _bufferEvents;
+        private bool _bufferScanQueued;
 
         public KeypressCommandFilter(AxialSqlToolsPackage package, IVsTextView textView)
         {
@@ -33,6 +44,11 @@ namespace AxialSqlTools
             {
                 throw new Exception("Failed to add command filter");
             }
+            // 粘贴常发生在 Filter 注册之前：挂载时文本已在，必须主动扫描，不能只靠「增长量」
+            TryAdviseBufferEvents();
+            EnsureBufferWatch();
+            ScanExistingDocumentForWarmup("attach");
+            ScheduleDeferredDocumentScans();
         }
 
         /// <summary>
@@ -42,7 +58,11 @@ namespace AxialSqlTools
         private void ScheduleEnsureIntelliSense(bool warmupAfterCreate = false, bool catchupAutoTrigger = false)
         {
             if (_intelliSense != null)
+            {
+                if (warmupAfterCreate)
+                    SchedulePasteCatalogWarmup();
                 return;
+            }
             if (_intelliSenseInitTried || _intelliSenseInitPending)
             {
                 if (warmupAfterCreate)
@@ -69,7 +89,16 @@ namespace AxialSqlTools
                 {
                     try
                     {
-                        if (_intelliSense != null || _intelliSenseInitTried) return;
+                        if (_intelliSense != null)
+                        {
+                            if (_pendingPasteWarmup)
+                            {
+                                _pendingPasteWarmup = false;
+                                SchedulePasteCatalogWarmup();
+                            }
+                            return;
+                        }
+                        if (_intelliSenseInitTried) return;
                         _intelliSenseInitTried = true;
                         _logger.Info("IntelliSense KeyHandler creating (deferred, off Exec)");
                         _intelliSense = new IntelliSenseKeyHandler(_package, textView);
@@ -80,11 +109,9 @@ namespace AxialSqlTools
                             _pendingAutoTriggerCatchup = false;
                             _intelliSense.MaybeScheduleAutoTrigger((uint)VSConstants.VSStd2KCmdID.TYPECHAR);
                         }
-                        if (_pendingPasteWarmup)
-                        {
-                            _pendingPasteWarmup = false;
-                            SchedulePasteCatalogWarmup();
-                        }
+                        // 缓冲区已有文本时一律预热（粘贴命令常识别不到）
+                        _pendingPasteWarmup = false;
+                        SchedulePasteCatalogWarmup();
                         LogManager.Flush();
                     }
                     catch (Exception ex)
@@ -92,6 +119,7 @@ namespace AxialSqlTools
                         _logger.Error(ex, "IntelliSense KeyHandler create failed");
                         LogManager.Flush();
                         _intelliSense = null;
+                        _intelliSenseInitTried = false;
                     }
                     finally
                     {
@@ -107,31 +135,263 @@ namespace AxialSqlTools
             }
         }
 
-        private bool _pendingPasteWarmup;
-        private bool _pendingAutoTriggerCatchup;
-
-        /// <summary>粘贴完成后延迟扫描脚本并预热跨库缓存（等缓冲区写入完成）。</summary>
+        /// <summary>粘贴/大段文本后预热跨库缓存；可无 KeyHandler，并短重试等连接/缓冲区就绪。</summary>
         private void SchedulePasteCatalogWarmup()
         {
+            _pendingPasteWarmup = true;
+            _warmupRetryLeft = Math.Max(_warmupRetryLeft, 6);
+            try
+            {
+                var dispatcher = System.Windows.Application.Current?.Dispatcher
+                    ?? Dispatcher.CurrentDispatcher;
+                dispatcher.BeginInvoke(new Action(AttemptCatalogWarmup), DispatcherPriority.ApplicationIdle);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "SchedulePasteCatalogWarmup failed");
+            }
+        }
+
+        private void AttemptCatalogWarmup()
+        {
+            try
+            {
+                if (TryWarmupCatalogsNow())
+                {
+                    _pendingPasteWarmup = false;
+                    _warmupRetryLeft = 0;
+                    return;
+                }
+                if (_warmupRetryLeft <= 0) return;
+                _warmupRetryLeft--;
+                var timer = new DispatcherTimer
+                {
+                    Interval = TimeSpan.FromMilliseconds(350)
+                };
+                timer.Tick += (s, e) =>
+                {
+                    timer.Stop();
+                    AttemptCatalogWarmup();
+                };
+                timer.Start();
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "AttemptCatalogWarmup failed");
+            }
+        }
+
+        private bool TryWarmupCatalogsNow()
+        {
+            if (_intelliSense != null)
+            {
+                bool ok = _intelliSense.TryScheduleCatalogWarmupFromDocument();
+                if (ok)
+                {
+                    try { _lastWarmupTextLen = Math.Max(_lastWarmupTextLen, GetTextLengthSafe()); }
+                    catch { }
+                }
+                return ok;
+            }
+
+            if (!UiSettingsStore.GetIntelliSenseEnabled()) return true;
+            string text = GetFullTextSafe();
+            ScriptFactoryAccess.ConnectionInfo connInfo = null;
+            try { connInfo = ScriptFactoryAccess.GetCurrentConnectionInfo(); }
+            catch { }
+            if (connInfo == null || string.IsNullOrWhiteSpace(text))
+            {
+                _logger.Info("Catalog warmup pending (no handler): textLen={0} hasConn={1}",
+                    text?.Length ?? 0, connInfo != null);
+                return false;
+            }
+            _logger.Info("Catalog warmup from filter len={0} db={1}", text.Length, connInfo.Database);
+            var snap = connInfo;
+            var sql = text;
+            _lastWarmupTextLen = text.Length;
+            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    MetadataCatalogService.Instance.BuildCatalogsReferencedInSql(snap, sql);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warn(ex, "Catalog warmup from filter failed");
+                }
+            });
+            return true;
+        }
+
+        private void EnsureBufferWatch()
+        {
+            if (_bufferWatch != null) return;
+            try
+            {
+                var dispatcher = System.Windows.Application.Current?.Dispatcher
+                    ?? Dispatcher.CurrentDispatcher;
+                _lastSeenTextLen = GetTextLengthSafe();
+                _bufferWatch = new DispatcherTimer(DispatcherPriority.Normal, dispatcher)
+                {
+                    Interval = TimeSpan.FromMilliseconds(400)
+                };
+                _bufferWatch.Tick += (s, e) =>
+                {
+                    try
+                    {
+                        ScanExistingDocumentForWarmup("poll");
+                    }
+                    catch
+                    {
+                    }
+                };
+                _bufferWatch.Start();
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "EnsureBufferWatch failed");
+            }
+        }
+
+        /// <summary>
+        /// 文档已有足够 SQL 且尚未预热过该长度 → 创建 KeyHandler + 预热。
+        /// 覆盖「先粘贴后挂 Filter」：此时没有增长量可观测。
+        /// </summary>
+        private void ScanExistingDocumentForWarmup(string reason)
+        {
+            if (!UiSettingsStore.GetIntelliSenseEnabled()) return;
+            int len = GetTextLengthSafe();
+            _lastSeenTextLen = len;
+            if (len < 60 || len <= _lastWarmupTextLen) return;
+            // 已在创建/重试预热中则勿重复打点
+            if (_pendingPasteWarmup || _warmupRetryLeft > 0 || _intelliSenseInitPending)
+                return;
+            _logger.Info("Document scan warmup reason={0} len={1} lastWarmup={2}",
+                reason, len, _lastWarmupTextLen);
+            ScheduleEnsureIntelliSense(warmupAfterCreate: true);
+            SchedulePasteCatalogWarmup();
+        }
+
+        private void ScheduleDeferredDocumentScans()
+        {
+            try
+            {
+                var dispatcher = System.Windows.Application.Current?.Dispatcher
+                    ?? Dispatcher.CurrentDispatcher;
+                // 粘贴可能稍晚于 WindowActivated 注册；多探几次
+                int[] delaysMs = { 200, 500, 1000, 2000 };
+                foreach (int delay in delaysMs)
+                {
+                    int d = delay;
+                    var timer = new DispatcherTimer(DispatcherPriority.Normal, dispatcher)
+                    {
+                        Interval = TimeSpan.FromMilliseconds(d)
+                    };
+                    timer.Tick += (s, e) =>
+                    {
+                        timer.Stop();
+                        ScanExistingDocumentForWarmup("deferred_" + d);
+                    };
+                    timer.Start();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "ScheduleDeferredDocumentScans failed");
+            }
+        }
+
+        private void TryAdviseBufferEvents()
+        {
+            if (_textEventsCookie != 0 || textView == null) return;
+            try
+            {
+                if (textView.GetBuffer(out IVsTextLines lines) != VSConstants.S_OK || lines == null)
+                    return;
+                var cpc = lines as IConnectionPointContainer;
+                if (cpc == null) return;
+                Guid iid = typeof(IVsTextLinesEvents).GUID;
+                cpc.FindConnectionPoint(ref iid, out _textEventsCp);
+                if (_textEventsCp == null) return;
+                _bufferEvents = new BufferTextEvents(this);
+                _textEventsCp.Advise(_bufferEvents, out _textEventsCookie);
+                _logger.Info("Buffer text events advised cookie={0}", _textEventsCookie);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "TryAdviseBufferEvents failed");
+            }
+        }
+
+        internal void OnBufferTextChanged()
+        {
+            if (_bufferScanQueued) return;
+            _bufferScanQueued = true;
             try
             {
                 var dispatcher = System.Windows.Application.Current?.Dispatcher
                     ?? Dispatcher.CurrentDispatcher;
                 dispatcher.BeginInvoke(new Action(() =>
                 {
-                    try
-                    {
-                        _intelliSense?.ScheduleCatalogWarmupFromDocument();
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Warn(ex, "Paste catalog warmup failed");
-                    }
+                    _bufferScanQueued = false;
+                    ScanExistingDocumentForWarmup("text_event");
                 }), DispatcherPriority.ApplicationIdle);
             }
-            catch (Exception ex)
+            catch
             {
-                _logger.Warn(ex, "SchedulePasteCatalogWarmup failed");
+                _bufferScanQueued = false;
+            }
+        }
+
+        [ComVisible(true)]
+        private sealed class BufferTextEvents : IVsTextLinesEvents
+        {
+            private readonly KeypressCommandFilter _owner;
+            public BufferTextEvents(KeypressCommandFilter owner) { _owner = owner; }
+            public void OnChangeLineText(TextLineChange[] pTextLineChange, int fLast)
+            {
+                _owner?.OnBufferTextChanged();
+            }
+            public void OnChangeLineAttributes(int iFirstLine, int iLastLine) { }
+        }
+
+        private int GetTextLengthSafe()
+        {
+            try
+            {
+                if (textView == null || textView.GetBuffer(out IVsTextLines lines) != VSConstants.S_OK || lines == null)
+                    return 0;
+                if (lines is IVsTextBuffer buf && buf.GetSize(out int size) == VSConstants.S_OK)
+                    return Math.Max(0, size);
+                lines.GetLastLineIndex(out int lastLine, out int lastCol);
+                return Math.Max(0, lastCol);
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private string GetFullTextSafe()
+        {
+            try
+            {
+                if (textView == null || textView.GetBuffer(out IVsTextLines textLines) != VSConstants.S_OK)
+                    return string.Empty;
+                textLines.GetLastLineIndex(out int lastLine, out _);
+                var sb = new StringBuilder();
+                for (int i = 0; i <= lastLine; i++)
+                {
+                    textLines.GetLengthOfLine(i, out int lineLen);
+                    textLines.GetLineText(i, 0, i, lineLen, out string lineText);
+                    sb.Append(lineText);
+                    if (i < lastLine) sb.Append("\r\n");
+                }
+                return sb.ToString();
+            }
+            catch
+            {
+                return string.Empty;
             }
         }
 
@@ -239,10 +499,19 @@ namespace AxialSqlTools
                 _intelliSense.MaybeScheduleAutoTrigger(nCmdID, typed);
             }
 
+            int lenBefore = GetTextLengthSafe();
             int hr = nextCommandTarget?.Exec(ref cmdGroup, nCmdID, nCmdexecopt, pvaIn, pvaOut) ?? VSConstants.S_OK;
+            int lenAfter = GetTextLengthSafe();
+            _lastSeenTextLen = lenAfter;
             // 粘贴完成后预热：须在 Exec 之后，缓冲区才有新文本
-            if (isPaste)
+            if (isPaste || (lenAfter - lenBefore >= 60))
+            {
+                if (!isPaste)
+                    _logger.Info("Treat as paste-like growth cmd={0}/{1} delta={2}",
+                        cmdGroup, nCmdID, lenAfter - lenBefore);
+                ScheduleEnsureIntelliSense(warmupAfterCreate: true);
                 SchedulePasteCatalogWarmup();
+            }
             return hr;
         }
 
@@ -263,6 +532,9 @@ namespace AxialSqlTools
         private static bool IsPasteCommand(Guid cmdGroup, uint nCmdID)
         {
             if (cmdGroup == typeof(VSConstants.VSStd97CmdID).GUID
+                && nCmdID == (uint)VSConstants.VSStd97CmdID.Paste)
+                return true;
+            if (cmdGroup == VSConstants.GUID_VSStandardCommandSet97
                 && nCmdID == (uint)VSConstants.VSStd97CmdID.Paste)
                 return true;
             // 部分宿主走 OLE / VSStd2K

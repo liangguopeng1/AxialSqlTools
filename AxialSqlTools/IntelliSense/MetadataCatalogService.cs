@@ -127,6 +127,50 @@ namespace AxialSqlTools
                 }
             }
 
+            /// <summary>
+            /// 在后台线程同步构建当前库 + SQL 引用跨库目录（可阻塞，勿在 UI 线程调用）。
+            /// </summary>
+            public void BuildCatalogsReferencedInSql(ScriptFactoryAccess.ConnectionInfo connInfo, string sql)
+            {
+                if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
+                    return;
+                GetOrBuildCatalog(connInfo);
+                if (string.IsNullOrEmpty(sql)) return;
+                foreach (var db in ExtractReferencedDatabaseNames(sql))
+                {
+                    if (string.IsNullOrEmpty(db)) continue;
+                    if (string.Equals(db, connInfo.Database, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    GetOrBuildCatalog(connInfo, db);
+                }
+            }
+
+            /// <summary>缓存未命中时若正在构建则短等；供悬停 UI 线程避免直接 no match。</summary>
+            public MetadataCatalog GetCachedCatalogOrWait(
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string dbOverride = null,
+                int maxWaitMs = 2000)
+            {
+                var cached = GetCachedCatalog(connInfo, dbOverride);
+                if (cached != null) return cached;
+                if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
+                    return null;
+                string database = string.IsNullOrWhiteSpace(dbOverride) ? (connInfo.Database ?? "master") : dbOverride;
+                if (string.IsNullOrWhiteSpace(database))
+                    database = "master";
+                string key = Key(connInfo.ServerName, database);
+                if (!_building.ContainsKey(key))
+                    return null;
+                int slices = Math.Max(1, maxWaitMs / 50);
+                for (int i = 0; i < slices && _building.ContainsKey(key); i++)
+                {
+                    System.Threading.Thread.Sleep(50);
+                    cached = GetCachedCatalog(connInfo, dbOverride);
+                    if (cached != null) return cached;
+                }
+                return GetCachedCatalog(connInfo, dbOverride);
+            }
+
             /// <summary>从 SQL 提取可能的库名（db.schema.obj / db..obj / [db].[schema].[obj]）。</summary>
             internal static List<string> ExtractReferencedDatabaseNames(string sql)
             {

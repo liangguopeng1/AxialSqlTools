@@ -218,6 +218,16 @@ namespace AxialSqlTools.IntelliSense
                     return;
                 }
 
+                // 先判活动文档：后台标签勿做坐标判定（会刷 cursor_miss，且 ClientRect 与命中 HWND 常不一致）
+                if (!IsSelectedTextView())
+                {
+                    // 后台标签：降噪，勿每 tick 写 diag（曾把日志刷到数十 MB）
+                    if (ReferenceEquals(_hoverOwner, this))
+                        _hoverOwner = null;
+                    CloseTooltip();
+                    return;
+                }
+
                 if (!TryUpdateCursorFromScreen(out string cursorReason))
                 {
                     Diag("cursor_miss", cursorReason);
@@ -240,18 +250,6 @@ namespace AxialSqlTools.IntelliSense
                     return;
                 }
                 _awayFromEditorSince = DateTime.MinValue;
-
-                // 多标签客户区重叠：只能让当前活动文档视图弹悬停（切回标签 A 时不再用 B 的 buffer）
-                if (!IsSelectedTextView())
-                {
-                    Diag("not_active", "hwnd=0x{0:X} owner=0x{1:X}",
-                        _editorHwnd.ToInt64(),
-                        _hoverOwner?._editorHwnd.ToInt64() ?? 0);
-                    if (ReferenceEquals(_hoverOwner, this))
-                        _hoverOwner = null;
-                    CloseTooltip();
-                    return;
-                }
                 ClaimHoverOwnership("active_view");
 
                 if (QuickInfoTooltip.ShouldKeepOpen)
@@ -386,30 +384,46 @@ namespace AxialSqlTools.IntelliSense
                 }
             }
 
-            NativePoint clientPt = screenPt;
-            if (!ScreenToClient(_editorHwnd, ref clientPt))
+            IntPtr viewHwnd = GetViewHwnd();
+            if (viewHwnd == IntPtr.Zero) viewHwnd = _editorHwnd;
+
+            // 优先：屏幕坐标能否映射到本视图行列。SSMS 实际命中 HWND 常与 GetWindowHandle 不一致，
+            // 仅用 ClientRect 会误判 out_client，导致悬停永远不弹（只能 Ctrl+Space）。
+            if (TryGetLineColumnFromScreenPoint(screenPt.x, screenPt.y, out _, out _))
+            {
+                NativePoint clientPt = screenPt;
+                if (viewHwnd != IntPtr.Zero && ScreenToClient(viewHwnd, ref clientPt))
+                    NoteMove(new Point(clientPt.x, clientPt.y));
+                else
+                    NoteMove(new Point(screenPt.x, screenPt.y));
+                reason = string.Format("ok_linecol hit=0x{0:X}", hwndAtPoint.ToInt64());
+                return true;
+            }
+
+            NativePoint clientFallback = screenPt;
+            if (viewHwnd == IntPtr.Zero || !ScreenToClient(viewHwnd, ref clientFallback))
             {
                 reason = "s2c_fail";
                 return false;
             }
-            if (!GetClientRect(_editorHwnd, out RECT rc))
+            if (!GetClientRect(viewHwnd, out RECT rc))
             {
                 reason = "no_rect";
                 return false;
             }
-            // 客户区内按坐标判定（SSMS 命中 HWND 常是兄弟窗；串扰由 HoverOwner 门闩处理）
-            if (clientPt.x < rc.Left || clientPt.y < rc.Top || clientPt.x >= rc.Right || clientPt.y >= rc.Bottom)
+            if (clientFallback.x < rc.Left || clientFallback.y < rc.Top
+                || clientFallback.x >= rc.Right || clientFallback.y >= rc.Bottom)
             {
-                if (hwndAtPoint == IntPtr.Zero || !IsRelatedHwnd(_editorHwnd, hwndAtPoint))
+                if (hwndAtPoint == IntPtr.Zero || !IsRelatedHwnd(viewHwnd, hwndAtPoint))
                 {
                     reason = string.Format("out_client pt={0},{1} rc={2},{3}-{4},{5} hit=0x{6:X}",
-                        clientPt.x, clientPt.y, rc.Left, rc.Top, rc.Right, rc.Bottom, hwndAtPoint.ToInt64());
+                        clientFallback.x, clientFallback.y, rc.Left, rc.Top, rc.Right, rc.Bottom, hwndAtPoint.ToInt64());
                     return false;
                 }
             }
 
-            NoteMove(new Point(clientPt.x, clientPt.y));
-            reason = string.Format("ok pt={0},{1} hit=0x{2:X}", clientPt.x, clientPt.y, hwndAtPoint.ToInt64());
+            NoteMove(new Point(clientFallback.x, clientFallback.y));
+            reason = string.Format("ok pt={0},{1} hit=0x{2:X}", clientFallback.x, clientFallback.y, hwndAtPoint.ToInt64());
             return true;
         }
 
@@ -441,8 +455,19 @@ namespace AxialSqlTools.IntelliSense
                     return true;
                 IntPtr activeHwnd = IntPtr.Zero;
                 try { activeHwnd = active.GetWindowHandle(); } catch { }
-                if (activeHwnd != IntPtr.Zero && _editorHwnd != IntPtr.Zero && activeHwnd == _editorHwnd)
+                if (activeHwnd == IntPtr.Zero) return true;
+                // SSMS 常返回父/子 HWND，不能只比全等，否则前台标签也会被判 not_active
+                if (_editorHwnd != IntPtr.Zero
+                    && (activeHwnd == _editorHwnd || IsRelatedHwnd(_editorHwnd, activeHwnd)))
                     return true;
+                try
+                {
+                    IntPtr mine = _textView?.GetWindowHandle() ?? IntPtr.Zero;
+                    if (mine != IntPtr.Zero
+                        && (activeHwnd == mine || IsRelatedHwnd(mine, activeHwnd)))
+                        return true;
+                }
+                catch { }
                 return false;
             }
             catch
@@ -673,7 +698,6 @@ namespace AxialSqlTools.IntelliSense
             NativePoint screenPt;
             if (!GetCursorPos(out screenPt)) return false;
             // 全程用屏幕坐标：GetPointOfLineColumn 是视图客户区坐标，经 ClientToScreen 对齐
-            // （避免 ScreenToClient(_editorHwnd) 与视图坐标原点不一致导致 linecol 失败）
             if (TryGetLineColumnFromScreenPoint(screenPt.x, screenPt.y, out line, out col))
                 return true;
             LogHoverBlock("linecol_detail", "screen={0},{1} clientLast={2},{3}",
@@ -706,14 +730,40 @@ namespace AxialSqlTools.IntelliSense
 
         /// <summary>
         /// 鼠标是否落在 [wordStart, wordEnd) 的屏幕字形矩形内。
+        /// 词后若只有行尾空白（如 <c>dbo.table␠</c>），空白也算命中，否则右缘几乎点不中。
         /// </summary>
         private bool IsPointerOverWordGlyph(int line, int wordStart, int wordEnd)
         {
             if (wordEnd <= wordStart) return false;
             NativePoint screenPt;
             if (!GetCursorPos(out screenPt)) return false;
+
+            int glyphEnd = wordEnd;
+            try
+            {
+                if (_textView.GetBuffer(out IVsTextLines buf) == S_OK)
+                {
+                    buf.GetLengthOfLine(line, out int lineLen);
+                    if (lineLen > wordEnd)
+                    {
+                        buf.GetLineText(line, 0, line, lineLen, out string lineText);
+                        if (!string.IsNullOrEmpty(lineText))
+                        {
+                            int i = wordEnd;
+                            while (i < lineLen && char.IsWhiteSpace(lineText[i])) i++;
+                            // 仅扩展「词后全是行尾空白」；词间空格不扩展，避免误吸到下一词
+                            if (i >= lineLen)
+                                glyphEnd = lineLen;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+
             if (!TryGetViewPointScreen(line, wordStart, out NativePoint startScreen)) return false;
-            if (!TryGetViewPointScreen(line, wordEnd, out NativePoint endScreen)) return false;
+            if (!TryGetViewPointScreen(line, glyphEnd, out NativePoint endScreen)) return false;
 
             int top = startScreen.y;
             int bottom;
@@ -733,22 +783,59 @@ namespace AxialSqlTools.IntelliSense
             const int pad = 4;
             int left = Math.Min(startScreen.x, endScreen.x) - pad;
             int right = Math.Max(startScreen.x, endScreen.x) + pad;
+            // 单字母别名（a/b/c）字形极窄，稍扩命中区
+            if (right - left < 14)
+            {
+                int mid = (left + right) / 2;
+                left = mid - 7;
+                right = mid + 7;
+            }
             if (screenPt.x < left || screenPt.x > right) return false;
             if (screenPt.y < top - pad || screenPt.y >= bottom + pad) return false;
+            return true;
+        }
+
+        /// <summary>
+        /// 视图坐标所用 HWND。优先每次取 GetWindowHandle（与 GetPointOfLineColumn 同源）；
+        /// 勿优先用可能过期的 _editorHwnd，否则 ScreenToClient 原点会偏，linecol 大面积失败。
+        /// </summary>
+        private IntPtr GetViewHwnd()
+        {
+            try
+            {
+                IntPtr hwnd = _textView?.GetWindowHandle() ?? IntPtr.Zero;
+                if (hwnd != IntPtr.Zero)
+                {
+                    _editorHwnd = hwnd;
+                    return hwnd;
+                }
+            }
+            catch
+            {
+            }
+            return _editorHwnd;
+        }
+
+        private bool TryGetViewPointClient(int line, int col, out NativePoint client)
+        {
+            client = new NativePoint();
+            POINT[] pts = new POINT[1];
+            if (_textView.GetPointOfLineColumn(line, col, pts) != S_OK)
+                return false;
+            client.x = pts[0].x;
+            client.y = pts[0].y;
             return true;
         }
 
         private bool TryGetViewPointScreen(int line, int col, out NativePoint screen)
         {
             screen = new NativePoint();
-            POINT[] pts = new POINT[1];
-            if (_textView.GetPointOfLineColumn(line, col, pts) != S_OK)
+            if (!TryGetViewPointClient(line, col, out NativePoint client))
                 return false;
-            IntPtr hwnd = _textView.GetWindowHandle();
-            if (hwnd == IntPtr.Zero) hwnd = _editorHwnd;
+            IntPtr hwnd = GetViewHwnd();
             if (hwnd == IntPtr.Zero) return false;
-            screen.x = pts[0].x;
-            screen.y = pts[0].y;
+            screen.x = client.x;
+            screen.y = client.y;
             return ClientToScreen(hwnd, ref screen);
         }
 
@@ -757,10 +844,18 @@ namespace AxialSqlTools.IntelliSense
             return char.IsLetterOrDigit(c) || c == '_' || c == '@' || c == '#';
         }
 
+        /// <summary>
+        /// 屏幕坐标 → 行列。用「视图 HWND」把鼠标 ScreenToClient，再与 GetPointOfLineColumn
+        /// 客户区坐标二分（同源 HWND）。不再因「超过行尾 X」直接失败——行尾空白交给字形命中判断。
+        /// </summary>
         private bool TryGetLineColumnFromScreenPoint(int screenX, int screenY, out int line, out int col)
         {
             line = 0;
             col = 0;
+            IntPtr hwnd = GetViewHwnd();
+            if (hwnd == IntPtr.Zero) return false;
+            NativePoint client = new NativePoint { x = screenX, y = screenY };
+            if (!ScreenToClient(hwnd, ref client)) return false;
             if (_textView.GetBuffer(out IVsTextLines textLines) != S_OK) return false;
             textLines.GetLastLineIndex(out int lastLine, out _);
 
@@ -769,9 +864,9 @@ namespace AxialSqlTools.IntelliSense
             while (lo <= hi)
             {
                 int mid = (lo + hi) / 2;
-                if (!TryGetViewPointScreen(mid, 0, out NativePoint midScreen)) return false;
+                if (!TryGetViewPointClient(mid, 0, out NativePoint midPt)) return false;
                 anyPoint = true;
-                if (midScreen.y <= screenY)
+                if (midPt.y <= client.y)
                 {
                     bestLine = mid;
                     lo = mid + 1;
@@ -783,29 +878,36 @@ namespace AxialSqlTools.IntelliSense
             }
             if (!anyPoint) return false;
 
-            if (!TryGetViewPointScreen(bestLine, 0, out NativePoint lineTopPt)) return false;
+            if (!TryGetViewPointClient(bestLine, 0, out NativePoint lineTopPt)) return false;
             int lineTop = lineTopPt.y;
             int lineBottom;
-            if (bestLine < lastLine && TryGetViewPointScreen(bestLine + 1, 0, out NativePoint nextPt))
+            if (bestLine < lastLine && TryGetViewPointClient(bestLine + 1, 0, out NativePoint nextPt))
                 lineBottom = nextPt.y;
             else
-                lineBottom = lineTop + 20;
-            if (screenY < lineTop || screenY >= lineBottom)
+            {
+                int lineHeight = 20;
+                try
+                {
+                    if (_textView.GetLineHeight(out int h) == S_OK && h > 0)
+                        lineHeight = h;
+                }
+                catch { }
+                lineBottom = lineTop + lineHeight;
+            }
+            const int yPad = 2;
+            if (client.y < lineTop - yPad || client.y >= lineBottom + yPad)
                 return false;
 
             line = bestLine;
             textLines.GetLengthOfLine(line, out int lineLen);
             if (lineLen <= 0) return false;
 
-            if (TryGetViewPointScreen(line, lineLen, out NativePoint eolPt) && screenX > eolPt.x + 3)
-                return false;
-
             int colLo = 0, colHi = lineLen, bestCol = 0;
             while (colLo <= colHi)
             {
                 int midCol = (colLo + colHi) / 2;
-                if (!TryGetViewPointScreen(line, midCol, out NativePoint colPt)) break;
-                if (colPt.x <= screenX)
+                if (!TryGetViewPointClient(line, midCol, out NativePoint colPt)) break;
+                if (colPt.x <= client.x)
                 {
                     bestCol = midCol;
                     colLo = midCol + 1;

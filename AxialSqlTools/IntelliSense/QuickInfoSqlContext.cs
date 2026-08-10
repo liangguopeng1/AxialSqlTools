@@ -305,7 +305,31 @@ namespace AxialSqlTools.IntelliSense
                     if (t == null || IsInsignificant(t)) { i++; continue; }
                     if (t.Offset >= regionEnd) break;
                     string kw = t.Text?.ToUpperInvariant();
-                    if (IsJoinKeyword(kw) || kw == "ON" || kw == "AS" || kw == ",") break;
+                    if (IsJoinKeyword(kw) || kw == "ON" || kw == "," ) break;
+                    // AS alias：消费别名后结束本段（勿把 AS 留给 look-ahead 提前 return）
+                    if (kw == "AS")
+                    {
+                        int j = i + 1;
+                        while (j < tokens.Count)
+                        {
+                            var at = tokens[j];
+                            if (at == null || IsInsignificant(at)) { j++; continue; }
+                            if (at.Offset >= regionEnd) break;
+                            if (IsWordLike(at) || IsPartialObjectName(at))
+                            {
+                                string an = Unbracket(at.Text);
+                                if (!IsTableHintOrNoise(an) && !IsSqlKeyword(an))
+                                {
+                                    names.Add(an);
+                                    nameSet.Add(an);
+                                }
+                                j++;
+                            }
+                            break;
+                        }
+                        i = j;
+                        break;
+                    }
                     // 语句/子句边界：禁止跨到下一句 SELECT（无分号时尤其常见）
                     if (IsFromRegionStopKeyword(kw)) break;
                     // 跳过 WITH (NOLOCK) / kucun(nolock) 等表提示，避免把 nolock 当成表名
@@ -372,7 +396,7 @@ namespace AxialSqlTools.IntelliSense
                     });
                 }
 
-                // 仅逗号 / JOIN 可接下一表；否则下行裸 huizong.dbo.xxx 不再并入 FROM
+                // 仅逗号 / JOIN 可接下一表；AS alias 已在上段消费，若残留则跳过
                 int look = i;
                 while (look < tokens.Count)
                 {
@@ -382,6 +406,18 @@ namespace AxialSqlTools.IntelliSense
                     string lkw = lt.Text?.ToUpperInvariant();
                     if (lkw == "," || IsJoinKeyword(lkw))
                         break;
+                    if (lkw == "AS")
+                    {
+                        look++;
+                        while (look < tokens.Count)
+                        {
+                            var at = tokens[look];
+                            if (at == null || IsInsignificant(at)) { look++; continue; }
+                            if (IsWordLike(at) || IsPartialObjectName(at)) look++;
+                            break;
+                        }
+                        continue;
+                    }
                     return segments;
                 }
             }

@@ -480,8 +480,28 @@ namespace AxialSqlTools
                         if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
                             || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT" || kw == ";"
                             || kw == "INNER" || kw == "LEFT" || kw == "RIGHT" || kw == "FULL"
-                            || kw == "CROSS" || kw == "OUTER" || kw == "JOIN" || kw == "," || kw == "ON" || kw == "AS")
+                            || kw == "CROSS" || kw == "OUTER" || kw == "JOIN" || kw == "," || kw == "ON")
                         {
+                            break;
+                        }
+                        if (kw == "AS")
+                        {
+                            int j = i + 1;
+                            while (j < tokens.Count)
+                            {
+                                var at = tokens[j];
+                                if (at == null || IsInsignificantToken(at)) { j++; continue; }
+                                if (at.Offset >= regionEnd) break;
+                                if (IsWordLikeToken(at) || IsPartialObjectNameToken(at) || IsIdentifierLike(at))
+                                {
+                                    string an = UnbracketIdentifier(at.Text);
+                                    if (!string.IsNullOrEmpty(an) && !IsSqlTableKeyword(an))
+                                        alias = an;
+                                    j++;
+                                }
+                                break;
+                            }
+                            i = j;
                             break;
                         }
                         if (kw == "WITH") { i++; continue; }
@@ -597,7 +617,7 @@ namespace AxialSqlTools
                     if (!string.IsNullOrEmpty(tref.LinkedServer))
                         MergeAlias(local, tref.LinkedServer + "." + (tref.Database ?? "") + "." + (tref.Schema ?? "dbo") + "." + tref.Name, tref);
 
-                    // 仅逗号 / JOIN 可接下一表
+                    // 仅逗号 / JOIN 可接下一表；残留 AS alias 则跳过继续扫
                     int look = i;
                     while (look < tokens.Count)
                     {
@@ -608,6 +628,19 @@ namespace AxialSqlTools
                         if (lkw == "," || lkw == "INNER" || lkw == "LEFT" || lkw == "RIGHT" || lkw == "FULL"
                             || lkw == "CROSS" || lkw == "OUTER" || lkw == "JOIN")
                             break;
+                        if (lkw == "AS")
+                        {
+                            look++;
+                            while (look < tokens.Count)
+                            {
+                                var at = tokens[look];
+                                if (at == null || IsInsignificantToken(at)) { look++; continue; }
+                                if (IsWordLikeToken(at) || IsPartialObjectNameToken(at) || IsIdentifierLike(at))
+                                    look++;
+                                break;
+                            }
+                            continue;
+                        }
                         return;
                     }
                 }

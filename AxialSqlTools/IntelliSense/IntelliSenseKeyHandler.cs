@@ -814,32 +814,44 @@ namespace AxialSqlTools.IntelliSense
         /// <summary>粘贴整段 SQL 后：扫描跨库引用并后台预热元数据缓存。</summary>
         public void ScheduleCatalogWarmupFromDocument()
         {
+            TryScheduleCatalogWarmupFromDocument();
+        }
+
+        /// <summary>成功排队预热返回 true；文本/连接未就绪返回 false（供重试）。</summary>
+        public bool TryScheduleCatalogWarmupFromDocument()
+        {
             try
             {
                 var settings = UiSettingsStore.GetIntelliSenseSettings();
-                if (!settings.enabled) return;
+                if (!settings.enabled) return true;
                 string text = GetFullText();
                 var connInfo = SafeGetCurrentConnection();
-                if (connInfo == null || string.IsNullOrWhiteSpace(text)) return;
+                if (connInfo == null || string.IsNullOrWhiteSpace(text))
+                {
+                    _logger.Info("Catalog warmup skip: textLen={0} hasConn={1}",
+                        text?.Length ?? 0, connInfo != null);
+                    return false;
+                }
                 _logger.Info("Catalog warmup from document len={0} db={1}", text.Length, connInfo.Database);
-                // 拷贝连接信息，避免后台线程读 UI 状态
                 var snap = connInfo;
                 var sql = text;
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
                     try
                     {
-                        MetadataCatalogService.Instance.EnsureCatalogsReferencedInSql(snap, sql);
+                        MetadataCatalogService.Instance.BuildCatalogsReferencedInSql(snap, sql);
                     }
                     catch (Exception ex)
                     {
                         _logger.Warn(ex, "Catalog warmup from document failed");
                     }
                 });
+                return true;
             }
             catch (Exception ex)
             {
                 _logger.Warn(ex, "ScheduleCatalogWarmupFromDocument failed");
+                return false;
             }
         }
 

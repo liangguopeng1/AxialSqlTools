@@ -456,12 +456,10 @@ namespace AxialSqlTools.IntelliSense
             {
                 if (catalog == null || !string.Equals(catalog.Database, tref.Database, StringComparison.OrdinalIgnoreCase))
                 {
-                    target = MetadataCatalogService.Instance.GetCachedCatalog(connInfo, tref.Database);
+                    MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, tref.Database);
+                    target = MetadataCatalogService.Instance.GetCachedCatalogOrWait(connInfo, tref.Database, 2000);
                     if (target == null)
-                    {
-                        MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, tref.Database);
                         return null;
-                    }
                 }
             }
             if (target != null)

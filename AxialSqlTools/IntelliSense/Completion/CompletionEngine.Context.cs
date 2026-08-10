@@ -436,8 +436,9 @@ namespace AxialSqlTools
                 {
                     if (catalog == null || !string.Equals(catalog.Database, tref.Database, StringComparison.OrdinalIgnoreCase))
                     {
-                        // Database 字段实际是链接服务器名时（旧解析），无法可靠还原；走本地跨库
-                        target = GetCatalogNonBlocking(connInfo, tref.Database);
+                        // 跨库：先触发构建再短等，避免 b. 时 jichushuju 尚未入缓存
+                        MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, tref.Database);
+                        target = MetadataCatalogService.Instance.GetCachedCatalogOrWait(connInfo, tref.Database, 2000);
                     }
                 }
                 if (target != null)
