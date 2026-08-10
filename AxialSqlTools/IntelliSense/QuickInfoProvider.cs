@@ -272,7 +272,8 @@ namespace AxialSqlTools.IntelliSense
             string dataSource,
             string defaultDb)
         {
-            var rref = QuickInfoSqlContext.TryResolveExecRoutine(fullText, caretOffset, hoverName);
+            var rref = QuickInfoSqlContext.TryResolveExecRoutine(fullText, caretOffset, hoverName)
+                       ?? QuickInfoSqlContext.TryResolveQualifiedRoutine(fullText, caretOffset, hoverName);
             if (rref == null || string.IsNullOrEmpty(rref.Name))
                 return null;
 
@@ -431,6 +432,7 @@ namespace AxialSqlTools.IntelliSense
             if (table == null) return fromRef;
             return new TableRef
             {
+                LinkedServer = fromRef?.LinkedServer,
                 Database = fromRef?.Database,
                 Schema = table.Schema,
                 Name = table.Name
@@ -444,7 +446,13 @@ namespace AxialSqlTools.IntelliSense
         {
             if (tref == null || string.IsNullOrEmpty(tref.Name)) return null;
             MetadataCatalog target = catalog;
-            if (connInfo != null && !string.IsNullOrWhiteSpace(tref.Database))
+            if (connInfo != null && !string.IsNullOrWhiteSpace(tref.LinkedServer)
+                && !string.IsNullOrWhiteSpace(tref.Database))
+            {
+                target = MetadataCatalogService.Instance.GetOrBuildLinkedCatalog(
+                    connInfo, tref.LinkedServer, tref.Database);
+            }
+            else if (connInfo != null && !string.IsNullOrWhiteSpace(tref.Database))
             {
                 if (catalog == null || !string.Equals(catalog.Database, tref.Database, StringComparison.OrdinalIgnoreCase))
                 {
@@ -484,7 +492,15 @@ namespace AxialSqlTools.IntelliSense
         {
             var data = new QuickInfoData();
             string db = tref?.Database ?? defaultDb;
-            AddHeaderLine(data, "数据源", dataSource);
+            string ds = dataSource;
+            if (!string.IsNullOrEmpty(tref?.LinkedServer))
+            {
+                string ls = tref.LinkedServer.Trim();
+                ds = ls.StartsWith("@", StringComparison.Ordinal) || ls.Contains("\\") ? ls : "@" + ls;
+            }
+            AddHeaderLine(data, "数据源", ds);
+            if (!string.IsNullOrEmpty(tref?.LinkedServer))
+                AddHeaderLine(data, "链接服务器", tref.LinkedServer);
             AddHeaderLine(data, "数据库", db);
             AddHeaderLine(data, "架构", table?.Schema ?? tref?.Schema ?? "dbo");
             AddHeaderLine(data, table != null && table.IsView ? "视图" : "表", table?.Name ?? tref?.Name);
@@ -503,7 +519,15 @@ namespace AxialSqlTools.IntelliSense
         {
             var data = new QuickInfoData();
             string db = tref?.Database ?? defaultDb;
-            AddHeaderLine(data, "数据源", dataSource);
+            string ds = dataSource;
+            if (!string.IsNullOrEmpty(tref?.LinkedServer))
+            {
+                string ls = tref.LinkedServer.Trim();
+                ds = ls.StartsWith("@", StringComparison.Ordinal) || ls.Contains("\\") ? ls : "@" + ls;
+            }
+            AddHeaderLine(data, "数据源", ds);
+            if (!string.IsNullOrEmpty(tref?.LinkedServer))
+                AddHeaderLine(data, "链接服务器", tref.LinkedServer);
             AddHeaderLine(data, "数据库", db);
             AddHeaderLine(data, "架构", table?.Schema ?? tref?.Schema ?? "dbo");
             AddHeaderLine(data, table != null && table.IsView ? "视图" : "表", table?.Name ?? tref?.Name);

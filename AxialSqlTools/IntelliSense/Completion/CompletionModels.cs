@@ -41,6 +41,8 @@ namespace AxialSqlTools
 
         public class TableRef
         {
+            /// <summary>链接服务器名（四段名 server.db.schema.table 的首段）。</summary>
+            public string LinkedServer;
             public string Database;
             public string Schema;
             public string Name;

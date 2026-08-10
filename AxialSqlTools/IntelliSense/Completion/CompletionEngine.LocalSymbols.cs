@@ -463,6 +463,7 @@ namespace AxialSqlTools
                     }
                     if (kw0 == "AS") { i++; continue; }
 
+                    string linkedServer = null;
                     string database = null;
                     string schema = null;
                     string table = null;
@@ -518,6 +519,9 @@ namespace AxialSqlTools
                         if (IsSqlTableKeyword(name)) { i++; continue; }
                         if (table != null && dotRun == 0)
                         {
+                            // 后接 a.b → 下行裸限定名，结束本表且不把首段当别名
+                            if (NextSignificantTokenIsDot(tokens, i + 1, regionEnd))
+                                break;
                             alias = name;
                             i++;
                             break;
@@ -540,12 +544,21 @@ namespace AxialSqlTools
                                 table = name;
                                 partCount = 2;
                             }
-                            else if (partCount == 2 && database == null)
+                            else if (partCount == 2 && database == null && linkedServer == null)
                             {
                                 database = schema;
                                 schema = table;
                                 table = name;
                                 partCount = 3;
+                            }
+                            else if (partCount == 3 && linkedServer == null)
+                            {
+                                // server.db.schema.table
+                                linkedServer = database;
+                                database = schema;
+                                schema = table;
+                                table = name;
+                                partCount = 4;
                             }
                             else
                             {
@@ -566,7 +579,13 @@ namespace AxialSqlTools
                         if (i <= segmentStartI) i = segmentStartI + 1;
                         continue;
                     }
-                    var tref = new TableRef { Database = database, Schema = schema, Name = table };
+                    var tref = new TableRef
+                    {
+                        LinkedServer = linkedServer,
+                        Database = database,
+                        Schema = schema,
+                        Name = table
+                    };
                     NormalizeTableRef(tref);
                     if (!string.IsNullOrEmpty(alias) && !IsSqlTableKeyword(alias))
                         MergeAlias(local, alias, tref);
@@ -575,7 +594,35 @@ namespace AxialSqlTools
                         MergeAlias(local, tref.Schema + "." + tref.Name, tref);
                     if (!string.IsNullOrEmpty(tref.Database))
                         MergeAlias(local, tref.Database + "." + (tref.Schema ?? "dbo") + "." + tref.Name, tref);
+                    if (!string.IsNullOrEmpty(tref.LinkedServer))
+                        MergeAlias(local, tref.LinkedServer + "." + (tref.Database ?? "") + "." + (tref.Schema ?? "dbo") + "." + tref.Name, tref);
+
+                    // 仅逗号 / JOIN 可接下一表
+                    int look = i;
+                    while (look < tokens.Count)
+                    {
+                        var lt = tokens[look];
+                        if (lt == null || IsInsignificantToken(lt)) { look++; continue; }
+                        if (lt.Offset >= regionEnd) return;
+                        string lkw = lt.Text?.ToUpperInvariant();
+                        if (lkw == "," || lkw == "INNER" || lkw == "LEFT" || lkw == "RIGHT" || lkw == "FULL"
+                            || lkw == "CROSS" || lkw == "OUTER" || lkw == "JOIN")
+                            break;
+                        return;
+                    }
                 }
+            }
+
+            private static bool NextSignificantTokenIsDot(List<TSqlParserToken> tokens, int fromIdx, int regionEnd)
+            {
+                for (int j = fromIdx; j < tokens.Count; j++)
+                {
+                    var t = tokens[j];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset >= regionEnd) return false;
+                    return t.TokenType == TSqlTokenType.Dot;
+                }
+                return false;
             }
 
             private static void MergeAlias(LocalSymbols local, string key, TableRef tref)
@@ -587,7 +634,9 @@ namespace AxialSqlTools
                     local.Aliases[key] = tref;
                     return;
                 }
-                if (string.IsNullOrEmpty(existing.Database) && !string.IsNullOrEmpty(tref.Database))
+                if (string.IsNullOrEmpty(existing.LinkedServer) && !string.IsNullOrEmpty(tref.LinkedServer))
+                    local.Aliases[key] = tref;
+                else if (string.IsNullOrEmpty(existing.Database) && !string.IsNullOrEmpty(tref.Database))
                     local.Aliases[key] = tref;
             }
 
@@ -630,6 +679,7 @@ namespace AxialSqlTools
                 if (sobj == null) return null;
                 var tref = new TableRef
                 {
+                    LinkedServer = sobj.ServerIdentifier?.Value,
                     Database = sobj.DatabaseIdentifier?.Value,
                     Schema = sobj.SchemaIdentifier?.Value,
                     Name = sobj.BaseIdentifier?.Value ?? GetLastIdentifier(sobj)
@@ -655,12 +705,28 @@ namespace AxialSqlTools
                             tref.Name = sobj.Identifiers[1].Value;
                         }
                     }
+                    else if (count == 4)
+                    {
+                        // server.db.schema.table
+                        tref.LinkedServer = sobj.Identifiers[0].Value;
+                        tref.Database = sobj.Identifiers[1].Value;
+                        tref.Schema = sobj.Identifiers[2].Value;
+                        tref.Name = sobj.Identifiers[3].Value;
+                    }
                     else
                     {
                         tref.Database = sobj.Identifiers[0].Value;
                         tref.Schema = sobj.Identifiers[1].Value;
                         tref.Name = sobj.Identifiers[count - 1].Value;
                     }
+                }
+                // ServerIdentifier 有值但 Identifiers 路径未填时，纠正四段
+                if (!string.IsNullOrEmpty(tref.LinkedServer)
+                    && !string.IsNullOrEmpty(tref.Database)
+                    && string.IsNullOrEmpty(tref.Schema)
+                    && !string.IsNullOrEmpty(tref.Name))
+                {
+                    // server.db..table 形式由 ScriptDom 可能落成 LinkedServer+Database+Name
                 }
                 NormalizeTableRef(tref);
                 return string.IsNullOrEmpty(tref.Name) ? null : tref;

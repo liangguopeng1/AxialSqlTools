@@ -36,6 +36,7 @@ namespace AxialSqlTools.IntelliSense
         private static Button _goToSourceButton;
         private static Border _actionBar;
         private static Grid _rootGrid;
+        private static Thumb _resizeGrip;
         private static bool _isOpen;
         private static bool _isPinned;
         private static bool _isResizing;
@@ -246,7 +247,7 @@ namespace AxialSqlTools.IntelliSense
                 Padding = new Thickness(8, 6, 8, 6),
                 Child = body
             };
-            var resizeGrip = new Thumb
+            _resizeGrip = new Thumb
             {
                 Width = 14,
                 Height = 14,
@@ -256,17 +257,40 @@ namespace AxialSqlTools.IntelliSense
                 Opacity = 0.55,
                 Margin = new Thickness(0, 0, 2, 2)
             };
-            resizeGrip.DragStarted += (s, e) =>
+            _resizeGrip.DragStarted += (s, e) =>
             {
                 _isResizing = true;
                 Pin();
             };
-            resizeGrip.DragCompleted += (s, e) => _isResizing = false;
-            resizeGrip.DragDelta += OnResizeGripDragDelta;
-            resizeGrip.ToolTip = "拖动调整大小";
+            _resizeGrip.DragCompleted += (s, e) => _isResizing = false;
+            _resizeGrip.DragDelta += OnResizeGripDragDelta;
+            _resizeGrip.ToolTip = "拖动调整大小";
             _rootGrid = new Grid();
             _rootGrid.Children.Add(_outerBorder);
-            _rootGrid.Children.Add(resizeGrip);
+            _rootGrid.Children.Add(_resizeGrip);
+            HookTextBoxContextMenu(_headerBox);
+            HookTextBoxContextMenu(_ddlBox);
+            CreateWindowShell();
+            ApplyThemeColors();
+            EnsureAppLifecycleHooks();
+        }
+
+        /// <summary>
+        /// WPF Window 一旦 Close 就不能再 Show。Owner/Alt+F4 等会真正关闭，需重建 shell。
+        /// </summary>
+        private static void EnsureWindowShell()
+        {
+            if (_window != null) return;
+            CreateWindowShell();
+        }
+
+        private static void CreateWindowShell()
+        {
+            if (_rootGrid == null) return;
+            if (_rootGrid.Parent is Window old)
+            {
+                try { old.Content = null; } catch { }
+            }
             _window = new Window
             {
                 Content = _rootGrid,
@@ -295,7 +319,8 @@ namespace AxialSqlTools.IntelliSense
                 UseAeroCaptionButtons = false
             };
             WindowChrome.SetWindowChrome(_window, chrome);
-            WindowChrome.SetIsHitTestVisibleInChrome(resizeGrip, true);
+            if (_resizeGrip != null)
+                WindowChrome.SetIsHitTestVisibleInChrome(_resizeGrip, true);
             WindowChrome.SetIsHitTestVisibleInChrome(_scrollViewer, true);
             WindowChrome.SetIsHitTestVisibleInChrome(_headerBox, true);
             WindowChrome.SetIsHitTestVisibleInChrome(_ddlBox, true);
@@ -306,6 +331,11 @@ namespace AxialSqlTools.IntelliSense
                 _isOpen = false;
                 _isPinned = false;
                 _isResizing = false;
+                if (ReferenceEquals(_window, s))
+                {
+                    try { _window.Content = null; } catch { }
+                    _window = null;
+                }
             };
             _window.PreviewMouseDown += (s, e) =>
             {
@@ -316,8 +346,6 @@ namespace AxialSqlTools.IntelliSense
             _window.PreviewKeyDown += OnPreviewKeyDown;
             _window.GotFocus += (s, e) => Pin();
             _window.SourceInitialized += OnWindowSourceInitialized;
-            HookTextBoxContextMenu(_headerBox);
-            HookTextBoxContextMenu(_ddlBox);
             _window.SizeChanged += (s, e) =>
             {
                 // 仅用户拖拽缩放时锁定尺寸；自动 Measure / Pin 选中不要当成「用户已调大小」
@@ -326,8 +354,6 @@ namespace AxialSqlTools.IntelliSense
                 _savedWidth = _window.ActualWidth > 0 ? _window.ActualWidth : _window.Width;
                 _savedHeight = _window.ActualHeight > 0 ? _window.ActualHeight : _window.Height;
             };
-            ApplyThemeColors();
-            EnsureAppLifecycleHooks();
         }
 
         /// <summary>右键菜单打开期间/刚复制完勿因失活关掉弹框。</summary>
@@ -610,6 +636,8 @@ namespace AxialSqlTools.IntelliSense
         {
             if (data == null || data.IsEmpty) return false;
             EnsureAppLifecycleHooks();
+            EnsureWindowShell();
+            if (_window == null) return false;
             if (!IsSsmsForeground()) return false;
             // 钉住时仍允许换内容（列→表），仅相同内容时跳过
             string key = BuildContentKey(data);
@@ -700,6 +728,8 @@ namespace AxialSqlTools.IntelliSense
 
         private static void PositionAndShow(double deviceScreenX, double deviceScreenY, IntPtr ownerHwnd, bool reposition)
         {
+            EnsureWindowShell();
+            if (_window == null) return;
             double dipX = deviceScreenX;
             double dipY = deviceScreenY;
             try
@@ -755,13 +785,43 @@ namespace AxialSqlTools.IntelliSense
                 _window.Top = top;
             }
 
-            _window.Visibility = Visibility.Visible;
+            try
+            {
+                _window.Visibility = Visibility.Visible;
+            }
+            catch (InvalidOperationException)
+            {
+                // 窗口已被真正关闭，重建后再试一次
+                try { _window.Content = null; } catch { }
+                _window = null;
+                _isOpen = false;
+                EnsureWindowShell();
+                if (_window == null) return;
+                _window.Visibility = Visibility.Visible;
+            }
             if (!_isOpen)
             {
                 try
                 {
                     _window.Show();
                     _isOpen = true;
+                }
+                catch (InvalidOperationException)
+                {
+                    try { _window.Content = null; } catch { }
+                    _window = null;
+                    _isOpen = false;
+                    EnsureWindowShell();
+                    if (_window == null) return;
+                    try
+                    {
+                        _window.Show();
+                        _isOpen = true;
+                    }
+                    catch
+                    {
+                        _isOpen = false;
+                    }
                 }
                 catch
                 {
@@ -841,6 +901,7 @@ namespace AxialSqlTools.IntelliSense
 
         public static IntPtr GetWindowHandle()
         {
+            if (_window == null) return IntPtr.Zero;
             try
             {
                 return new WindowInteropHelper(_window).Handle;
@@ -856,7 +917,7 @@ namespace AxialSqlTools.IntelliSense
             if (!_isOpen) return;
             try
             {
-                _window.Hide();
+                _window?.Hide();
             }
             catch
             {

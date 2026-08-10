@@ -426,10 +426,17 @@ namespace AxialSqlTools
             {
                 if (tref == null || string.IsNullOrEmpty(tref.Name)) return null;
                 MetadataCatalog target = catalog;
-                if (connInfo != null && !string.IsNullOrWhiteSpace(tref.Database))
+                if (connInfo != null && !string.IsNullOrWhiteSpace(tref.LinkedServer)
+                    && !string.IsNullOrWhiteSpace(tref.Database))
+                {
+                    target = MetadataCatalogService.Instance.GetOrBuildLinkedCatalog(
+                        connInfo, tref.LinkedServer, tref.Database);
+                }
+                else if (connInfo != null && !string.IsNullOrWhiteSpace(tref.Database))
                 {
                     if (catalog == null || !string.Equals(catalog.Database, tref.Database, StringComparison.OrdinalIgnoreCase))
                     {
+                        // Database 字段实际是链接服务器名时（旧解析），无法可靠还原；走本地跨库
                         target = GetCatalogNonBlocking(connInfo, tref.Database);
                     }
                 }

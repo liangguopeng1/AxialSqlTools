@@ -527,7 +527,7 @@ namespace AxialSqlTools
                 {
                     var tref = kv.Value;
                     if (tref == null || string.IsNullOrEmpty(tref.Name)) continue;
-                    string tableKey = (tref.Database ?? string.Empty) + "|" + (tref.Schema ?? string.Empty) + "|" + tref.Name;
+                    string tableKey = (tref.LinkedServer ?? string.Empty) + "|" + (tref.Database ?? string.Empty) + "|" + (tref.Schema ?? string.Empty) + "|" + tref.Name;
                     tables[tableKey] = tref;
                     string aliasKey = kv.Key;
                     if (string.IsNullOrEmpty(aliasKey) || aliasKey.IndexOf('.') >= 0) continue;
@@ -626,7 +626,7 @@ namespace AxialSqlTools
                 {
                     var tref = kv.Value;
                     if (tref == null || string.IsNullOrEmpty(tref.Name)) continue;
-                    string tableKey = (tref.Database ?? string.Empty) + "|" + (tref.Schema ?? string.Empty) + "|" + tref.Name;
+                    string tableKey = (tref.LinkedServer ?? string.Empty) + "|" + (tref.Database ?? string.Empty) + "|" + (tref.Schema ?? string.Empty) + "|" + tref.Name;
                     tables[tableKey] = tref;
                     string aliasKey = kv.Key;
                     if (string.IsNullOrEmpty(aliasKey) || aliasKey.IndexOf('.') >= 0) continue;

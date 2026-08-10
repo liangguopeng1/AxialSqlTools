@@ -39,7 +39,7 @@ namespace AxialSqlTools
         /// 禁止在 IOleCommandTarget.Exec 同步路径上 new KeyHandler（第二个标签首次按键会卡死退出）。
         /// 一律排到 ApplicationIdle 再建。
         /// </summary>
-        private void ScheduleEnsureIntelliSense(bool warmupAfterCreate = false)
+        private void ScheduleEnsureIntelliSense(bool warmupAfterCreate = false, bool catchupAutoTrigger = false)
         {
             if (_intelliSense != null)
                 return;
@@ -47,6 +47,8 @@ namespace AxialSqlTools
             {
                 if (warmupAfterCreate)
                     _pendingPasteWarmup = true;
+                if (catchupAutoTrigger)
+                    _pendingAutoTriggerCatchup = true;
                 return;
             }
             if (!UiSettingsStore.GetIntelliSenseEnabled())
@@ -57,6 +59,8 @@ namespace AxialSqlTools
             _intelliSenseInitPending = true;
             if (warmupAfterCreate)
                 _pendingPasteWarmup = true;
+            if (catchupAutoTrigger)
+                _pendingAutoTriggerCatchup = true;
             try
             {
                 var dispatcher = System.Windows.Application.Current?.Dispatcher
@@ -70,8 +74,12 @@ namespace AxialSqlTools
                         _logger.Info("IntelliSense KeyHandler creating (deferred, off Exec)");
                         _intelliSense = new IntelliSenseKeyHandler(_package, textView);
                         _logger.Info("IntelliSense KeyHandler created ok");
-                        // 首次按键时 Handler 尚未就绪，补一次自动触发调度
-                        _intelliSense.MaybeScheduleAutoTrigger((uint)VSConstants.VSStd2KCmdID.TYPECHAR);
+                        // 仅真实按键补一次自动触发；粘贴只做目录预热，勿伪装 TYPECHAR 弹框
+                        if (_pendingAutoTriggerCatchup)
+                        {
+                            _pendingAutoTriggerCatchup = false;
+                            _intelliSense.MaybeScheduleAutoTrigger((uint)VSConstants.VSStd2KCmdID.TYPECHAR);
+                        }
                         if (_pendingPasteWarmup)
                         {
                             _pendingPasteWarmup = false;
@@ -100,6 +108,7 @@ namespace AxialSqlTools
         }
 
         private bool _pendingPasteWarmup;
+        private bool _pendingAutoTriggerCatchup;
 
         /// <summary>粘贴完成后延迟扫描脚本并预热跨库缓存（等缓冲区写入完成）。</summary>
         private void SchedulePasteCatalogWarmup()
@@ -142,7 +151,13 @@ namespace AxialSqlTools
                  || nCmdID == (uint)VSConstants.VSStd2KCmdID.TAB
                  || nCmdID == (uint)VSConstants.VSStd2KCmdID.CANCEL));
             if (mayNeedIntelliSense)
-                ScheduleEnsureIntelliSense(warmupAfterCreate: isPaste);
+            {
+                bool isTyping = cmdGroup == VSConstants.VSStd2K
+                    && (nCmdID == (uint)VSConstants.VSStd2KCmdID.TYPECHAR
+                        || nCmdID == (uint)VSConstants.VSStd2KCmdID.BACKSPACE
+                        || nCmdID == (uint)VSConstants.VSStd2KCmdID.DELETE);
+                ScheduleEnsureIntelliSense(warmupAfterCreate: isPaste, catchupAutoTrigger: isTyping);
+            }
 
             if (IntelliSenseManager.IsExecuteCommand(cmdGroup, nCmdID))
             {

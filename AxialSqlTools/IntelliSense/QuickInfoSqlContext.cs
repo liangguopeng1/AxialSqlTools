@@ -68,6 +68,24 @@ namespace AxialSqlTools.IntelliSense
         /// </summary>
         public static RoutineRef TryResolveExecRoutine(string text, int offset, string hoverName)
         {
+            return TryResolveRoutineCore(text, offset, hoverName, requireExec: true);
+        }
+
+        /// <summary>
+        /// 无 EXEC 时解析限定过程名：db.schema.proc / schema.proc（须至少一段限定，避免裸标识误当过程）。
+        /// </summary>
+        public static RoutineRef TryResolveQualifiedRoutine(string text, int offset, string hoverName)
+        {
+            var rref = TryResolveRoutineCore(text, offset, hoverName, requireExec: false);
+            if (rref == null) return null;
+            // 无 EXEC 时要求至少 schema.proc 或 db..proc，避免普通词误匹配
+            if (string.IsNullOrEmpty(rref.Schema) && string.IsNullOrEmpty(rref.Database))
+                return null;
+            return rref;
+        }
+
+        private static RoutineRef TryResolveRoutineCore(string text, int offset, string hoverName, bool requireExec)
+        {
             if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(hoverName) || offset < 0)
                 return null;
 
@@ -149,12 +167,17 @@ namespace AxialSqlTools.IntelliSense
             }
 
             while (i >= 0 && (text[i] == ' ' || text[i] == '\t')) i--;
-            if (i < 0) return null;
-            int kwEnd = i + 1;
-            while (i >= 0 && IsIdentChar(text[i])) i--;
-            string kw = text.Substring(i + 1, kwEnd - (i + 1));
-            if (!string.Equals(kw, "EXEC", StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(kw, "EXECUTE", StringComparison.OrdinalIgnoreCase))
+            bool hasExec = false;
+            if (i >= 0)
+            {
+                int kwEnd = i + 1;
+                int kwStart = i;
+                while (kwStart >= 0 && IsIdentChar(text[kwStart])) kwStart--;
+                string kw = text.Substring(kwStart + 1, kwEnd - (kwStart + 1));
+                hasExec = string.Equals(kw, "EXEC", StringComparison.OrdinalIgnoreCase)
+                          || string.Equals(kw, "EXECUTE", StringComparison.OrdinalIgnoreCase);
+            }
+            if (requireExec && !hasExec)
                 return null;
 
             var result = new RoutineRef { Name = name };
@@ -275,13 +298,14 @@ namespace AxialSqlTools.IntelliSense
                 int segStartOffset = tokens[i]?.Offset ?? 0;
                 var names = new List<string>();
                 var nameSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                bool afterDot = false;
                 while (i < tokens.Count)
                 {
                     var t = tokens[i];
                     if (t == null || IsInsignificant(t)) { i++; continue; }
                     if (t.Offset >= regionEnd) break;
                     string kw = t.Text?.ToUpperInvariant();
-                    if (IsJoinKeyword(kw) || kw == "ON" || kw == "AS") break;
+                    if (IsJoinKeyword(kw) || kw == "ON" || kw == "AS" || kw == ",") break;
                     // 语句/子句边界：禁止跨到下一句 SELECT（无分号时尤其常见）
                     if (IsFromRegionStopKeyword(kw)) break;
                     // 跳过 WITH (NOLOCK) / kucun(nolock) 等表提示，避免把 nolock 当成表名
@@ -289,17 +313,37 @@ namespace AxialSqlTools.IntelliSense
                     if (t.TokenType == TSqlTokenType.LeftParenthesis)
                     {
                         i = SkipParenthesisGroup(tokens, i);
+                        afterDot = false;
                         continue;
                     }
-                    if (t.TokenType == TSqlTokenType.Dot) { i++; continue; }
+                    if (t.TokenType == TSqlTokenType.Dot)
+                    {
+                        afterDot = true;
+                        i++;
+                        continue;
+                    }
                     if (IsWordLike(t) || IsPartialObjectName(t))
                     {
                         string n = Unbracket(t.Text);
                         if (!IsTableHintOrNoise(n))
                         {
+                            // 表名已完整（前一词非点）：后面要么是别名，要么是下行裸限定名
+                            if (names.Count > 0 && !afterDot)
+                            {
+                                // 后接 a.b → 新限定名/新语句，结束本段且不消费
+                                if (NextSignificantIsDot(tokens, i + 1, regionEnd))
+                                    break;
+                                names.Add(n);
+                                nameSet.Add(n);
+                                i++;
+                                break;
+                            }
                             names.Add(n);
                             nameSet.Add(n);
                         }
+                        afterDot = false;
+                        i++;
+                        continue;
                     }
                     i++;
                 }
@@ -327,8 +371,33 @@ namespace AxialSqlTools.IntelliSense
                         NameTokens = nameSet
                     });
                 }
+
+                // 仅逗号 / JOIN 可接下一表；否则下行裸 huizong.dbo.xxx 不再并入 FROM
+                int look = i;
+                while (look < tokens.Count)
+                {
+                    var lt = tokens[look];
+                    if (lt == null || IsInsignificant(lt)) { look++; continue; }
+                    if (lt.Offset >= regionEnd) return segments;
+                    string lkw = lt.Text?.ToUpperInvariant();
+                    if (lkw == "," || IsJoinKeyword(lkw))
+                        break;
+                    return segments;
+                }
             }
             return segments;
+        }
+
+        private static bool NextSignificantIsDot(List<TSqlParserToken> tokens, int fromIdx, int regionEnd)
+        {
+            for (int j = fromIdx; j < tokens.Count; j++)
+            {
+                var t = tokens[j];
+                if (t == null || IsInsignificant(t)) continue;
+                if (t.Offset >= regionEnd) return false;
+                return t.TokenType == TSqlTokenType.Dot;
+            }
+            return false;
         }
 
         private static Tuple<TableRef, string> ParseTableSegment(
@@ -345,9 +414,27 @@ namespace AxialSqlTools.IntelliSense
                 return Tuple.Create(bare, (string)null);
             }
 
-            // db.schema.table alias → 4 段
+            // db.schema.table alias → 4 段；或 server.db.schema.table（链接服务器四段名）
             if (names.Count >= 4)
             {
+                // server.db.schema.table [alias]
+                bool fourPartLinked = names.Count == 4 && IsLikelySchemaName(names[2]);
+                bool fivePartLinked = names.Count >= 5 && IsLikelySchemaName(names[names.Count - 3]);
+                if (fourPartLinked || fivePartLinked)
+                {
+                    int base0 = fivePartLinked ? names.Count - 5 : 0;
+                    var linked = new TableRef
+                    {
+                        LinkedServer = names[base0],
+                        Database = names[base0 + 1],
+                        Schema = names[base0 + 2],
+                        Name = names[base0 + 3]
+                    };
+                    NormalizeTableRef(linked);
+                    string aliasL = fivePartLinked ? names[names.Count - 1] : null;
+                    if (IsSqlKeyword(aliasL)) aliasL = null;
+                    return Tuple.Create(linked, aliasL);
+                }
                 var tref = new TableRef
                 {
                     Database = names[names.Count - 4],
