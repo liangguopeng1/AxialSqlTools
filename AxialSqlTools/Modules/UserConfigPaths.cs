@@ -23,6 +23,7 @@ namespace AxialSqlTools
         public static string DataTransferConnectionsFile => Path.Combine(Root, "data-transfer-connections.json");
         public static string GitHubSyncProfilesFile => Path.Combine(Root, "github-sync-profiles.json");
         public static string QueryHistoryDirectory => Path.Combine(Root, "query-history");
+        public static string TabHistoryDirectory => Path.Combine(Root, "tab-history");
         public static string TemplatesDirectory => Path.Combine(Root, "templates");
         public static string LogsDirectory => Path.Combine(Root, "logs");
         public static string QuickSearchIndexDirectory => Path.Combine(Root, "quick-search-index");

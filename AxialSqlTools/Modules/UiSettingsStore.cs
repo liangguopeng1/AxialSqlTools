@@ -14,6 +14,21 @@ namespace AxialSqlTools
         /// <summary>IntelliSense 设置节点。null 兼容旧 settings.json。</summary>
         [JsonProperty("intelliSense")]
         public IntelliSenseSettings IntelliSense { get; set; }
+
+        /// <summary>Tab History 设置节点。null 兼容旧 settings.json。</summary>
+        [JsonProperty("tabHistory")]
+        public TabHistorySettings TabHistory { get; set; }
+    }
+
+    public sealed class TabHistorySettings
+    {
+        /// <summary>是否记录标签页历史。默认关闭。</summary>
+        [JsonProperty("enabled")]
+        public bool Enabled { get; set; } = false;
+
+        /// <summary>历史文件保留天数；0 = 不清理。默认 90。</summary>
+        [JsonProperty("retentionDays")]
+        public int RetentionDays { get; set; } = 90;
     }
 
     public static class UiSettingsStore
@@ -99,6 +114,43 @@ namespace AxialSqlTools
             Save(settings);
         }
 
+        public static TabHistorySettings GetTabHistorySettings()
+        {
+            var settings = Load();
+            return settings.TabHistory ?? new TabHistorySettings();
+        }
+
+        public static bool GetTabHistoryEnabled()
+        {
+            return GetTabHistorySettings().Enabled;
+        }
+
+        public static void SaveTabHistoryEnabled(bool enabled)
+        {
+            var settings = Load();
+            if (settings.TabHistory == null) settings.TabHistory = new TabHistorySettings();
+            settings.TabHistory.Enabled = enabled;
+            Save(settings);
+        }
+
+        public static int GetTabHistoryRetentionDays()
+        {
+            var s = GetTabHistorySettings();
+            if (s.RetentionDays < 0) return 0;
+            if (s.RetentionDays > 3650) return 3650;
+            return s.RetentionDays;
+        }
+
+        public static void SaveTabHistoryRetentionDays(int retentionDays)
+        {
+            if (retentionDays < 0) retentionDays = 0;
+            if (retentionDays > 3650) retentionDays = 3650;
+            var settings = Load();
+            if (settings.TabHistory == null) settings.TabHistory = new TabHistorySettings();
+            settings.TabHistory.RetentionDays = retentionDays;
+            Save(settings);
+        }
+
         public static void InvalidateCache()
         {
             lock (SyncRoot)
@@ -129,6 +181,12 @@ namespace AxialSqlTools
             {
                 settings.IntelliSense = new IntelliSenseSettings();
             }
+
+            // TabHistory 节点缺失时给默认值，保证读写安全。
+            if (settings.TabHistory == null)
+            {
+                settings.TabHistory = new TabHistorySettings();
+            }
         }
 
         private static UiSettings Clone(UiSettings source)
@@ -136,7 +194,8 @@ namespace AxialSqlTools
             return new UiSettings
             {
                 UiLanguage = source.UiLanguage,
-                IntelliSense = source.IntelliSense ?? new IntelliSenseSettings()
+                IntelliSense = source.IntelliSense ?? new IntelliSenseSettings(),
+                TabHistory = source.TabHistory ?? new TabHistorySettings()
             };
         }
     }

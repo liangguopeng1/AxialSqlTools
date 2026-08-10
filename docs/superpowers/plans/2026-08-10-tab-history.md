@@ -16,9 +16,10 @@
 - CommandId 用 `4156`；CommandSet GUID 沿用 `45457e02-6dec-4a4d-ab22-c9ee126d23c5`
 - 事件采集在 UI 线程；写盘走后台队列，不得阻塞 UI；采集失败静默降级并记日志，不拖垮 Package
 - 构建验证命令（每任务末执行）：
-  `powershell -ExecutionPolicy Bypass -File "D:\IntelliJ-IDEA\github-workspace\AxialSqlTools\skills\axial-build-release\scripts\pack-release.ps1" -Configuration Debug`
-  预期：构建成功，`AxialSqlTools/bin/Debug/AxialSqlTools.vsix` 生成
-- 安装到 SSMS 验证（最终任务）：`powershell -ExecutionPolicy Bypass -File "D:\IntelliJ-IDEA\github-workspace\AxialSqlTools\tools\dev-reload.ps1" -Configuration Debug`
+  `powershell -ExecutionPolicy Bypass -File "D:\IntelliJ-IDEA\github-workspace\AxialSqlTools\skills\axial-build-release\scripts\pack-release.ps1" -Configuration Release`
+  预期：构建成功，`AxialSqlTools/bin/Release/AxialSqlTools.vsix` 生成
+- **执行修正（2026-08-10）**：本机 Debug 配置下 WPF wpftmp 临时工程找不到 `obj\Debug\*.g.cs`（Release 正常、dev-reload.ps1 亦默认 Release），故所有任务验证一律用 Release 配置
+- 安装到 SSMS 验证（最终任务）：`powershell -ExecutionPolicy Bypass -File "D:\IntelliJ-IDEA\github-workspace\AxialSqlTools\tools\dev-reload.ps1"`（默认 Release）
 
 ---
 
