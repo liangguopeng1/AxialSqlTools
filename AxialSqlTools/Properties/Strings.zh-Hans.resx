@@ -519,4 +519,22 @@
   <data name="Settings_SmtpUserName" xml:space="preserve"><value>SMTP 用户名:</value></data>
   <data name="Settings_UpdateStatus" xml:space="preserve"><value>更新状态</value></data>
   <data name="Settings_UsefulTsqlScripts" xml:space="preserve"><value>实用 TSQL 脚本</value></data>
+  <data name="Menu_TabHistory" xml:space="preserve"><value>标签页历史</value></data>
+  <data name="Settings_TabHistoryEnabled" xml:space="preserve"><value>记录标签页历史（Tab History）</value></data>
+  <data name="Settings_TabHistoryRetentionDays" xml:space="preserve"><value>保留天数（0 = 不清理）：</value></data>
+  <data name="TabHistory_ColChars" xml:space="preserve"><value>字符数</value></data>
+  <data name="TabHistory_ColDatabase" xml:space="preserve"><value>数据库</value></data>
+  <data name="TabHistory_ColDocument" xml:space="preserve"><value>文档</value></data>
+  <data name="TabHistory_ColEvent" xml:space="preserve"><value>事件</value></data>
+  <data name="TabHistory_ColPreview" xml:space="preserve"><value>预览</value></data>
+  <data name="TabHistory_ColServer" xml:space="preserve"><value>服务器</value></data>
+  <data name="TabHistory_ColTimestamp" xml:space="preserve"><value>时间</value></data>
+  <data name="TabHistory_ContentUnchanged" xml:space="preserve"><value>（内容未变化）</value></data>
+  <data name="TabHistory_CopyAll" xml:space="preserve"><value>复制全文</value></data>
+  <data name="TabHistory_Find" xml:space="preserve"><value>查找：</value></data>
+  <data name="TabHistory_From" xml:space="preserve"><value>从：</value></data>
+  <data name="TabHistory_HeaderTitle" xml:space="preserve"><value>标签页历史</value></data>
+  <data name="TabHistory_OpenFile" xml:space="preserve"><value>打开文件</value></data>
+  <data name="TabHistory_Server" xml:space="preserve"><value>服务器：</value></data>
+  <data name="TabHistory_To" xml:space="preserve"><value>至：</value></data>
 </root>

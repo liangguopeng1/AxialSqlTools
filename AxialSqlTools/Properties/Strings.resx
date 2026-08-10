@@ -42,7 +42,7 @@
   <data name="Settings_Tab_Smtp" xml:space="preserve"><value>SMTP Settings</value></data>
   <data name="Settings_Tab_Updates" xml:space="preserve"><value>Updates</value></data>
   <data name="Settings_LanguageLabel" xml:space="preserve"><value>UI language</value></data>
-  <data name="Settings_Language_Chinese" xml:space="preserve"><value>中文</value></data>
+  <data name="Settings_Language_Chinese" xml:space="preserve"><value>涓枃</value></data>
   <data name="Settings_Language_English" xml:space="preserve"><value>English</value></data>
   <data name="Settings_LanguageHint" xml:space="preserve"><value>Tool windows, toolbar, and menus refresh immediately after saving.</value></data>
   <data name="Settings_SaveLanguage" xml:space="preserve"><value>Save language</value></data>
@@ -517,4 +517,22 @@ InnerException: {1}</value></data>
   <data name="Settings_SmtpUserName" xml:space="preserve"><value>SMTP user name:</value></data>
   <data name="Settings_UpdateStatus" xml:space="preserve"><value>Update status</value></data>
   <data name="Settings_UsefulTsqlScripts" xml:space="preserve"><value>Useful TSQL scripts</value></data>
+  <data name="Menu_TabHistory" xml:space="preserve"><value>Tab History</value></data>
+  <data name="Settings_TabHistoryEnabled" xml:space="preserve"><value>Record tab history (Tab History)</value></data>
+  <data name="Settings_TabHistoryRetentionDays" xml:space="preserve"><value>Retention days (0 = never clean):</value></data>
+  <data name="TabHistory_ColChars" xml:space="preserve"><value>Chars</value></data>
+  <data name="TabHistory_ColDatabase" xml:space="preserve"><value>Database</value></data>
+  <data name="TabHistory_ColDocument" xml:space="preserve"><value>Document</value></data>
+  <data name="TabHistory_ColEvent" xml:space="preserve"><value>Event</value></data>
+  <data name="TabHistory_ColPreview" xml:space="preserve"><value>Preview</value></data>
+  <data name="TabHistory_ColServer" xml:space="preserve"><value>Server</value></data>
+  <data name="TabHistory_ColTimestamp" xml:space="preserve"><value>Time</value></data>
+  <data name="TabHistory_ContentUnchanged" xml:space="preserve"><value>(content unchanged)</value></data>
+  <data name="TabHistory_CopyAll" xml:space="preserve"><value>Copy All</value></data>
+  <data name="TabHistory_Find" xml:space="preserve"><value>Find:</value></data>
+  <data name="TabHistory_From" xml:space="preserve"><value>From:</value></data>
+  <data name="TabHistory_HeaderTitle" xml:space="preserve"><value>Tab History</value></data>
+  <data name="TabHistory_OpenFile" xml:space="preserve"><value>Open File</value></data>
+  <data name="TabHistory_Server" xml:space="preserve"><value>Server:</value></data>
+  <data name="TabHistory_To" xml:space="preserve"><value>To:</value></data>
 </root>
