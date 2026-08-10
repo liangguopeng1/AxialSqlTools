@@ -407,6 +407,24 @@ namespace AxialSqlTools
                         doBindings: false,
                         handler: new TabHistoryCommandProcessor(m_plugin, this),
                         onlyToolbar: true);
+
+                    // 把按钮移到工具栏最前并强制可见，避免被收进溢出菜单
+                    try
+                    {
+                        if (commandBar.Controls.Count > 0)
+                        {
+                            var tabBtn = commandBar.Controls["AxialSqlTools.TabHistory"] as Microsoft.VisualStudio.CommandBars.CommandBarButton;
+                            if (tabBtn != null)
+                            {
+                                tabBtn.Visible = true;
+                                tabBtn.Move(commandBar.Controls[0], true);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warn(ex, "Failed to position Tab History toolbar button.");
+                    }
                 }
                 catch (Exception ex)
                 {
