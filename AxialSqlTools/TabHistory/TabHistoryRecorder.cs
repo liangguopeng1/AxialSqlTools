@@ -151,8 +151,9 @@ namespace AxialSqlTools
                 var info = ScriptFactoryAccess.GetCurrentConnectionInfo();
                 return info?.ServerName ?? string.Empty;
             }
-            catch
+            catch (Exception ex)
             {
+                AxialSqlToolsPackage._logger?.Warn(ex, "[TabHistory] failed to read active connection info");
                 return string.Empty;
             }
         }
@@ -164,8 +165,9 @@ namespace AxialSqlTools
                 var info = ScriptFactoryAccess.GetCurrentConnectionInfo();
                 return info?.Database ?? string.Empty;
             }
-            catch
+            catch (Exception ex)
             {
+                AxialSqlToolsPackage._logger?.Warn(ex, "[TabHistory] failed to read active connection info");
                 return string.Empty;
             }
         }
