@@ -217,7 +217,6 @@
     </Compile>
     <Compile Include="TabHistory\TabHistoryWindow.cs" />
     <Compile Include="TabHistory\TabHistoryWindowCommand.cs" />
-    <Compile Include="TabHistory\TabHistoryCommandProcessor.cs" />
     <Compile Include="StatisticsSummary\StatisticsSummary.cs" />
     <Compile Include="StatisticsSummary\StatisticsSummaryParser.cs" />
     <Compile Include="StatisticsSummary\StatisticsSummaryStore.cs" />
