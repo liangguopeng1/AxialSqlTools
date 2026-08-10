@@ -224,16 +224,7 @@
           <ButtonText>Query History</ButtonText>
         </Strings>
       </Button>
-
-      <Button guid="guidAxialSqlToolsPackageCmdSet" id="AxialTabHistoryCommand" priority="0x0001" type="Button">
-        <Parent guid="guidAxialSqlToolsPackageCmdSet" id="AxialToolsSubMenuGroup_Script2" />
-        <Icon guid="guidQueryHistory" id="bmpQueryHistory" />
-        <CommandFlag>IconAndText</CommandFlag>
-        <Strings>
-          <ButtonText>Tab History</ButtonText>
-          <LocCanonicalName>AxialSqlTools.TabHistory</LocCanonicalName>
-        </Strings>
-      </Button>
+      <!-- Tab History 按钮由 Aurora 显式注册（见 TabHistoryCommandProcessor），不再走 vsct，避免 SSMS 22 命令表资源加载异常导致按钮缺失 -->
 
       <Button guid="guidAxialSqlToolsPackageCmdSet" id="AxialStatisticsSummaryCommand" priority="0x0001" type="Button">
         <Parent guid="guidAxialSqlToolsPackageCmdSet" id="AxialToolsSubMenuGroup_Script" />

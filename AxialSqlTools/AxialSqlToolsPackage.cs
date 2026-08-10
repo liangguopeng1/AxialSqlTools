@@ -400,6 +400,19 @@ namespace AxialSqlTools
                 CommandBar commandBar = m_plugin.AddCommandBar("Axial SQL Tools", MsoBarPosition.msoBarTop);
                 m_commandRegistry = new CommandRegistry(m_plugin, commandBar, new Guid(PackageGuidString), new Guid(PackageGuidGroup));
 
+                // Tab History 按钮：显式注册到工具栏（不依赖 vsct 命令表资源，保证 SSMS 22 下始终可达）
+                try
+                {
+                    m_commandRegistry.RegisterCommand(
+                        doBindings: false,
+                        handler: new TabHistoryCommandProcessor(m_plugin, this),
+                        onlyToolbar: true);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warn(ex, "Failed to register Tab History toolbar command.");
+                }
+
                 m_commandBarQueryTemplates = m_plugin.AddCommandBarMenu("Query Templates", MsoBarPosition.msoBarTop, null);
 
                 //---------------------------------------------------------------------------

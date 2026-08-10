@@ -39,13 +39,23 @@ namespace AxialSqlTools
 
         private void Execute(object sender, EventArgs e)
         {
-            this.package.JoinableTaskFactory.RunAsync(async delegate
+            ShowWindow(this.package);
+        }
+
+        /// <summary>
+        /// Opens the Tab History tool window. Also invoked by the Aurora toolbar command
+        /// (TabHistoryCommandProcessor) so the feature is reachable even when the vsct
+        /// command-table resource fails to surface the menu button.
+        /// </summary>
+        public static void ShowWindow(AsyncPackage package)
+        {
+            package.JoinableTaskFactory.RunAsync(async delegate
             {
                 await Microsoft.VisualStudio.Shell.ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
                 try
                 {
-                    ToolWindowPane window = await this.package.ShowToolWindowAsync(
-                        typeof(TabHistoryWindow), 0, true, this.package.DisposalToken);
+                    ToolWindowPane window = await package.ShowToolWindowAsync(
+                        typeof(TabHistoryWindow), 0, true, package.DisposalToken);
                     if ((null == window) || (null == window.Frame))
                     {
                         throw new NotSupportedException("Cannot create tool window");
@@ -56,7 +66,7 @@ namespace AxialSqlTools
                 catch (Exception ex)
                 {
                     VsShellUtilities.ShowMessageBox(
-                        this.package,
+                        package,
                         "Failed to open Tab History. " + ex.Message,
                         "Axial SQL Tools",
                         OLEMSGICON.OLEMSGICON_CRITICAL,
