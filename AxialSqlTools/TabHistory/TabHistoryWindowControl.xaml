@@ -120,11 +120,12 @@
                     <Button Content="Open File" Tag="loc:TabHistory_OpenFile" Width="90" Margin="8,0,0,0" Click="OpenFile_Click"/>
                 </StackPanel>
                 <TextBox x:Name="FullContentBox"
-                         Text="{Binding SelectedRecord.ContentDisplay}"
+                         Text="{Binding SelectedContentDisplay, Mode=OneWay}"
                          IsReadOnly="True"
                          TextWrapping="Wrap"
                          AcceptsReturn="True"
                          VerticalScrollBarVisibility="Auto"
+                         HorizontalScrollBarVisibility="Auto"
                          FontFamily="Consolas"
                          FontSize="12"/>
             </DockPanel>

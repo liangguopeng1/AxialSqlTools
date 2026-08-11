@@ -225,9 +225,9 @@
         </Strings>
       </Button>
 
-      <Button guid="guidAxialSqlToolsPackageCmdSet" id="AxialTabHistoryCommand" priority="0x0001" type="Button">
+      <Button guid="guidAxialSqlToolsPackageCmdSet" id="AxialTabHistoryCommand" priority="0x0005" type="Button">
         <Parent guid="guidAxialSqlToolsPackageCmdSet" id="AxialToolsSubMenuGroup_Script2" />
-        <Icon guid="guidQueryHistory" id="bmpQueryHistory" />
+        <Icon guid="guidOpenFolder" id="bmpOpenFolder" />
         <CommandFlag>IconAndText</CommandFlag>
         <Strings>
           <ButtonText>Tab History</ButtonText>

@@ -76,8 +76,7 @@ namespace AxialSqlTools
             string folder = UserConfigPaths.TabHistoryDirectory;
             if (!Directory.Exists(folder)) return records;
 
-            // 文件名按天命名，字典序即时间序；倒序遍历（新的在前），
-            // 每读一个文件后累积数量达到 max 即停止，避免全量物化
+            // 文件名按天命名，字典序即时间序；倒序遍历（新的在前）
             string[] files = Directory.GetFiles(folder, "tab-history-*.jsonl", SearchOption.TopDirectoryOnly);
             Array.Sort(files, StringComparer.OrdinalIgnoreCase);
             Array.Reverse(files);
@@ -93,7 +92,6 @@ namespace AxialSqlTools
                         {
                             var rec = JsonConvert.DeserializeObject<TabHistoryRecord>(line);
                             if (rec == null) continue;
-                            rec.ContentShort = BuildShortText(rec.Content);
                             records.Add(rec);
                         }
                         catch
@@ -108,14 +106,52 @@ namespace AxialSqlTools
                     AxialSqlToolsPackage._logger?.Warn(ex, "[TabHistory] failed to read {0}", filePath);
                     continue;
                 }
-                if (records.Count >= max) break;
             }
 
-            // 最终统一按 Timestamp 倒序（跨文件），取前 max 条
-            return records
+            // 同一文档只保留最新一条；Content 为空时从同文档更早快照回填
+            return DeduplicateByDocument(records, max);
+        }
+
+        private static List<TabHistoryRecord> DeduplicateByDocument(List<TabHistoryRecord> records, int max)
+        {
+            if (records == null || records.Count == 0)
+                return new List<TabHistoryRecord>();
+
+            // 按文档归并：只保留「有正文」的最新一条；全空内容的文档直接丢弃
+            var bestByKey = new Dictionary<string, TabHistoryRecord>(StringComparer.OrdinalIgnoreCase);
+            foreach (var rec in records.OrderBy(r => r.Timestamp))
+            {
+                if (string.IsNullOrEmpty(rec.Content))
+                    continue;
+                string key = GetDocumentKey(rec);
+                bestByKey[key] = rec;
+            }
+
+            var result = new List<TabHistoryRecord>(bestByKey.Count);
+            foreach (var best in bestByKey.Values)
+            {
+                best.DocumentName = TabHistoryRecorder.NormalizeDocumentName(best.DocumentName);
+                best.ContentShort = BuildShortText(best.Content);
+                if (best.CharCount <= 0)
+                    best.CharCount = best.Content.Length;
+                result.Add(best);
+            }
+
+            return result
                 .OrderByDescending(r => r.Timestamp)
                 .Take(max)
                 .ToList();
+        }
+
+        private static string GetDocumentKey(TabHistoryRecord record)
+        {
+            if (record == null) return "(unknown)";
+            if (!string.IsNullOrEmpty(record.DocumentPath))
+                return record.DocumentPath;
+            string name = TabHistoryRecorder.NormalizeDocumentName(record.DocumentName);
+            if (!string.IsNullOrEmpty(name))
+                return name;
+            return "(unknown)";
         }
 
         public static void CleanupOldFiles()

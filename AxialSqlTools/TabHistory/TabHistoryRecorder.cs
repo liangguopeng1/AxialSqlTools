@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using EnvDTE;
@@ -8,12 +9,14 @@ using Microsoft.SqlServer.Management.UI.VSIntegration;
 namespace AxialSqlTools
 {
     /// <summary>
-    /// Tab History 采集入口。在 Package 已挂载的窗口事件与执行完成回调中调用；
-    /// 内部做内容哈希去重（同一文档内容未变时 Content 存 null）。
+    /// Tab History 采集入口。内容相对该文档上次已写入快照未变化时不写盘；
+    /// 关闭时文档可能已不可读，平时缓存最新全文，关闭时回退到缓存/磁盘临时文件。
     /// </summary>
     public static class TabHistoryRecorder
     {
-        private static readonly ConcurrentDictionary<string, string> LastContentHashes =
+        private static readonly ConcurrentDictionary<string, string> LastContentByDocument =
+            new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, string> LastWrittenHashByDocument =
             new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         public static void RecordWindowEvent(TabHistoryEventType eventType, EnvDTE.Window window)
@@ -22,45 +25,35 @@ namespace AxialSqlTools
             {
                 if (!UiSettingsStore.GetTabHistoryEnabled()) return;
                 if (window == null) return;
+
+                // 激活：只刷新内存中的最新全文缓存，不写盘
+                if (eventType == TabHistoryEventType.Activated)
+                {
+                    if (IsDocumentWindow(window))
+                        CacheContentFromWindow(window);
+                    return;
+                }
+
+                if (eventType == TabHistoryEventType.Closed)
+                {
+                    RecordClosed(window);
+                    return;
+                }
+
                 if (!IsDocumentWindow(window)) return;
 
-                string documentName = GetDocumentName(window);
+                string documentName = NormalizeDocumentName(GetDocumentName(window));
                 if (string.IsNullOrEmpty(documentName)) return;
 
-                string content = ScriptFactoryAccess.GetQueryWindowText(window);
-                string documentKey = GetDocumentKey(documentName, GetDocumentPath(window));
-                string hash = ComputeHash(content);
+                string documentPath = GetDocumentPath(window);
+                string content = ScriptFactoryAccess.GetQueryWindowText(window) ?? string.Empty;
+                RememberContent(documentName, documentPath, content);
 
-                bool contentChanged = true;
-                if (LastContentHashes.TryGetValue(documentKey, out string previousHash) &&
-                    string.Equals(previousHash, hash, StringComparison.Ordinal))
-                {
-                    contentChanged = false;
-                }
-                LastContentHashes[documentKey] = hash;
-
-                // 关闭事件时连接已不可靠，规格要求不写活动连接
                 string dataSource = string.Empty;
                 string database = string.Empty;
-                if (eventType != TabHistoryEventType.Closed)
-                {
-                    TryGetActiveConnectionInfo(out dataSource, out database);
-                }
+                TryGetActiveConnectionInfo(out dataSource, out database);
 
-                var record = new TabHistoryRecord
-                {
-                    Timestamp = DateTime.Now,
-                    EventType = eventType,
-                    DocumentName = documentName,
-                    DocumentPath = GetDocumentPath(window),
-                    DataSource = dataSource,
-                    DatabaseName = database,
-                    Content = contentChanged ? content : null,
-                    ContentHash = hash,
-                    CharCount = contentChanged ? (content?.Length ?? 0) : 0
-                };
-
-                TabHistoryStore.Enqueue(record);
+                TryEnqueue(eventType, documentName, documentPath, dataSource, database, content);
             }
             catch (Exception ex)
             {
@@ -74,26 +67,13 @@ namespace AxialSqlTools
             {
                 if (!UiSettingsStore.GetTabHistoryEnabled()) return;
 
-                // Executed 不参与内容去重：执行内容必须保留
-                string documentName = TryGetActiveDocumentName();
+                content = content ?? string.Empty;
+                string documentName = NormalizeDocumentName(TryGetActiveDocumentName());
                 string documentPath = TryGetActiveDocumentPath();
-                string hash = ComputeHash(content);
-                LastContentHashes[GetDocumentKey(documentName, documentPath)] = hash;
+                RememberContent(documentName, documentPath, content);
 
-                var record = new TabHistoryRecord
-                {
-                    Timestamp = DateTime.Now,
-                    EventType = TabHistoryEventType.Executed,
-                    DocumentName = documentName,
-                    DocumentPath = documentPath,
-                    DataSource = dataSource,
-                    DatabaseName = database,
-                    Content = content,
-                    ContentHash = hash,
-                    CharCount = content?.Length ?? 0
-                };
-
-                TabHistoryStore.Enqueue(record);
+                TryEnqueue(TabHistoryEventType.Executed, documentName, documentPath,
+                    dataSource ?? string.Empty, database ?? string.Empty, content);
             }
             catch (Exception ex)
             {
@@ -101,16 +81,170 @@ namespace AxialSqlTools
             }
         }
 
+        private static void RecordClosed(EnvDTE.Window window)
+        {
+            string documentName = NormalizeDocumentName(GetDocumentName(window));
+            string documentPath = GetDocumentPath(window);
+            if (string.IsNullOrEmpty(documentName) && string.IsNullOrEmpty(documentPath))
+            {
+                try { documentName = NormalizeDocumentName(window.Caption ?? string.Empty); } catch { }
+            }
+            if (string.IsNullOrEmpty(documentName) && string.IsNullOrEmpty(documentPath))
+                return;
+
+            string content = string.Empty;
+            try
+            {
+                content = ScriptFactoryAccess.GetQueryWindowText(window) ?? string.Empty;
+            }
+            catch { }
+
+            string key = GetDocumentKey(documentName, documentPath);
+            if (string.IsNullOrEmpty(content) &&
+                LastContentByDocument.TryGetValue(key, out string cached) &&
+                !string.IsNullOrEmpty(cached))
+            {
+                content = cached;
+            }
+
+            // Caption 规范化后 key 可能对不上，再按文件名扫一遍缓存
+            if (string.IsNullOrEmpty(content) && !string.IsNullOrEmpty(documentName))
+            {
+                foreach (var pair in LastContentByDocument)
+                {
+                    if (pair.Key.EndsWith(documentName, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(Path.GetFileName(pair.Key), documentName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        content = pair.Value;
+                        if (string.IsNullOrEmpty(documentPath) &&
+                            pair.Key.IndexOfAny(new[] { '\\', '/' }) >= 0)
+                        {
+                            documentPath = pair.Key;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            if (string.IsNullOrEmpty(content) && !string.IsNullOrEmpty(documentPath) && File.Exists(documentPath))
+            {
+                try { content = File.ReadAllText(documentPath) ?? string.Empty; } catch { }
+            }
+
+            // 内容为空或相对上次写入未变化 → 不写盘
+            TryEnqueue(TabHistoryEventType.Closed, documentName, documentPath,
+                string.Empty, string.Empty, content);
+
+            key = GetDocumentKey(documentName, documentPath);
+            LastContentByDocument.TryRemove(key, out _);
+            LastWrittenHashByDocument.TryRemove(key, out _);
+        }
+
+        /// <summary>
+        /// 在关闭/失焦前刷新该窗口的全文缓存（不写盘）。
+        /// </summary>
+        public static void RememberWindowContent(EnvDTE.Window window)
+        {
+            if (!UiSettingsStore.GetTabHistoryEnabled()) return;
+            if (window == null) return;
+            try
+            {
+                if (IsDocumentWindow(window))
+                    CacheContentFromWindow(window);
+            }
+            catch { }
+        }
+
+        private static void CacheContentFromWindow(EnvDTE.Window window)
+        {
+            try
+            {
+                string documentName = NormalizeDocumentName(GetDocumentName(window));
+                string documentPath = GetDocumentPath(window);
+                if (string.IsNullOrEmpty(documentName) && string.IsNullOrEmpty(documentPath))
+                    return;
+                string content = ScriptFactoryAccess.GetQueryWindowText(window) ?? string.Empty;
+                RememberContent(documentName, documentPath, content);
+            }
+            catch { }
+        }
+
+        private static void RememberContent(string documentName, string documentPath, string content)
+        {
+            if (string.IsNullOrEmpty(content)) return;
+            LastContentByDocument[GetDocumentKey(documentName, documentPath)] = content;
+        }
+
+        /// <summary>
+        /// 空内容或相对该文档上次已写入内容未变化时跳过。
+        /// </summary>
+        private static void TryEnqueue(
+            TabHistoryEventType eventType,
+            string documentName,
+            string documentPath,
+            string dataSource,
+            string database,
+            string content)
+        {
+            content = content ?? string.Empty;
+            if (string.IsNullOrEmpty(content))
+                return;
+
+            string key = GetDocumentKey(documentName, documentPath);
+            string hash = ComputeHash(content);
+            if (LastWrittenHashByDocument.TryGetValue(key, out string previousHash) &&
+                string.Equals(previousHash, hash, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            LastWrittenHashByDocument[key] = hash;
+            TabHistoryStore.Enqueue(new TabHistoryRecord
+            {
+                Timestamp = DateTime.Now,
+                EventType = eventType,
+                DocumentName = documentName ?? string.Empty,
+                DocumentPath = documentPath ?? string.Empty,
+                DataSource = dataSource ?? string.Empty,
+                DatabaseName = database ?? string.Empty,
+                Content = content,
+                ContentHash = hash,
+                CharCount = content.Length
+            });
+        }
+
+        private static string GetDocumentKey(string documentName, string documentPath)
+        {
+            if (!string.IsNullOrEmpty(documentPath)) return documentPath;
+            if (!string.IsNullOrEmpty(documentName)) return documentName;
+            return "(unknown)";
+        }
+
+        /// <summary>
+        /// SSMS 关闭时 Caption 常为 "xxx.sql - server.db (login)"，只保留文件名部分。
+        /// </summary>
+        internal static string NormalizeDocumentName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return string.Empty;
+            name = name.Trim();
+            int sep = name.IndexOf(" - ", StringComparison.Ordinal);
+            if (sep > 0)
+            {
+                string maybeFile = name.Substring(0, sep).Trim();
+                if (maybeFile.EndsWith(".sql", StringComparison.OrdinalIgnoreCase))
+                    return maybeFile;
+            }
+            return name;
+        }
+
         private static bool IsDocumentWindow(EnvDTE.Window window)
         {
             try
             {
-                // 仅记录文档窗口（SQL 查询编辑器 Kind == "Document"），跳过工具窗/对象资源管理器等
                 if (!string.Equals(window.Kind, "Document", StringComparison.OrdinalIgnoreCase))
                 {
                     return false;
                 }
-                // 校验底层确为文本文档，避免非查询文档（如设计器）也被记录
                 return window.Document?.Object("TextDocument") as TextDocument != null;
             }
             catch
@@ -153,19 +287,12 @@ namespace AxialSqlTools
             }
         }
 
-        private static string GetDocumentKey(string documentName, string documentPath)
-        {
-            string key = string.IsNullOrEmpty(documentPath) ? documentName : documentPath;
-            return string.IsNullOrEmpty(key) ? "(unknown)" : key;
-        }
-
         private static void TryGetActiveConnectionInfo(out string dataSource, out string database)
         {
             dataSource = string.Empty;
             database = string.Empty;
             try
             {
-                // 一次调用同时取服务器与数据库，避免重复读取活动连接
                 var info = ScriptFactoryAccess.GetCurrentConnectionInfo();
                 dataSource = info?.ServerName ?? string.Empty;
                 database = info?.Database ?? string.Empty;

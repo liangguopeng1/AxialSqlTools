@@ -43,9 +43,8 @@ namespace AxialSqlTools
         }
 
         /// <summary>
-        /// Opens the Tab History tool window. Also invoked by the Aurora toolbar command
-        /// (TabHistoryCommandProcessor) so the feature is reachable even when the vsct
-        /// command-table resource fails to surface the menu button.
+        /// Opens the Tab History tool window. Invoked by the vsct command and by
+        /// TabHistoryCommandProcessor (Aurora registration on the Tools submenu).
         /// </summary>
         public static void ShowWindow(AsyncPackage package)
         {

@@ -394,6 +394,7 @@ namespace AxialSqlTools
                 // Query Templates
                 ImageList icons = new ImageList();
                 icons.Images.Add(Resources.script);
+                icons.Images.Add(Resources.open_folder);
 
                 m_plugin = new Plugin(application, profferCommands3, icons, oleMenuCommandService, "AxialSqlTools", "Aurora.Connect");
 
@@ -410,6 +411,9 @@ namespace AxialSqlTools
                 RefreshTemplatesList();
 
                 MenuTextLocalizer.Apply(application);
+
+                // Tab History：SSMS 22 经常合并不了新增 vsct 按钮，显式挂到「工具」子菜单（与查询历史同级）
+                EnsureTabHistoryInToolsMenu(commandBar);
 
             }
             catch (Exception ex)
@@ -689,9 +693,11 @@ namespace AxialSqlTools
                 }
             }
 
-            // Tab History: 记录标签激活与当前内容快照
+            // Tab History: 失焦窗口先缓存全文；激活事件本身不写盘，只刷新缓存
             try
             {
+                if (LostFocus != null)
+                    TabHistoryRecorder.RememberWindowContent(LostFocus);
                 TabHistoryRecorder.RecordWindowEvent(TabHistoryEventType.Activated, GotFocus);
             }
             catch (Exception ex)
@@ -780,6 +786,8 @@ namespace AxialSqlTools
             // Re-color remaining tabs after a tab closes
             try
             {
+                // 关闭回调里 Document 可能已拆，先尽量抓一次全文进缓存
+                TabHistoryRecorder.RememberWindowContent(Window);
                 TabHistoryRecorder.RecordWindowEvent(TabHistoryEventType.Closed, Window);
                 GridAccess.ScheduleReapplyAllTabColors();
             }
@@ -1045,23 +1053,35 @@ namespace AxialSqlTools
                 _logger.Error(ex, "An exception occurred");
             }
 
-                // tab history: 执行后记录编辑器全文（含未执行草稿）
-                // 内容取自执行事件对应的 textSpan（避免用户执行期间切换标签导致取错窗口）
+            // tab history: 执行后记录编辑器全文（整页 SQL，不是本次执行的 textSpan 片段）
+            try
+            {
+                string content = string.Empty;
                 try
                 {
-                    var textSpan = GridAccess.GetNonPublicField(QEOLESQLExec, "textSpan");
-                    string content = (string)GridAccess.GetProperty(textSpan, "Text");
-
-                    var mConn = GridAccess.GetNonPublicField(QEOLESQLExec, "m_conn");
-                    string dataSource = string.Empty;
-                    string database = string.Empty;
-                    if (mConn != null)
-                    {
-                        try { dataSource = (string)GridAccess.GetProperty(mConn, "DataSource"); } catch { }
-                        try { database = (string)GridAccess.GetProperty(mConn, "Database"); } catch { }
-                    }
-                    TabHistoryRecorder.RecordExecuted(content, dataSource, database);
+                    var active = ServiceCache.ExtensibilityModel?.ActiveWindow;
+                    if (active != null)
+                        content = ScriptFactoryAccess.GetQueryWindowText(active) ?? string.Empty;
                 }
+                catch { }
+
+                // 拿不到全文时再回退到本次执行片段，避免丢记录
+                if (string.IsNullOrEmpty(content))
+                {
+                    var textSpan = GridAccess.GetNonPublicField(QEOLESQLExec, "textSpan");
+                    content = GridAccess.GetProperty(textSpan, "Text") as string ?? string.Empty;
+                }
+
+                var mConn = GridAccess.GetNonPublicField(QEOLESQLExec, "m_conn");
+                string dataSource = string.Empty;
+                string database = string.Empty;
+                if (mConn != null)
+                {
+                    try { dataSource = (string)GridAccess.GetProperty(mConn, "DataSource"); } catch { }
+                    try { database = (string)GridAccess.GetProperty(mConn, "Database"); } catch { }
+                }
+                TabHistoryRecorder.RecordExecuted(content, dataSource, database);
+            }
             catch (Exception ex)
             {
                 _logger.Error(ex, "An exception occurred recording tab history after execute");
@@ -1419,6 +1439,155 @@ namespace AxialSqlTools
 
             UpdateRenamedTemplatesControls(m_commandBarQueryTemplates, fileNamesCache);
 
+        }
+
+        private void EnsureTabHistoryInToolsMenu(CommandBar toolbar)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            try
+            {
+                // 去掉此前误挂在工具栏根上的按钮（Aurora onlyToolbar 残留）
+                RemoveCommandBarControlByNames(toolbar,
+                    "AxialSqlTools.TabHistory", "Tab History", "标签页历史");
+
+                CommandBar toolsMenu = FindToolsSubMenu(toolbar);
+                if (toolsMenu == null)
+                {
+                    _logger?.Warn("Tools submenu not found; Tab History menu item was not registered.");
+                    return;
+                }
+
+                // 先删掉菜单里已有的（可能在末尾），再按「查询历史」后的位置重新插入
+                RemoveCommandBarControlByNames(toolsMenu,
+                    "AxialSqlTools.TabHistory", "Tab History", "标签页历史");
+
+                var queryHistory = FindCommandBarControl(toolsMenu, "Query History", "查询历史");
+                // CommandBar Index 为 1-based；插到查询历史后面 = Index + 1
+                uint insertPos = queryHistory != null
+                    ? (uint)(queryHistory.Index + 1)
+                    : (uint)(toolsMenu.Controls.Count + 1);
+
+                m_commandRegistry.RegisterCommand(
+                    doBindings: false,
+                    handler: new TabHistoryCommandProcessor(m_plugin, this, toolsMenu, insertPos),
+                    onlyToolbar: true,
+                    menuParent: toolsMenu);
+
+                // 再保险一次：若仍不在查询历史后，强制 Move
+                PlaceControlAfter(toolsMenu,
+                    new[] { "AxialSqlTools.TabHistory", "Tab History", "标签页历史" },
+                    new[] { "Query History", "查询历史" });
+            }
+            catch (Exception ex)
+            {
+                _logger?.Warn(ex, "Failed to place Tab History into Tools menu.");
+            }
+        }
+
+        private static CommandBar FindToolsSubMenu(CommandBar toolbar)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (toolbar == null) return null;
+            foreach (CommandBarControl control in toolbar.Controls)
+            {
+                if (!(control is CommandBarPopup popup) || popup.CommandBar == null)
+                    continue;
+                string caption = NormalizeCommandCaption(popup.Caption);
+                string name = NormalizeCommandCaption(popup.CommandBar.Name);
+                if (caption == "tools" || caption == "工具"
+                    || name == "tools" || name == "工具")
+                {
+                    return popup.CommandBar;
+                }
+            }
+            return null;
+        }
+
+        private static void RemoveCommandBarControlByNames(CommandBar bar, params string[] names)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (bar == null) return;
+            var match = FindCommandBarControl(bar, names);
+            if (match != null)
+            {
+                try { match.Delete(false); } catch { }
+            }
+        }
+
+        private static bool HasCommandBarControl(CommandBar bar, params string[] names)
+        {
+            return FindCommandBarControl(bar, names) != null;
+        }
+
+        private static CommandBarControl FindCommandBarControl(CommandBar bar, params string[] names)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (bar == null || names == null || names.Length == 0) return null;
+            var normalized = new HashSet<string>(
+                names.Select(NormalizeCommandCaption).Where(s => !string.IsNullOrEmpty(s)),
+                StringComparer.OrdinalIgnoreCase);
+            foreach (CommandBarControl control in bar.Controls)
+            {
+                try
+                {
+                    string caption = NormalizeCommandCaption(control.Caption);
+                    string tag = NormalizeCommandCaption(control.Tag as string);
+                    // Controls[canonicalName] lookup path — some Aurora buttons use AccName/Id
+                    if (normalized.Contains(caption) || normalized.Contains(tag))
+                        return control;
+                }
+                catch { }
+            }
+            foreach (string name in names)
+            {
+                if (string.IsNullOrEmpty(name)) continue;
+                try
+                {
+                    var existing = bar.Controls[name];
+                    if (existing != null) return existing;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        private static void PlaceControlAfter(CommandBar bar, string[] targetNames, string[] afterNames)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var target = FindCommandBarControl(bar, targetNames);
+            var after = FindCommandBarControl(bar, afterNames);
+            if (target == null || after == null) return;
+            try
+            {
+                bool afterSeen = false;
+                bool alreadyPlaced = false;
+                CommandBarControl insertBefore = null;
+                foreach (CommandBarControl c in bar.Controls)
+                {
+                    if (afterSeen)
+                    {
+                        if (ReferenceEquals(c, target))
+                            alreadyPlaced = true;
+                        else
+                            insertBefore = c;
+                        break;
+                    }
+                    if (ReferenceEquals(c, after))
+                        afterSeen = true;
+                }
+                if (alreadyPlaced) return;
+                if (insertBefore != null)
+                    target.Move(insertBefore, false);
+                else
+                    target.Move(System.Reflection.Missing.Value, false);
+            }
+            catch { }
+        }
+
+        private static string NormalizeCommandCaption(string caption)
+        {
+            if (string.IsNullOrEmpty(caption)) return string.Empty;
+            return caption.Replace("&", "").Trim().ToLowerInvariant();
         }
 
         private void UpdateRenamedTemplatesControls(CommandBar commandBarFolder, Dictionary<string, string> fileNamesCache)
