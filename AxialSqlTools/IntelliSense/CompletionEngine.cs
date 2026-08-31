@@ -276,8 +276,10 @@ namespace AxialSqlTools
                         bool inExprClause = majorForMember == "ON" || majorForMember == "WHERE"
                             || majorForMember == "HAVING" || majorForMember == "GROUP"
                             || majorForMember == "ORDER" || majorForMember == "SET";
+                        bool inDmlTargetName = majorForMember == "UPDATE" || majorForMember == "DELETE"
+                            || majorForMember == "INSERT" || majorForMember == "INTO";
 
-                        if (aliasMember || inExprClause || !fromQualifiedName)
+                        if (!inDmlTargetName && (aliasMember || inExprClause || !fromQualifiedName))
                         {
                             result.Context = CompletionContext.MemberAccess;
                             result.Prefix = memberPrefix;

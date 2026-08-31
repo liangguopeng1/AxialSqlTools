@@ -140,6 +140,17 @@ Add-Case '141' 'SELECT | FROM dbo.DemoT' @() 'SelectElements'
 Add-Case '142' 'INSERT INTO dbo.DemoT (|' @() 'InsertColumnList'
 Add-Case '143' 'INSERT INTO dbo.DemoT (id, |' @() 'InsertColumnList'
 Add-Case '144' 'INSERT INTO dbo.DemoT VALUES (|' @() 'InsertTarget'
+# UPDATE SET：目标表列（无 FROM 时也要提示；跨库三段名；同标签上一句 SELECT 不得抢走别名）
+Add-Case '145' 'UPDATE dbo.kucun SET ope|' @('oper') 'UpdateSet'
+Add-Case '146' 'UPDATE rt_kucun.dbo.kucun SET ope|' @('oper') 'UpdateSet'
+Add-Case '147' 'UPDATE rt_kucun.dbo.kucun SET oper where operid = ''x''|' @('operid') 'WhereClause'
+Add-Case '148' ("SELECT * FROM rt_fenjian.dbo.FJ_Items where DD_Item_ID = 1" + [char]10 + [char]10 + "UPDATE  rt_kucun.dbo.kucun set ope|") @('oper') 'UpdateSet'
+Add-Case '149' ("247965692" + [char]10 + "SELECT * FROM rt_fenjian.dbo.FJ_Items_Status" + [char]10 + [char]10 + "UPDATE  rt_kucun.dbo.kucun set ope| where operid = '202410111844658620279545858'") @('oper') 'UpdateSet'
+# UPDATE 目标：库/表名，勿把 kucun. 当成列访问
+Add-Case '150' 'UPDATE kuc|' @('dbo.kucun') 'UpdateTarget' @('oper')
+Add-Case '151' 'UPDATE |' @('dbo.kucun') 'UpdateTarget' @('oper')
+Add-Case '152' 'UPDATE kucun.|' @() 'UpdateTarget' @('oper')
+Add-Case '153' 'UPDATE dbo.kuc|' @('dbo.kucun') 'UpdateTarget' @('oper')
 
 Write-Host "Cases=$($cases.Count)"
 
@@ -159,6 +170,16 @@ foreach ($cn in @('id','k_id','h_id','CreateRen')) {
     [void]$demo.Columns.Add($col)
 }
 [void]$mockCatalog.Tables.Add($demo)
+$kucun = [Activator]::CreateInstance($tableType)
+$kucun.Schema = 'dbo'
+$kucun.Name = 'kucun'
+foreach ($cn in @('oper','operid','k_id')) {
+    $col = [Activator]::CreateInstance($colType)
+    $col.Name = $cn
+    $col.DataType = 'nvarchar'
+    [void]$kucun.Columns.Add($col)
+}
+[void]$mockCatalog.Tables.Add($kucun)
 
 $fail = New-Object System.Collections.Generic.List[string]
 $pass = 0
@@ -166,7 +187,7 @@ foreach ($c in $cases) {
     $e = [Activator]::CreateInstance($engineType)
     $s = [Activator]::CreateInstance($settingsType)
     $s.includeKeywords = $true
-    $useCatalog = $c.Name -in @('141','142','143','144')
+    $useCatalog = $c.Name -in @('141','142','143','144','145','146','147','148','149','150','151','152','153')
     $cat = if ($useCatalog) { $mockCatalog } else { $null }
     try {
         $r = $get.Invoke($e, @($c.Sql, $c.Caret, $cat, $s, $null))
@@ -197,7 +218,7 @@ foreach ($c in $cases) {
     foreach ($mn in $c.MustNot) {
         if ($mn -and $n.Contains($mn)) { $ok = $false; $why = "has $mn" }
     }
-    if ($useCatalog -and $c.Name -ne '144') {
+    if ($c.Name -in @('141','142','143')) {
         if (-not $kinds.Contains('AllColumns')) {
             $ok = $false
             $why = "miss AllColumns kinds=[$($kinds | Select-Object -First 10)]"

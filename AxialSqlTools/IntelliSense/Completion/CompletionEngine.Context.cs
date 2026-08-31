@@ -249,7 +249,11 @@ namespace AxialSqlTools
                 }
                 return string.Equals(kw, "FROM", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(kw, "JOIN", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(kw, "APPLY", StringComparison.OrdinalIgnoreCase);
+                    || string.Equals(kw, "APPLY", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(kw, "UPDATE", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(kw, "DELETE", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(kw, "INSERT", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(kw, "INTO", StringComparison.OrdinalIgnoreCase);
             }
 
             /// <summary>出现在 FROM 表名之后的子句关键字：原文扫到这些则不是在输表名。</summary>
@@ -487,6 +491,10 @@ namespace AxialSqlTools
                     }
                 }
 
+                // INSERT INTO t (|) 列清单优先于 INSERT 目标名（INTO 现为对象名锚点）
+                if (TryParseInsertColumnList(tokens, localOffset, out _))
+                    return CompletionContext.InsertColumnList;
+
                 // FROM 目标名（含未闭合 [）优先；但若已越过 WHERE/GROUP/ORDER，不能再锁死 FromClause
                 // JOIN ON 仍属 FROM 区域（可继续 INNER JOIN）——不含 alias. 列访问
                 if (fromName != null && fromName.InFromClause)
@@ -494,6 +502,21 @@ namespace AxialSqlTools
                     string majorKw = caretTokenIndex >= 0
                         ? FindNearestMajorClauseKeyword(tokens, caretTokenIndex, localOffset)
                         : null;
+                    if (majorKw == "UPDATE")
+                    {
+                        prefix = fromName.Partial ?? string.Empty;
+                        return CompletionContext.UpdateTarget;
+                    }
+                    if (majorKw == "DELETE")
+                    {
+                        prefix = fromName.Partial ?? string.Empty;
+                        return CompletionContext.DeleteTarget;
+                    }
+                    if (majorKw == "INSERT" || majorKw == "INTO")
+                    {
+                        prefix = fromName.Partial ?? string.Empty;
+                        return CompletionContext.InsertTarget;
+                    }
                     if (majorKw != "WHERE" && majorKw != "HAVING" && majorKw != "GROUP" && majorKw != "ORDER"
                         && majorKw != "UNION" && majorKw != "EXCEPT" && majorKw != "INTERSECT")
                     {
@@ -516,10 +539,6 @@ namespace AxialSqlTools
                 // 注意：函数实参内仍要提示列（ISNULL(h|, )），插入后防重弹靠 KeyHandler 短时抑制
                 if (string.IsNullOrEmpty(prefix) && IsImmediatelyAfterClosedGroup(tokens, localOffset))
                     return CompletionContext.Unknown;
-
-                // INSERT INTO t (|) 列清单（优先于 INSERT 目标表上下文）
-                if (TryParseInsertColumnList(tokens, localOffset, out _))
-                    return CompletionContext.InsertColumnList;
 
                 if (caretTokenIndex < 0)
                 {
@@ -973,7 +992,8 @@ namespace AxialSqlTools
 
             private static bool IsFromClauseAnchorKeyword(string text)
             {
-                return text == "FROM" || text == "JOIN" || text == "APPLY";
+                return text == "FROM" || text == "JOIN" || text == "APPLY"
+                    || text == "UPDATE" || text == "DELETE" || text == "INSERT" || text == "INTO";
             }
 
             private static bool IsFromScanStopKeyword(string text)

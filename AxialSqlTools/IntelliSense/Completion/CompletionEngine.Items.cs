@@ -55,7 +55,7 @@ namespace AxialSqlTools
 
                     case CompletionContext.InsertTarget:
                         if (settings.includeKeywords) AddKeywords(items, InsertKeywords);
-                        AddTablesAndViews(items, catalog, settings);
+                        AddFromClauseItems(items, fromName, catalog, settings, connInfo, prefix);
                         break;
 
                     case CompletionContext.InsertColumnList:
@@ -65,7 +65,10 @@ namespace AxialSqlTools
 
                     case CompletionContext.UpdateTarget:
                     case CompletionContext.DeleteTarget:
-                        AddTablesAndViews(items, catalog, settings);
+                        AddFromClauseItems(items, fromName, catalog, settings, connInfo, prefix);
+                        if (settings.includeKeywords && !string.IsNullOrEmpty(prefix)
+                            && (fromName == null || !fromName.AfterDot))
+                            AddKeywords(items, new[] { "SET", "FROM", "WHERE" });
                         break;
 
                     case CompletionContext.SelectElements:

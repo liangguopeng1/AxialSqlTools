@@ -113,7 +113,7 @@ namespace AxialSqlTools
                     {
                         foreach (var stmt in batch.Statements)
                         {
-                            if (GetFromClause(stmt) == null) continue;
+                            if (GetFromClause(stmt) == null && !IsDmlStatement(stmt)) continue;
                             int start = stmt.StartOffset;
                             int end = start + Math.Max(0, stmt.FragmentLength);
                             if (localOffset >= start && localOffset <= end)
@@ -152,10 +152,12 @@ namespace AxialSqlTools
 
                 if (target != null)
                 {
+                    CollectDmlTarget(target, local);
                     var from = GetFromClause(target);
-                    foreach (var tr in from.TableReferences ?? Enumerable.Empty<TableReference>())
+                    if (from != null)
                     {
-                        CollectFromClause(tr, local);
+                        foreach (var tr in from.TableReferences ?? Enumerable.Empty<TableReference>())
+                            CollectFromClause(tr, local);
                     }
                 }
                 // 始终用 token 补全 JOIN 别名（ScriptDom 对 kucun(nolock) 等可能丢别名）
@@ -164,6 +166,9 @@ namespace AxialSqlTools
                 // INSERT INTO t (|)：把目标表登记进别名，便于列/全字段补全
                 if (tokens != null)
                     CollectInsertTargetFromTokens(tokens, localOffset, local);
+                // UPDATE t SET：无 FROM 时也要把目标表登记进别名（SET/WHERE 列补全）
+                if (tokens != null)
+                    CollectUpdateTargetFromTokens(tokens, localOffset, local);
             }
 
             /// <summary>INSERT INTO [db.][schema.]table ( 列清单内时，登记目标表。</summary>
@@ -304,6 +309,215 @@ namespace AxialSqlTools
                 return true;
             }
 
+            /// <summary>UPDATE [db.][schema.]table SET/WHERE 时登记目标表，供 SET 列补全。</summary>
+            private static void CollectUpdateTargetFromTokens(
+                List<TSqlParserToken> tokens, int localOffset, LocalSymbols local)
+            {
+                if (local == null || !TryParseUpdateTarget(tokens, localOffset, out TableRef tref, out string alias))
+                    return;
+                if (tref == null || string.IsNullOrEmpty(tref.Name)) return;
+                if (!string.IsNullOrEmpty(alias) && !IsSqlTableKeyword(alias))
+                    MergeAlias(local, alias, tref);
+                MergeAlias(local, tref.Name, tref);
+                if (!string.IsNullOrEmpty(tref.Schema))
+                    MergeAlias(local, tref.Schema + "." + tref.Name, tref);
+                if (!string.IsNullOrEmpty(tref.Database))
+                    MergeAlias(local, tref.Database + "." + (tref.Schema ?? "dbo") + "." + tref.Name, tref);
+            }
+
+            private static bool TryParseUpdateTarget(
+                List<TSqlParserToken> tokens, int localOffset, out TableRef tableRef, out string alias)
+            {
+                tableRef = null;
+                alias = null;
+                if (tokens == null || tokens.Count == 0) return false;
+                int updIdx = -1;
+                int depth = 0;
+                for (int i = 0; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset >= localOffset) break;
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis) { depth++; continue; }
+                    if (t.TokenType == TSqlTokenType.RightParenthesis)
+                    {
+                        if (depth > 0) depth--;
+                        continue;
+                    }
+                    if (depth > 0) continue;
+                    string text = t.Text?.ToUpperInvariant();
+                    if (text == ";" || text == "GO") { updIdx = -1; continue; }
+                    if (text == "UPDATE") updIdx = i;
+                    else if (IsNewStatementKeyword(text) && text != "UPDATE")
+                        updIdx = -1;
+                }
+                if (updIdx < 0) return false;
+                var segs = new List<string>();
+                    bool lastWasDot = false;
+                    bool usesDoubleDot = false;
+                    bool sawTerminator = false;
+                    int j = updIdx + 1;
+                while (j < tokens.Count)
+                {
+                    var t = tokens[j];
+                    if (t == null || IsInsignificantToken(t)) { j++; continue; }
+                    if (t.Offset >= localOffset && segs.Count > 0) break;
+                    string up = t.Text?.ToUpperInvariant();
+                    if (string.IsNullOrEmpty(up)) { j++; continue; }
+                    if (up == "TOP")
+                    {
+                        j++;
+                        while (j < tokens.Count)
+                        {
+                            var tt = tokens[j];
+                            if (tt == null || IsInsignificantToken(tt)) { j++; continue; }
+                            if (tt.TokenType == TSqlTokenType.LeftParenthesis)
+                            {
+                                j = SkipParenthesesForward(tokens, j);
+                                continue;
+                            }
+                            if (string.Equals(tt.Text, "PERCENT", StringComparison.OrdinalIgnoreCase))
+                            { j++; continue; }
+                            break;
+                        }
+                        continue;
+                    }
+                    if (IsUpdateTargetTerminator(up)) { sawTerminator = true; break; }
+                    if (up == "WITH")
+                    {
+                        j++;
+                        while (j < tokens.Count)
+                        {
+                            var wt = tokens[j];
+                            if (wt == null || IsInsignificantToken(wt)) { j++; continue; }
+                            if (wt.TokenType == TSqlTokenType.LeftParenthesis)
+                            {
+                                j = SkipParenthesesForward(tokens, j);
+                                continue;
+                            }
+                            break;
+                        }
+                        continue;
+                    }
+                    if (up == "AS") { j++; continue; }
+                    if (t.TokenType == TSqlTokenType.Dot || t.Text == ".")
+                    {
+                        if (lastWasDot) usesDoubleDot = true;
+                        lastWasDot = true;
+                        j++;
+                        continue;
+                    }
+                    if (IsWordLikeToken(t) || t.TokenType == TSqlTokenType.QuotedIdentifier
+                        || (t.Text != null && t.Text.Length > 0 && t.Text[0] == '['))
+                    {
+                        string id = UnbracketIdentifier(t.Text);
+                        if (string.IsNullOrEmpty(id) || IsSqlTableKeyword(id) || IsUpdateTargetTerminator(id.ToUpperInvariant()))
+                        { j++; continue; }
+                        if (segs.Count > 0 && !lastWasDot)
+                        {
+                            alias = id;
+                            j++;
+                            break;
+                        }
+                        segs.Add(id);
+                        lastWasDot = false;
+                        j++;
+                        if (segs.Count >= 4) break;
+                        continue;
+                    }
+                    j++;
+                }
+                if (segs.Count == 0) return false;
+                tableRef = new TableRef();
+                if (usesDoubleDot && segs.Count == 2)
+                {
+                    tableRef.Database = segs[0];
+                    tableRef.Schema = "dbo";
+                    tableRef.Name = segs[1];
+                }
+                else if (segs.Count == 1)
+                {
+                    tableRef.Name = segs[0];
+                }
+                else if (segs.Count == 2)
+                {
+                    tableRef.Schema = segs[0];
+                    tableRef.Name = segs[1];
+                }
+                else if (segs.Count == 3)
+                {
+                    tableRef.Database = segs[0];
+                    tableRef.Schema = segs[1];
+                    tableRef.Name = segs[2];
+                }
+                else
+                {
+                    tableRef.LinkedServer = segs[0];
+                    tableRef.Database = segs[1];
+                    tableRef.Schema = segs[2];
+                    tableRef.Name = segs[3];
+                }
+                NormalizeTableRef(tableRef);
+                return sawTerminator && !string.IsNullOrEmpty(tableRef.Name);
+            }
+
+            private static int SkipParenthesesForward(List<TSqlParserToken> tokens, int openIdx)
+            {
+                int depth = 0;
+                for (int i = openIdx; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null) continue;
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis) depth++;
+                    else if (t.TokenType == TSqlTokenType.RightParenthesis)
+                    {
+                        depth--;
+                        if (depth <= 0) return i + 1;
+                    }
+                }
+                return tokens.Count;
+            }
+
+            private static bool IsUpdateTargetTerminator(string kw)
+            {
+                if (string.IsNullOrEmpty(kw)) return false;
+                switch (kw.ToUpperInvariant())
+                {
+                    case "SET":
+                    case "FROM":
+                    case "WHERE":
+                    case "OUTPUT":
+                    case "OPTION":
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+
+            private static bool IsNewStatementKeyword(string text)
+            {
+                if (string.IsNullOrEmpty(text)) return false;
+                switch (text.ToUpperInvariant())
+                {
+                    case "SELECT":
+                    case "INSERT":
+                    case "UPDATE":
+                    case "DELETE":
+                    case "MERGE":
+                    case "CREATE":
+                    case "ALTER":
+                    case "DROP":
+                    case "EXEC":
+                    case "EXECUTE":
+                    case "USE":
+                    case "DECLARE":
+                    case "TRUNCATE":
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+
             /// <summary>定位当前 SELECT 对应的 FROM（允许 FROM 在光标之后；支持误写分号后继续 AND 条件）。</summary>
             private static int FindFromClauseTokenIndex(List<TSqlParserToken> tokens, int localOffset)
             {
@@ -325,6 +539,8 @@ namespace AxialSqlTools
                     }
                     if (text == "SELECT")
                         selectIdx = i;
+                    else if (IsNewStatementKeyword(text) && text != "SELECT")
+                        selectIdx = -1;
                 }
                 // where ... ; and alias.col → 分号后无新 SELECT，沿用分号前的查询别名
                 if (selectIdx < 0 && selectBeforeSemi >= 0 && lastSemiIdx >= 0
@@ -368,6 +584,8 @@ namespace AxialSqlTools
                         lastFrom = -1;
                         continue;
                     }
+                    if (IsNewStatementKeyword(text))
+                        lastFrom = -1;
                     if (text == "FROM")
                         lastFrom = i;
                 }
@@ -694,6 +912,19 @@ namespace AxialSqlTools
                 if (tref == null) return;
                 if (!string.IsNullOrEmpty(tref.Database) && string.IsNullOrEmpty(tref.Schema))
                     tref.Schema = "dbo";
+            }
+
+            private static bool IsDmlStatement(TSqlStatement stmt)
+            {
+                return stmt is UpdateStatement || stmt is DeleteStatement || stmt is InsertStatement;
+            }
+
+            private void CollectDmlTarget(TSqlStatement stmt, LocalSymbols local)
+            {
+                if (stmt is UpdateStatement us)
+                    CollectFromClause(us.UpdateSpecification?.Target, local);
+                else if (stmt is DeleteStatement ds)
+                    CollectFromClause(ds.DeleteSpecification?.Target, local);
             }
 
             private FromClause GetFromClause(TSqlStatement stmt)
