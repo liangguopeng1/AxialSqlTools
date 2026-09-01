@@ -244,7 +244,10 @@ namespace AxialSqlTools
                     // 未闭合 [ 时 token 缺 partial；仅当 token 也认为在 FROM 内，或 token 完全没认出 FROM 时才用原文补齐
                     if (hasFromRaw)
                     {
-                        if (!fromName.InFromClause)
+                        // ScriptDom 把 192. 收成 Numeric，无独立 Dot；IP 链接服务器以原文解析为准
+                        if (fromNameRaw.InFromClause && JoinNumericFromSegments(fromNameRaw) != null)
+                            fromName = fromNameRaw;
+                        else if (!fromName.InFromClause)
                             fromName = fromNameRaw;
                         else if (string.IsNullOrEmpty(fromName.Partial) && !string.IsNullOrEmpty(fromNameRaw.Partial))
                         {
@@ -253,9 +256,12 @@ namespace AxialSqlTools
                             if (fromNameRaw.Segments != null && fromNameRaw.Segments.Count > 0
                                 && (fromName.Segments == null || fromName.Segments.Count == 0))
                                 fromName.Segments = fromNameRaw.Segments;
-                            fromName.AfterDot = fromName.AfterDot || fromNameRaw.AfterDot;
-                            fromName.UsesDoubleDot = fromName.UsesDoubleDot || fromNameRaw.UsesDoubleDot;
                         }
+                        fromName.AfterDot = fromName.AfterDot || fromNameRaw.AfterDot;
+                        fromName.UsesDoubleDot = fromName.UsesDoubleDot || fromNameRaw.UsesDoubleDot;
+                        fromName.ExcessiveDots = fromName.ExcessiveDots || fromNameRaw.ExcessiveDots;
+                        if (fromName.NameStartOffset < 0)
+                            fromName.NameStartOffset = fromNameRaw.NameStartOffset;
                     }
                     bool fromQualifiedName = fromName != null && fromName.InFromClause
                         && (fromName.AfterDot || (fromName.Segments != null && fromName.Segments.Count > 0)
@@ -278,8 +284,10 @@ namespace AxialSqlTools
                             || majorForMember == "ORDER" || majorForMember == "SET";
                         bool inDmlTargetName = majorForMember == "UPDATE" || majorForMember == "DELETE"
                             || majorForMember == "INSERT" || majorForMember == "INTO";
+                        bool ipLinkedServer = JoinNumericFromSegments(fromName) != null
+                            || (fromName != null && fromName.UsesDoubleDot);
 
-                        if (!inDmlTargetName && (aliasMember || inExprClause || !fromQualifiedName))
+                        if (!inDmlTargetName && !ipLinkedServer && (aliasMember || inExprClause || !fromQualifiedName))
                         {
                             result.Context = CompletionContext.MemberAccess;
                             result.Prefix = memberPrefix;

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Text;
 
 namespace AxialSqlTools
 {
@@ -27,10 +28,36 @@ namespace AxialSqlTools
         public static string TemplatesDirectory => Path.Combine(Root, "templates");
         public static string LogsDirectory => Path.Combine(Root, "logs");
         public static string QuickSearchIndexDirectory => Path.Combine(Root, "quick-search-index");
+        public static string IntelliSenseCacheDirectory => Path.Combine(Root, "intellisense-cache");
 
         public static void EnsureRootExists()
         {
             Directory.CreateDirectory(Root);
+        }
+
+        /// <summary>把服务器/库名变成可作目录或文件名的片段。</summary>
+        public static string SanitizePathSegment(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return "_unknown";
+            }
+
+            var builder = new StringBuilder(name.Length);
+            foreach (char c in name.Trim())
+            {
+                if (char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.')
+                {
+                    builder.Append(c);
+                }
+                else
+                {
+                    builder.Append('_');
+                }
+            }
+
+            string result = builder.ToString();
+            return string.IsNullOrEmpty(result) ? "_unknown" : result;
         }
     }
 }

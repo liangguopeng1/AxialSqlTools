@@ -49,6 +49,51 @@ namespace AxialSqlTools
             EnsureBufferWatch();
             ScanExistingDocumentForWarmup("attach");
             ScheduleDeferredDocumentScans();
+            ScheduleEnsureCacheOnOpen();
+        }
+
+        private int _cacheOpenRetry;
+
+        /// <summary>打开标签后立刻把磁盘缓存装进内存（不等输入）。连接未就绪则短重试。</summary>
+        private void ScheduleEnsureCacheOnOpen()
+        {
+            _cacheOpenRetry = 8;
+            TryEnsureCacheOnOpen();
+        }
+
+        private void TryEnsureCacheOnOpen()
+        {
+            try
+            {
+                if (!UiSettingsStore.GetIntelliSenseEnabled())
+                    return;
+                ScriptFactoryAccess.ConnectionInfo conn = null;
+                try { conn = ScriptFactoryAccess.GetCurrentConnectionInfo(); }
+                catch { }
+                if (conn == null || string.IsNullOrWhiteSpace(conn.ServerName))
+                {
+                    if (_cacheOpenRetry-- <= 0)
+                        return;
+                    var dispatcher = System.Windows.Application.Current?.Dispatcher
+                        ?? Dispatcher.CurrentDispatcher;
+                    var timer = new DispatcherTimer(DispatcherPriority.ApplicationIdle, dispatcher)
+                    {
+                        Interval = TimeSpan.FromMilliseconds(400)
+                    };
+                    timer.Tick += (s, e) =>
+                    {
+                        timer.Stop();
+                        TryEnsureCacheOnOpen();
+                    };
+                    timer.Start();
+                    return;
+                }
+                MetadataCacheRefreshService.Instance.EnsureServerCache(conn);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "TryEnsureCacheOnOpen failed");
+            }
         }
 
         /// <summary>
@@ -112,12 +157,12 @@ namespace AxialSqlTools
                         // 缓冲区已有文本时一律预热（粘贴命令常识别不到）
                         _pendingPasteWarmup = false;
                         SchedulePasteCatalogWarmup();
-                        LogManager.Flush();
+                        AxialSqlToolsPackage.FlushLogsAsync();
                     }
                     catch (Exception ex)
                     {
                         _logger.Error(ex, "IntelliSense KeyHandler create failed");
-                        LogManager.Flush();
+                        AxialSqlToolsPackage.FlushLogsAsync();
                         _intelliSense = null;
                         _intelliSenseInitTried = false;
                     }
@@ -435,7 +480,7 @@ namespace AxialSqlTools
                     return VSConstants.S_OK;
             }
 
-            if (_intelliSense != null && _intelliSense.IsSessionOpen && _intelliSense.HandleSessionKey(cmdGroup, nCmdID))
+            if (_intelliSense != null && _intelliSense.HandleSessionKey(cmdGroup, nCmdID))
             {
                 return VSConstants.S_OK;
             }

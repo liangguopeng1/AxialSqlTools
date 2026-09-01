@@ -43,6 +43,8 @@ namespace AxialSqlTools
                         break;
 
                     case CompletionContext.FromClause:
+                        if (fromName != null && fromName.ExcessiveDots)
+                            break;
                         AddFromClauseItems(items, fromName, catalog, settings, connInfo, prefix);
                         if (settings.includeKeywords && ShouldSuggestAfterFromKeywords(fromName, prefix))
                         {
@@ -90,6 +92,8 @@ namespace AxialSqlTools
                                 AddKeywords(items, WhereOperatorKeywords);
                             AddKeywords(items, CaseKeywords);
                             AddKeywords(items, AfterWhereKeywords);
+                            if (IsExecStatementPrefix(prefix))
+                                AddKeywords(items, TopLevelKeywords);
                         }
                         break;
 
@@ -156,8 +160,23 @@ namespace AxialSqlTools
                     AddTablesViewsAndRoutines(items, catalog, settings, includeTableFunctions: true, fromName: fromName, connInfo: connInfo, namePrefix: namePrefix);
                     return;
                 }
+                if (fromName.ExcessiveDots)
+                    return;
 
                 int segCount = fromName.Segments?.Count ?? 0;
+                string ipName = JoinNumericFromSegments(fromName);
+                if (ipName != null)
+                {
+                    if (IsCompleteIpv4(ipName))
+                        MetadataCacheRefreshService.Instance.EnsureLinkedServerCache(connInfo, ipName);
+                    if (IsCompleteIpv4(ipName) && fromName.AfterDot && string.IsNullOrEmpty(fromName.Partial))
+                    {
+                        AddLinkedServerDatabases(items, connInfo, ipName, fromName, settings);
+                        return;
+                    }
+                    AddLinkedServers(items, connInfo, settings, ipName);
+                    return;
+                }
                 if (segCount > 0 && IsLinkedServerName(connInfo, fromName.Segments[0]))
                 {
                     string linkedServer = fromName.Segments[0];
@@ -197,11 +216,6 @@ namespace AxialSqlTools
                 bool qualified = segCount > 0 || fromName.AfterDot;
                 if (segCount == 0)
                 {
-                    if (IsNumericOrIpPrefix(fromName.Partial))
-                    {
-                        AddLinkedServers(items, connInfo, settings, fromName.Partial);
-                        return;
-                    }
                     // 数据库优先加入，避免被表列表占满 maxCompletionItems
                     AddDatabases(items, connInfo, settings);
                     AddLinkedServers(items, connInfo, settings);
@@ -209,16 +223,10 @@ namespace AxialSqlTools
                     return;
                 }
 
-                if (segCount == 1 && fromName.AfterDot && IsNumericOrIpPrefix(fromName.Segments[0])
-                    && !IsLinkedServerName(connInfo, fromName.Segments[0]))
-                {
-                    AddLinkedServers(items, connInfo, settings, fromName.Segments[0]);
-                    return;
-                }
-
                 if (fromName.AfterDot)
                 {
-                    if (segCount == 1 && fromName.UsesDoubleDot && IsDatabaseName(connInfo, fromName.Segments[0]))
+                    // db.. 在 T-SQL 就是省略 dbo，不依赖库名是否已在缓存列表里
+                    if (segCount == 1 && fromName.UsesDoubleDot)
                     {
                         var remote = ResolveDatabaseCatalog(connInfo, catalog, fromName.Segments[0]);
                         AddTablesInSchema(items, remote, "dbo", settings, fromName, connInfo, includeSystemObjects: false, namePrefix: namePrefix);
@@ -249,7 +257,7 @@ namespace AxialSqlTools
                     }
                 }
 
-                if (segCount == 1 && fromName.UsesDoubleDot && IsDatabaseName(connInfo, fromName.Segments[0]))
+                if (segCount == 1 && fromName.UsesDoubleDot)
                 {
                     var remote = ResolveDatabaseCatalog(connInfo, catalog, fromName.Segments[0]);
                     AddTablesInSchema(items, remote, "dbo", settings, fromName, connInfo, includeSystemObjects: false, namePrefix: namePrefix);
@@ -1038,7 +1046,7 @@ namespace AxialSqlTools
                     {
                         continue;
                     }
-                    items.Add(new CompletionItem(server, FormatIdentifier(server, settings), CompletionKind.Database, "链接服务器"));
+                    items.Add(new CompletionItem(server, FormatLinkedServerInsert(server), CompletionKind.Database, "链接服务器"));
                 }
             }
 
@@ -1059,7 +1067,11 @@ namespace AxialSqlTools
 
             private string BuildLinkedServerDatabaseInsertText(FromObjectNameContext fromName, string database, IntelliSenseSettings settings)
             {
-                return FormatIdentifier(database, settings);
+                string db = FormatIdentifier(database, settings);
+                string ip = JoinNumericFromSegments(fromName);
+                if (ip != null && IsCompleteIpv4(ip))
+                    return FormatLinkedServerInsert(ip) + "." + db;
+                return db;
             }
 
             private void AddSystemObjects(List<CompletionItem> items)
@@ -1075,6 +1087,8 @@ namespace AxialSqlTools
                 var filtered = new List<CompletionItem>();
                 string p = (prefix ?? string.Empty);
                 string filterPrefix = UnbracketIdentifier(GetLastSegment(p));
+                if (IsListingLinkedServerIp(fromName))
+                    filterPrefix = JoinNumericFromSegments(fromName);
 
                 // 先收集全部匹配再排序截断，避免目录靠前的弱匹配占满配额、漏掉后面的高分表
                 foreach (var item in items)
@@ -1213,8 +1227,15 @@ namespace AxialSqlTools
                     if (first.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase))
                         return IsClauseTrailingKeyword(name) ? 100 : 95;
                 }
-                // 片段/关键字/内建函数只做前缀匹配，避免 pr 命中 DATEPART 等缩写误匹配
-                if (item != null && (item.Kind == CompletionKind.Snippet || item.Kind == CompletionKind.Keyword
+                // 片段：ss → sess（包含）；仍低于前缀命中，ssf 排在 sess 前
+                if (item != null && item.Kind == CompletionKind.Snippet)
+                {
+                    if (name.IndexOf(filterPrefix, StringComparison.OrdinalIgnoreCase) >= 0)
+                        return 80;
+                    return 0;
+                }
+                // 关键字/内建函数只做前缀匹配，避免 pr 命中 DATEPART 等缩写误匹配
+                if (item != null && (item.Kind == CompletionKind.Keyword
                     || item.Kind == CompletionKind.ScalarFunction))
                     return 0;
 

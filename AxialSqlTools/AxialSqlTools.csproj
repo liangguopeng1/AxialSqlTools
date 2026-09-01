@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
@@ -159,11 +159,16 @@
     <Compile Include="Modules\ScriptFactoryAccess.cs" />
     <Compile Include="Modules\SettingsManager.cs" />
     <Compile Include="Modules\UserConfigPaths.cs" />
+    <Compile Include="Modules\IndexBuildProgressWindow.xaml.cs">
+      <DependentUpon>IndexBuildProgressWindow.xaml</DependentUpon>
+    </Compile>
     <Compile Include="Modules\UiSettingsStore.cs" />
     <Compile Include="IntelliSense\MetadataModels.cs" />
     <Compile Include="IntelliSense\CompletionItem.cs" />
     <Compile Include="IntelliSense\Completion\CompletionModels.cs" />
     <Compile Include="IntelliSense\MetadataCatalogService.cs" />
+    <Compile Include="IntelliSense\MetadataCacheStore.cs" />
+    <Compile Include="IntelliSense\MetadataCacheRefreshService.cs" />
     <Compile Include="IntelliSense\CompletionEngine.cs" />
     <Compile Include="IntelliSense\Completion\CompletionEngine.LocalSymbols.cs" />
     <Compile Include="IntelliSense\Completion\CompletionEngine.Context.cs" />
@@ -583,6 +588,10 @@
       <SubType>Designer</SubType>
     </Page>
     <Page Include="IntelliSense\CompletionListWindow.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="Modules\IndexBuildProgressWindow.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>

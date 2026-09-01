@@ -103,10 +103,13 @@ namespace AxialSqlTools.IntelliSense
         private int _replaceStartOffset = -1;
         private int _replaceEndOffset = -1;
         private int _completionGen;
+        private bool _completionInFlight;
+        private bool _pendingCommit;
         private const int SessionAcceptDelayMs = 400;
         private const int SuppressAutoTriggerAfterCommitMs = 500;
         private const int CompletionEngineWarnMs = 500;
 
+        /// <summary>只用于失焦/watchdog，不拦截 Tab/Enter 提交。</summary>
         private bool IsWithinAcceptGrace() =>
             _sessionOpen && (DateTime.UtcNow - _sessionOpenedAt).TotalMilliseconds < SessionAcceptDelayMs;
 
@@ -144,6 +147,7 @@ namespace AxialSqlTools.IntelliSense
             _debounceTimer.Tick += (s, e) =>
             {
                 _debounceTimer.Stop();
+                _completionInFlight = true;
                 // 弹框已开时走 editingRefresh：空结果会关框；未开则首次弹出
                 TriggerCompletion(false, editingRefresh: _sessionOpen);
             };
@@ -205,12 +209,12 @@ namespace AxialSqlTools.IntelliSense
                     try
                     {
                         _textViewExtension?.Attach();
-                        LogManager.Flush();
+                        AxialSqlToolsPackage.FlushLogsAsync();
                     }
                     catch (Exception ex)
                     {
                         _logger.Warn(ex, "Deferred QuickInfo Attach failed");
-                        LogManager.Flush();
+                        AxialSqlToolsPackage.FlushLogsAsync();
                     }
                 }), DispatcherPriority.ApplicationIdle);
             }
@@ -422,13 +426,16 @@ namespace AxialSqlTools.IntelliSense
             }), DispatcherPriority.Input);
         }
 
-        /// <summary>弹框开时处理导航/提交/取消键。返回 true=吞键。</summary>
+        /// <summary>弹框开时处理导航/提交/取消键；弹框未开时快按 Tab 立即提交第一项。返回 true=吞键。</summary>
         public bool HandleSessionKey(Guid cmdGroup, uint nCmdID)
         {
-            if (!_sessionOpen || cmdGroup != VSConstants.VSStd2K) return false;
+            if (cmdGroup != VSConstants.VSStd2K) return false;
 
             try
             {
+                if (!_sessionOpen)
+                    return TryCommitWhileOpening(nCmdID);
+
                 if (EditorSelectionHelper.HasTextSelection(_textView))
                 {
                     switch ((VSStd2KCmdID)nCmdID)
@@ -489,6 +496,22 @@ namespace AxialSqlTools.IntelliSense
             }
         }
 
+        /// <summary>s 后立刻 Tab：弹框还在防抖/后台计算，直接出候选并提交第一项。</summary>
+        private bool TryCommitWhileOpening(uint nCmdID)
+        {
+            if (nCmdID != (uint)VSStd2KCmdID.TAB) return false;
+            if (EditorSelectionHelper.HasTextSelection(_textView)) return false;
+            bool debouncePending = _debounceTimer != null && _debounceTimer.IsEnabled;
+            if (!debouncePending && !_completionInFlight) return false;
+            _pendingCommit = true;
+            if (debouncePending)
+            {
+                _debounceTimer.Stop();
+                TriggerCompletion(true);
+            }
+            return true;
+        }
+
         /// <summary>按键后调度补全（弹框关：防抖新弹；弹框开：立即刷新候选）。</summary>
         public void MaybeScheduleAutoTrigger(uint nCmdID, char typedChar = '\0')
         {
@@ -503,6 +526,7 @@ namespace AxialSqlTools.IntelliSense
             if (EditorSelectionHelper.HasTextSelection(_textView))
             {
                 _debounceTimer.Stop();
+                if (!_sessionOpen) _completionInFlight = false;
                 return;
             }
 
@@ -524,12 +548,13 @@ namespace AxialSqlTools.IntelliSense
             if ((isBackspace || isDelete) && !_sessionOpen)
             {
                 _debounceTimer.Stop();
+                _completionInFlight = false;
                 return;
             }
 
-            // 无论弹框是否已开，都走防抖：快打时用最终前缀一次计算，避免 AcceptGrace 挡刷新、
-            // 也避免每键打满线程池。AcceptGrace 只用于 Tab/Enter 防误提交。
+            // 无论弹框是否已开，都走防抖：快打时用最终前缀一次计算，避免每键打满线程池。
             _debounceTimer.Stop();
+            _completionInFlight = true;
             _debounceTimer.Start();
         }
 
@@ -537,7 +562,7 @@ namespace AxialSqlTools.IntelliSense
         public void TriggerCompletion(bool force, bool editingRefresh = false)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
-            _logger.Info("TriggerCompletion force={0} refresh={1}", force, editingRefresh);
+            _logger.Debug("TriggerCompletion force={0} refresh={1}", force, editingRefresh);
 
             if (!force && EditorSelectionHelper.HasTextSelection(_textView))
             {
@@ -566,7 +591,8 @@ namespace AxialSqlTools.IntelliSense
 
             try
             {
-                _logger.Info("TriggerCompletion: read text");
+                _completionInFlight = true;
+                _logger.Debug("TriggerCompletion: read text");
                 string text = GetFullText();
                 int caret = GetCaretOffset();
                 if (caret < 0)
@@ -575,8 +601,10 @@ namespace AxialSqlTools.IntelliSense
                     return;
                 }
 
-                _logger.Info("TriggerCompletion: connection");
+                _logger.Debug("TriggerCompletion: connection");
                 var connInfo = SafeGetCurrentConnection();
+                if (connInfo != null)
+                    MetadataCacheRefreshService.Instance.EnsureServerCache(connInfo);
                 // 自动触发：只用缓存，后台预热，避免新标签首次输入时 UI 同步连库卡死
                 // EXEC 例外：必须同步拿到过程目录（含跨库），否则候选恒空
                 MetadataCatalog catalog = null;
@@ -597,7 +625,7 @@ namespace AxialSqlTools.IntelliSense
                 int gen = Interlocked.Increment(ref _completionGen);
                 var dispatcher = System.Windows.Application.Current?.Dispatcher
                     ?? Dispatcher.CurrentDispatcher;
-                _logger.Info("TriggerCompletion: queue engine caret={0} textLen={1} db={2} gen={3}",
+                _logger.Debug("TriggerCompletion: queue engine caret={0} textLen={1} db={2} gen={3}",
                     caret, text?.Length ?? 0, connInfo?.Database, gen);
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
@@ -609,10 +637,10 @@ namespace AxialSqlTools.IntelliSense
                         var result = engine.GetCompletion(text, caret, catalog, settings, connInfo);
                         sw.Stop();
                         if (sw.ElapsedMilliseconds >= CompletionEngineWarnMs)
-                            _logger.Warn("GetCompletion slow {0}ms gen={1} ctx={2}", sw.ElapsedMilliseconds, gen, result?.Context);
+                            _logger.Warn("GetCompletion slow {0:F1}ms gen={1} ctx={2} prefix={3}", sw.Elapsed.TotalMilliseconds, gen, result?.Context, result?.Prefix);
                         else
-                            _logger.Info("GetCompletion {0}ms gen={1} ctx={2} items={3}",
-                                sw.ElapsedMilliseconds, gen, result?.Context, result?.Items?.Count ?? 0);
+                            _logger.Info("GetCompletion {0:F1}ms gen={1} ctx={2} items={3} prefix={4}",
+                                sw.Elapsed.TotalMilliseconds, gen, result?.Context, result?.Items?.Count ?? 0, result?.Prefix);
                         dispatcher.BeginInvoke(new Action(() =>
                         {
                             if (gen != _completionGen) return;
@@ -633,7 +661,7 @@ namespace AxialSqlTools.IntelliSense
             catch (Exception ex)
             {
                 _logger.Error(ex, "TriggerCompletion failed");
-                FlushLogsAsync();
+                AxialSqlToolsPackage.FlushLogsAsync();
                 CloseSession();
             }
         }
@@ -641,8 +669,10 @@ namespace AxialSqlTools.IntelliSense
         private void ApplyCompletionResult(CompletionResult result, bool force, bool editingRefresh)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
+            _completionInFlight = false;
             if (result == null)
             {
+                _pendingCommit = false;
                 CloseSession();
                 return;
             }
@@ -653,8 +683,10 @@ namespace AxialSqlTools.IntelliSense
             if (result.IsEmpty)
             {
                 _logger.Info("TriggerCompletion: empty context={0} prefix={1}", result.Context, result.Prefix);
+                bool wantCommit = _pendingCommit;
+                _pendingCommit = false;
                 // 候选为空时必须关掉旧弹框，否则会残留上一语句的列提示
-                if (force || editingRefresh || _sessionOpen)
+                if (force || editingRefresh || _sessionOpen || wantCommit)
                     CloseSession();
                 return;
             }
@@ -667,6 +699,15 @@ namespace AxialSqlTools.IntelliSense
                 QuickInfoTooltip.Close();
 
             _logger.Info("TriggerCompletion: show items={0}", result.Items.Count);
+            var window = EnsureCompletionWindow();
+            window.UpdateItems(result.Items);
+            if (_pendingCommit)
+            {
+                _pendingCommit = false;
+                CommitSelected();
+                return;
+            }
+
             var pt = GetCaretScreenPoint();
             if (!pt.HasValue)
             {
@@ -676,12 +717,9 @@ namespace AxialSqlTools.IntelliSense
             }
 
             IntPtr hwnd = _textView.GetWindowHandle();
-            var window = EnsureCompletionWindow();
             if (_sessionOpen)
             {
-                window.UpdateItems(result.Items);
                 window.RepositionAt(pt.Value.x, pt.Value.y, hwnd);
-                // 不在刷新时重置 AcceptGrace：否则快打时 grace 被不断延长，Tab/行为异常
                 UpdateSessionCaretAnchor();
                 EnsureSessionWatchdogRunning();
             }
@@ -694,16 +732,6 @@ namespace AxialSqlTools.IntelliSense
                 EnsureSessionWatchdogRunning();
             }
             _logger.Info("TriggerCompletion: done");
-        }
-
-        /// <summary>后台刷盘，不阻塞 UI。</summary>
-        private static void FlushLogsAsync()
-        {
-            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
-            {
-                try { LogManager.Flush(); }
-                catch { }
-            });
         }
 
         /// <summary>光标前是否处于 EXEC/EXECUTE 目标名（用于自动触发时同步拉过程目录）。</summary>
@@ -735,7 +763,6 @@ namespace AxialSqlTools.IntelliSense
 
         private void TryCommitSelected()
         {
-            if (IsWithinAcceptGrace()) return;
             CommitSelected();
         }
 
@@ -828,11 +855,11 @@ namespace AxialSqlTools.IntelliSense
                 var connInfo = SafeGetCurrentConnection();
                 if (connInfo == null || string.IsNullOrWhiteSpace(text))
                 {
-                    _logger.Info("Catalog warmup skip: textLen={0} hasConn={1}",
+                    _logger.Debug("Catalog warmup skip: textLen={0} hasConn={1}",
                         text?.Length ?? 0, connInfo != null);
                     return false;
                 }
-                _logger.Info("Catalog warmup from document len={0} db={1}", text.Length, connInfo.Database);
+                _logger.Debug("Catalog warmup from document len={0} db={1}", text.Length, connInfo.Database);
                 var snap = connInfo;
                 var sql = text;
                 ThreadPool.QueueUserWorkItem(_ =>
@@ -872,6 +899,8 @@ namespace AxialSqlTools.IntelliSense
         {
             Interlocked.Increment(ref _completionGen);
             _sessionOpen = false;
+            _completionInFlight = false;
+            _pendingCommit = false;
             _sessionCaretLine = -1;
             _debounceTimer?.Stop();
             _externalFocusCloseTimer?.Stop();

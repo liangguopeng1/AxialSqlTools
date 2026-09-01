@@ -291,6 +291,13 @@ namespace AxialSqlTools
                     tableRef.Schema = "dbo";
                     tableRef.Name = segs[1];
                 }
+                else if (usesDoubleDot && segs.Count == 3)
+                {
+                    tableRef.LinkedServer = segs[0];
+                    tableRef.Database = segs[1];
+                    tableRef.Schema = "dbo";
+                    tableRef.Name = segs[2];
+                }
                 else if (segs.Count == 1)
                 {
                     tableRef.Name = segs[0];
@@ -434,6 +441,13 @@ namespace AxialSqlTools
                     tableRef.Database = segs[0];
                     tableRef.Schema = "dbo";
                     tableRef.Name = segs[1];
+                }
+                else if (usesDoubleDot && segs.Count == 3)
+                {
+                    tableRef.LinkedServer = segs[0];
+                    tableRef.Database = segs[1];
+                    tableRef.Schema = "dbo";
+                    tableRef.Name = segs[2];
                 }
                 else if (segs.Count == 1)
                 {
@@ -770,6 +784,18 @@ namespace AxialSqlTools
                             schema = "dbo";
                             table = name;
                             partCount = 2;
+                            dotRun = 0;
+                            i++;
+                            continue;
+                        }
+                        if (dotRun >= 2 && partCount == 2 && database == null && linkedServer == null)
+                        {
+                            // server.db..table：省略架构的四段名
+                            linkedServer = schema;
+                            database = table;
+                            schema = "dbo";
+                            table = name;
+                            partCount = 4;
                             dotRun = 0;
                             i++;
                             continue;

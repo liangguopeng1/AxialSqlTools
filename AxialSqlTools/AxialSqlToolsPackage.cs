@@ -134,13 +134,11 @@ namespace AxialSqlTools
                       {
                           FileName = Path.Combine(logDirectory, "log_${shortdate}.log"),
                           Layout = "${longdate}|${level}|${logger}|${message}${exception:format=ToString}",
-
-                          // Optionally, configure archive settings, etc.
                           ArchiveFileName = Path.Combine(logDirectory, "archive/log.{###}.txt"),
                           ArchiveAboveSize = 1024 * 1024 * 5, // 5 MB, for example
                           MaxArchiveFiles = 5,
                           KeepFileOpen = true,
-                          AutoFlush = false
+                          AutoFlush = true
                       };
                       // 异步写盘，避免补全热路径同步 Flush 卡 UI
                       var asyncFile = new AsyncTargetWrapper("asyncFileLog", fileTarget)
@@ -151,15 +149,47 @@ namespace AxialSqlTools
                           BatchSize = 100
                       };
 
-                      // Create a rule: "Write all logs from Info to Fatal to fileTarget"
+                      // Create a rule: min level from settings (Debug/Info/Warn/Error)
                       builder.ForLogger()
-                             .FilterMinLevel(LogLevel.Info)
+                             .FilterMinLevel(ToNLogLevel(UiSettingsStore.GetLogLevel()))
                              .WriteTo(asyncFile);
                   });
 
             _logger = LogManager.GetCurrentClassLogger();
             // If needed, create directories here if they do not exist
             // Or do nothing if the config is specifying a folder that NLog will create automatically
+        }
+
+        /// <summary>后台线程刷盘，不阻塞 UI。热路径不要同步 Flush。</summary>
+        public static void FlushLogsAsync()
+        {
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try { LogManager.Flush(); }
+                catch { }
+            });
+        }
+
+        /// <summary>按设置调整 NLog 最低级别，保存后立即生效。</summary>
+        public static void ApplyLogMinLevel(string levelName)
+        {
+            var min = ToNLogLevel(levelName);
+            var config = LogManager.Configuration;
+            if (config == null) return;
+            foreach (var rule in config.LoggingRules)
+            {
+                rule.SetLoggingLevels(min, LogLevel.Fatal);
+            }
+            LogManager.ReconfigExistingLoggers();
+        }
+
+        private static LogLevel ToNLogLevel(string levelName)
+        {
+            string name = UiSettingsStore.NormalizeLogLevel(levelName);
+            if (name == UiSettingsStore.LogLevelDebug) return LogLevel.Debug;
+            if (name == UiSettingsStore.LogLevelWarn) return LogLevel.Warn;
+            if (name == UiSettingsStore.LogLevelError) return LogLevel.Error;
+            return LogLevel.Info;
         }
 
         private static void EnqueueDataForProcessing(QueryHistoryEntry data)
@@ -330,6 +360,15 @@ namespace AxialSqlTools
             catch (Exception ex)
             {
                 _logger?.Error(ex, "IntelliSense: EnsureSsmsIntelliSenseDisabled threw.");
+            }
+
+            try
+            {
+                IntelliSense.MetadataCacheRefreshService.Instance.KickoffFromPackage();
+            }
+            catch (Exception ex)
+            {
+                _logger?.Warn(ex, "IntelliSense: cache kickoff failed.");
             }
 
             try

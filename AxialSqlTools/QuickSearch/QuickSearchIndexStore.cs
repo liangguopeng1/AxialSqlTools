@@ -41,48 +41,12 @@ namespace AxialSqlTools
 
         public static string SanitizeServerKey(string serverName)
         {
-            if (string.IsNullOrWhiteSpace(serverName))
-            {
-                return "_unknown";
-            }
-
-            var builder = new StringBuilder(serverName.Length);
-            foreach (char c in serverName.Trim())
-            {
-                if (char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.')
-                {
-                    builder.Append(c);
-                }
-                else
-                {
-                    builder.Append('_');
-                }
-            }
-
-            return builder.ToString();
+            return UserConfigPaths.SanitizePathSegment(serverName);
         }
 
         public static string BuildFingerprint(ScriptFactoryAccess.ConnectionInfo connectionInfo)
         {
-            if (connectionInfo == null)
-            {
-                return string.Empty;
-            }
-
-            try
-            {
-                var builder = new SqlConnectionStringBuilder(connectionInfo.FullConnectionString);
-                return string.Join("|",
-                    builder.DataSource ?? string.Empty,
-                    builder.IntegratedSecurity ? "Integrated" : "Sql",
-                    builder.UserID ?? string.Empty,
-                    builder.Encrypt.ToString(),
-                    builder.TrustServerCertificate.ToString());
-            }
-            catch
-            {
-                return connectionInfo.ServerName ?? string.Empty;
-            }
+            return ScriptFactoryAccess.BuildConnectionFingerprint(connectionInfo);
         }
 
         public static bool TryGetMeta(string serverName, out QuickSearchIndexMeta meta)

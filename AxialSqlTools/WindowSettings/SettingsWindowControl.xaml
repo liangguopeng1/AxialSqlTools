@@ -114,6 +114,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
@@ -132,15 +133,39 @@
                     <TextBlock x:Name="LanguageHintText"
                                Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
                                TextWrapping="Wrap"
-                               Margin="0,0,0,12"
+                               Margin="0,0,0,16"
                                Opacity="0.85"
                                Text="Tool windows refresh immediately. Toolbar and menu text fully apply after restarting SSMS."/>
-                    <Button x:Name="ButtonSaveLanguage"
-                            Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
+                    <TextBlock x:Name="LogLevelLabelText"
+                               Grid.Row="2" Grid.Column="0"
+                               VerticalAlignment="Center"
+                               Margin="0,0,12,8"
+                               Text="日志级别"/>
+                    <ComboBox x:Name="LogLevelCombo"
+                              Grid.Row="2" Grid.Column="1"
+                              Width="220"
+                              HorizontalAlignment="Left"
+                              Margin="0,0,0,8"/>
+                    <TextBlock x:Name="LogLevelHintText"
+                               Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,12"
+                               Opacity="0.85"
+                               Text="默认 Info。补全/悬停跟踪为 Debug，排查时再打开。保存后立即生效。"/>
+                    <Button x:Name="ButtonSaveGeneral"
+                            Grid.Row="4" Grid.Column="0"
+                            Click="Button_SaveGeneral_Click"
+                            Width="80"
+                            Height="24"
                             HorizontalAlignment="Left"
-                            Padding="12,4"
-                            Content="Save language"
-                            Click="Button_SaveLanguage_Click"/>
+                            FontWeight="Bold">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Viewbox Width="16" Height="16" Margin="0,0,4,0">
+                                <Path Style="{StaticResource AxialSaveIconPathStyle}" Data="{StaticResource SaveIconGeometry}"/>
+                            </Viewbox>
+                            <TextBlock Text="Save" Tag="loc:Common_Save" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                 </Grid>
             </TabItem>
 
@@ -208,6 +233,23 @@
                                 <TextBox x:Name="IntelliSenseMaxItems" Width="60" VerticalAlignment="Center"/>
                             </StackPanel>
                             <TextBlock Margin="0,2,0,0" Opacity="0.75" FontSize="11" Text="生效：实时"/>
+                        </StackPanel>
+                        <StackPanel Margin="5,8,5,4"
+                                    IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="缓存更新间隔（天）:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBox x:Name="IntelliSenseCacheRefreshDays" Width="60" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <TextBlock Margin="0,2,0,0" Opacity="0.75" FontSize="11" TextWrapping="Wrap"
+                                       Text="默认 7 天后台静默刷新当前服务器全部用户库。0 = 关闭自动更新。补全只读本地缓存，不查库。"/>
+                        </StackPanel>
+                        <StackPanel Margin="5,0,5,4"
+                                    IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
+                            <Button x:Name="button_RefreshIntelliSenseCache"
+                                    Click="Button_RefreshIntelliSenseCache_Click"
+                                    Width="120" Height="24" HorizontalAlignment="Left"
+                                    Content="立即刷新缓存"/>
+                            <TextBlock Margin="0,2,0,0" Opacity="0.75" FontSize="11" Text="右下角显示进度；可取消。需已连接服务器。"/>
                         </StackPanel>
                         <Button x:Name="button_SaveIntelliSenseSettings"
                                 Click="Button_SaveIntelliSenseSettings_Click"

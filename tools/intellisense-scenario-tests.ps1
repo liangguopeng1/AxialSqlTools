@@ -151,6 +151,25 @@ Add-Case '150' 'UPDATE kuc|' @('dbo.kucun') 'UpdateTarget' @('oper')
 Add-Case '151' 'UPDATE |' @('dbo.kucun') 'UpdateTarget' @('oper')
 Add-Case '152' 'UPDATE kucun.|' @() 'UpdateTarget' @('oper')
 Add-Case '153' 'UPDATE dbo.kuc|' @('dbo.kucun') 'UpdateTarget' @('oper')
+# IP 链接服务器：替换整段 192. 而不是叠成 192.192.168...；dbo. 仍只替换点后
+Add-Case '154' 'SELECT * FROM 192.' @() 'FromClause'
+Add-Case '155' 'SELECT * FROM 192.168.' @() 'FromClause'
+Add-Case '156' 'SELECT * FROM dbo.' @() ''
+# db.. 只插入表名，勿变成 newdaku..dbo.table
+Add-Case '157' 'SELECT * FROM RtBase..' @('kucun') 'FromClause' @('dbo.kucun')
+Add-Case '158' 'SELECT * FROM RtBase...' @() 'FromClause' @('kucun','dbo.kucun')
+Add-Case '159' 'SELECT * FROM RtBase....' @() 'FromClause' @('kucun','dbo.kucun')
+# 跨服务器 server.db..table：列补全走链接服务器缓存，勿在当前库找表
+Add-Case '160' 'SELECT * FROM [192.168.1.23].baoxiao..BaoXiao aa where aa.|' @('id') 'MemberAccess'
+Add-Case '161' 'SELECT * FROM [192.168.1.23].baoxiao..BaoXiao  where |' @('id') 'WhereClause'
+Add-Case '162' 'SELECT * FROM [192.168.1.23].baoxiao..BaoXiao  where id|' @('id') 'WhereClause'
+# 上一句无分号时行首 ex → EXEC（勿被 EXCEPT 续写抢走）
+Add-Case '164' ("SELECT * FROM t where x=1" + [char]10 + [char]10 + "ex") @('EXEC') 'BatchStart'
+Add-Case '165' ("SELECT * FROM t" + [char]10 + "ex") @('EXEC') 'BatchStart'
+# in 仍续写 INNER JOIN，勿因 EXEC 特例把 INSERT 抢过来
+Add-Case '166' ("SELECT * FROM t" + [char]10 + "in") @('INNER JOIN') 'FromClause'
+# 片段包含匹配：ss → ssf（前缀）+ sess（包含）
+Add-Case '167' 'ss' @('ssf','sess') 'BatchStart'
 
 Write-Host "Cases=$($cases.Count)"
 
@@ -181,16 +200,42 @@ foreach ($cn in @('oper','operid','k_id')) {
 }
 [void]$mockCatalog.Tables.Add($kucun)
 
+$linkedCatalog = [Activator]::CreateInstance($catalogType)
+$linkedCatalog.Database = 'baoxiao'
+$baoXiao = [Activator]::CreateInstance($tableType)
+$baoXiao.Schema = 'dbo'
+$baoXiao.Name = 'BaoXiao'
+foreach ($cn in @('id','name')) {
+    $col = [Activator]::CreateInstance($colType)
+    $col.Name = $cn
+    $col.DataType = 'int'
+    [void]$baoXiao.Columns.Add($col)
+}
+[void]$linkedCatalog.Tables.Add($baoXiao)
+$svcType = $asm.GetType('AxialSqlTools.IntelliSense.MetadataCatalogService')
+$svc = $svcType.GetProperty('Instance').GetValue($null)
+$svc.PutCatalog('192.168.1.23', 'baoxiao', $linkedCatalog)
+$connType = $asm.GetType('AxialSqlTools.ScriptFactoryAccess+ConnectionInfo')
+$linkedConn = [Activator]::CreateInstance($connType)
+[void]$connType.GetProperty('ServerName').SetValue($linkedConn, 'local')
+[void]$connType.GetProperty('Database').SetValue($linkedConn, 'RtBase')
+
 $fail = New-Object System.Collections.Generic.List[string]
 $pass = 0
+$linkedCases = @('160','161','162')
 foreach ($c in $cases) {
     $e = [Activator]::CreateInstance($engineType)
     $s = [Activator]::CreateInstance($settingsType)
     $s.includeKeywords = $true
-    $useCatalog = $c.Name -in @('141','142','143','144','145','146','147','148','149','150','151','152','153')
+    $useCatalog = $c.Name -in @('141','142','143','144','145','146','147','148','149','150','151','152','153','157','158','159')
     $cat = if ($useCatalog) { $mockCatalog } else { $null }
+    $conn = $null
+    if ($c.Name -in $linkedCases) {
+        $cat = $mockCatalog
+        $conn = $linkedConn
+    }
     try {
-        $r = $get.Invoke($e, @($c.Sql, $c.Caret, $cat, $s, $null))
+        $r = $get.Invoke($e, @($c.Sql, $c.Caret, $cat, $s, $conn))
     } catch {
         [void]$fail.Add("$($c.Name) EX=$($_.Exception.Message)")
         continue
@@ -198,11 +243,15 @@ foreach ($c in $cases) {
     $n = New-Object System.Collections.Generic.List[string]
     $kinds = New-Object System.Collections.Generic.List[string]
     $allInsert = $null
+    $kucunInsert = $null
     if ($r.Items) {
         foreach ($it in $r.Items) {
             [void]$n.Add([string]$it.DisplayText)
             [void]$kinds.Add([string]$it.Kind)
             if ([string]$it.Kind -eq 'AllColumns') { $allInsert = [string]$it.InsertText }
+            if ([string]$it.DisplayText -eq 'kucun' -or [string]$it.DisplayText -eq 'dbo.kucun') {
+                $kucunInsert = [string]$it.InsertText
+            }
         }
     }
     $ok = $true
@@ -231,10 +280,40 @@ foreach ($c in $cases) {
         $ok = $false
         $why = 'VALUES should not have AllColumns'
     }
+    if ($c.Name -in @('154','155')) {
+        $expectStart = $c.Sql.IndexOf('192')
+        if ($r.ReplaceStartOffset -ne $expectStart) {
+            $ok = $false
+            $why = "replace=$($r.ReplaceStartOffset) want=$expectStart"
+        }
+    }
+    if ($c.Name -eq '156') {
+        $expectStart = $c.Sql.Length
+        if ($r.ReplaceStartOffset -ne $expectStart) {
+            $ok = $false
+            $why = "replace=$($r.ReplaceStartOffset) want=$expectStart (dbo. should keep prefix)"
+        }
+    }
     if ($ok) { $pass++ } else { [void]$fail.Add("$($c.Name) $why prefix=[$($r.Prefix)]") }
 }
+
+$qiType = $asm.GetType('AxialSqlTools.IntelliSense.QuickInfoProvider')
+$qiSql = 'SELECT * FROM [192.168.1.23].baoxiao..BaoXiao aa where aa.id = 1'
+$qiHover = $qiSql.IndexOf('BaoXiao') + 2
+$qi = [Activator]::CreateInstance($qiType)
+$qiInfo = $qi.GetQuickInfo($qiSql, $qiHover, $mockCatalog, $linkedConn)
+$qiOk = $false
+$qiWhy = 'null'
+if ($null -ne $qiInfo) {
+    $headers = if ($qiInfo.HeaderLines) { ($qiInfo.HeaderLines -join ' | ') } else { '' }
+    $ddl = [string]$qiInfo.DdlText
+    if ($headers -match 'BaoXiao' -and $headers -match '192\.168\.1\.23' -and $ddl -match 'id') { $qiOk = $true }
+    else { $qiWhy = "headers=[$headers] ddl=$ddl" }
+}
+if ($qiOk) { $pass++ } else { [void]$fail.Add("163 QuickInfo $qiWhy") }
+
 Write-Host "PASS=$pass FAIL=$($fail.Count)"
 $fail | ForEach-Object { Write-Host "  $_" }
 if ($fail.Count -gt 0) { exit 1 }
-Write-Host "ALL $($cases.Count) PASS"
+Write-Host "ALL $($cases.Count + 1) PASS"
 exit 0

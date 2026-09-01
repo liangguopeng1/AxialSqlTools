@@ -356,7 +356,8 @@ namespace AxialSqlTools.IntelliSense
 
         public CompletionItem GetSelected()
         {
-            return ItemsList.SelectedItem as CompletionItem;
+            return ItemsList.SelectedItem as CompletionItem
+                ?? (_items.Count > 0 ? _items[0] : null);
         }
 
         public void Move(int delta)

@@ -1,4 +1,4 @@
-﻿using Microsoft.SqlServer.Management.Smo;
+using Microsoft.SqlServer.Management.Smo;
 using Microsoft.SqlServer.Management.Smo.RegSvrEnum;
 using Microsoft.SqlServer.Management.UI.VSIntegration;
 using Microsoft.SqlServer.Management.UI.VSIntegration.ObjectExplorer;
@@ -75,6 +75,30 @@ namespace AxialSqlTools
             }
 
             builder.TrustServerCertificate = true;
+        }
+
+        /// <summary>连接指纹（不含密码），用于缓存 meta 校验。</summary>
+        public static string BuildConnectionFingerprint(ConnectionInfo connectionInfo)
+        {
+            if (connectionInfo == null)
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                var builder = new SqlConnectionStringBuilder(connectionInfo.FullConnectionString);
+                return string.Join("|",
+                    builder.DataSource ?? string.Empty,
+                    builder.IntegratedSecurity ? "Integrated" : "Sql",
+                    builder.UserID ?? string.Empty,
+                    builder.Encrypt.ToString(),
+                    builder.TrustServerCertificate.ToString());
+            }
+            catch
+            {
+                return connectionInfo.ServerName ?? string.Empty;
+            }
         }
 
         private static INodeInformation GetSelectedNode(IObjectExplorerService _objectExplorerService)

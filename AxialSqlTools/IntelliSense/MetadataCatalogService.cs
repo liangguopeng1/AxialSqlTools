@@ -11,8 +11,7 @@ namespace AxialSqlTools
     {
         /// <summary>
         /// 按 (Server, Database) 缓存元数据目录。单例。
-        /// 使用独立 SqlConnection（CloneWithDatabase），不复用查询编辑器会话，避免 USE 污染。
-        /// 任何失败返回空 Catalog，不拖垮补全。
+        /// 补全热路径只读内存/磁盘，不查库。后台刷新才连独立 SqlConnection 查 sys.*。
         /// </summary>
         public class MetadataCatalogService
         {
@@ -27,13 +26,7 @@ namespace AxialSqlTools
             private readonly ConcurrentDictionary<string, MetadataCatalog> _cache =
                 new ConcurrentDictionary<string, MetadataCatalog>(StringComparer.OrdinalIgnoreCase);
 
-            private readonly ConcurrentDictionary<string, byte> _building =
-                new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
-
             private readonly ConcurrentDictionary<string, List<string>> _linkedServerCache =
-                new ConcurrentDictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-
-            private readonly ConcurrentDictionary<string, List<string>> _linkedDatabaseCache =
                 new ConcurrentDictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
             private readonly ConcurrentDictionary<string, TableColumnInfo> _tableColumnCache =
@@ -41,6 +34,9 @@ namespace AxialSqlTools
 
             private readonly ConcurrentDictionary<string, List<string>> _databaseListCache =
                 new ConcurrentDictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+            private readonly ConcurrentDictionary<string, byte> _memoryLoadedServers =
+                new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
 
             private static readonly Regex IPv4Regex = new Regex(
                 @"^\d{1,3}(\.\d{1,3}){3}$",
@@ -54,11 +50,6 @@ namespace AxialSqlTools
             private static string LinkedCatalogKey(string linkedServer, string database)
             {
                 return "ls:" + (linkedServer ?? string.Empty) + "|" + (database ?? string.Empty);
-            }
-
-            private static string LinkedDatabaseListKey(string localServer, string linkedServer)
-            {
-                return (localServer ?? string.Empty) + "|ls|" + (linkedServer ?? string.Empty);
             }
 
             /// <summary>仅读缓存，不访问数据库（UI 线程安全、不阻塞）。</summary>
@@ -76,36 +67,18 @@ namespace AxialSqlTools
                 return null;
             }
 
-            /// <summary>后台预热目录；已有缓存或正在构建时直接返回。</summary>
+            /// <summary>后台预热目录：先磁盘，没有则排队整服务器刷新。补全路径不查库。</summary>
             public void EnsureCatalogBuilding(ScriptFactoryAccess.ConnectionInfo connInfo, string dbOverride = null)
             {
                 if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
                     return;
                 if (GetCachedCatalog(connInfo, dbOverride) != null)
-                    return;
-                string database = string.IsNullOrWhiteSpace(dbOverride) ? (connInfo.Database ?? "master") : dbOverride;
-                if (string.IsNullOrWhiteSpace(database))
-                    database = "master";
-                string key = Key(connInfo.ServerName, database);
-                if (!_building.TryAdd(key, 0))
-                    return;
-                System.Threading.ThreadPool.QueueUserWorkItem(_ =>
                 {
-                    try
-                    {
-                        var catalog = BuildCatalog(connInfo, database);
-                        if (catalog != null)
-                            _cache[key] = catalog;
-                    }
-                    catch
-                    {
-                    }
-                    finally
-                    {
-                        byte removed;
-                        _building.TryRemove(key, out removed);
-                    }
-                });
+                    MetadataCacheRefreshService.Instance.EnsureServerCache(connInfo);
+                    return;
+                }
+                TryLoadCatalogFromDisk(connInfo, dbOverride);
+                MetadataCacheRefreshService.Instance.EnsureServerCache(connInfo);
             }
 
             /// <summary>
@@ -145,7 +118,7 @@ namespace AxialSqlTools
                 }
             }
 
-            /// <summary>缓存未命中时若正在构建则短等；供悬停 UI 线程避免直接 no match。</summary>
+            /// <summary>内存未命中则读磁盘；不再等待 SQL 构建。</summary>
             public MetadataCatalog GetCachedCatalogOrWait(
                 ScriptFactoryAccess.ConnectionInfo connInfo,
                 string dbOverride = null,
@@ -153,22 +126,7 @@ namespace AxialSqlTools
             {
                 var cached = GetCachedCatalog(connInfo, dbOverride);
                 if (cached != null) return cached;
-                if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
-                    return null;
-                string database = string.IsNullOrWhiteSpace(dbOverride) ? (connInfo.Database ?? "master") : dbOverride;
-                if (string.IsNullOrWhiteSpace(database))
-                    database = "master";
-                string key = Key(connInfo.ServerName, database);
-                if (!_building.ContainsKey(key))
-                    return null;
-                int slices = Math.Max(1, maxWaitMs / 50);
-                for (int i = 0; i < slices && _building.ContainsKey(key); i++)
-                {
-                    System.Threading.Thread.Sleep(50);
-                    cached = GetCachedCatalog(connInfo, dbOverride);
-                    if (cached != null) return cached;
-                }
-                return GetCachedCatalog(connInfo, dbOverride);
+                return TryLoadCatalogFromDisk(connInfo, dbOverride);
             }
 
             /// <summary>从 SQL 提取可能的库名（db.schema.obj / db..obj / [db].[schema].[obj]）。</summary>
@@ -247,136 +205,28 @@ namespace AxialSqlTools
                 }
             }
 
-            /// <summary>取或构建目录。connInfo 为当前活动连接；dbOverride 用于三段名跨库。</summary>
-            /// <param name="requireRoutines">为 true 时，若缓存缺 RoutinesLoaded 则只补过程，不丢弃表缓存（供 EXEC）。</param>
+            /// <summary>取目录：内存 → 磁盘。不连库。requireRoutines 仅作签名兼容。</summary>
             public MetadataCatalog GetOrBuildCatalog(
                 ScriptFactoryAccess.ConnectionInfo connInfo,
                 string dbOverride = null,
                 bool requireRoutines = false)
             {
                 if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
-                {
                     return null;
-                }
 
-                string database = string.IsNullOrWhiteSpace(dbOverride) ? (connInfo.Database ?? "master") : dbOverride;
-                if (string.IsNullOrWhiteSpace(database))
-                {
-                    database = "master";
-                }
-
-                string key = Key(connInfo.ServerName, database);
-                if (_cache.TryGetValue(key, out var cached) && cached != null && !cached.IsEmpty
-                    && string.Equals(cached.Database, database, StringComparison.OrdinalIgnoreCase))
-                {
-                    if (!requireRoutines || cached.RoutinesLoaded)
-                        return cached;
-                    // 有表无过程：只补过程，绝不整目录丢弃（否则 FROM 跨库表提示被拖慢）
-                    EnsureRoutinesLoaded(connInfo, database, cached, key);
-                    if (_cache.TryGetValue(key, out var latest) && latest != null && !latest.IsEmpty)
-                        return latest;
+                var cached = GetCachedCatalog(connInfo, dbOverride);
+                if (cached != null)
                     return cached;
-                }
 
-                // 已有后台构建：等待完成（跨库 EXEC 等场景需要结果，不能直接返回 null）
-                if (_building.ContainsKey(key))
-                {
-                    for (int i = 0; i < 100 && _building.ContainsKey(key); i++)
-                    {
-                        System.Threading.Thread.Sleep(50);
-                        if (_cache.TryGetValue(key, out cached) && cached != null && !cached.IsEmpty
-                            && string.Equals(cached.Database, database, StringComparison.OrdinalIgnoreCase))
-                        {
-                            if (!requireRoutines || cached.RoutinesLoaded)
-                                return cached;
-                        }
-                    }
-                    if (_cache.TryGetValue(key, out cached) && cached != null && !cached.IsEmpty
-                        && string.Equals(cached.Database, database, StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (requireRoutines && !cached.RoutinesLoaded)
-                            EnsureRoutinesLoaded(connInfo, database, cached, key);
-                        return cached;
-                    }
-                    return null;
-                }
+                cached = TryLoadCatalogFromDisk(connInfo, dbOverride);
+                if (cached != null)
+                    return cached;
 
-                if (!_building.TryAdd(key, 0))
-                {
-                    // 并发抢锁失败：再等一轮缓存
-                    for (int i = 0; i < 40 && _building.ContainsKey(key); i++)
-                        System.Threading.Thread.Sleep(50);
-                    if (_cache.TryGetValue(key, out cached) && cached != null && !cached.IsEmpty
-                        && string.Equals(cached.Database, database, StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (requireRoutines && !cached.RoutinesLoaded)
-                            EnsureRoutinesLoaded(connInfo, database, cached, key);
-                        return cached;
-                    }
-                    return null;
-                }
-
-                try
-                {
-                    // 全量构建前保留旧缓存可读；成功后再替换，避免构建期间 FROM 空窗
-                    var catalog = BuildCatalog(connInfo, database);
-                    if (catalog != null)
-                    {
-                        _cache[key] = catalog;
-                    }
-                    return catalog;
-                }
-                finally
-                {
-                    byte removedFlag;
-                    _building.TryRemove(key, out removedFlag);
-                }
+                MetadataCacheRefreshService.Instance.EnsureServerCache(connInfo);
+                return null;
             }
 
-            /// <summary>在已有表缓存上仅重载过程/函数，不清空 Tables/Views。</summary>
-            private void EnsureRoutinesLoaded(
-                ScriptFactoryAccess.ConnectionInfo connInfo,
-                string database,
-                MetadataCatalog catalog,
-                string key)
-            {
-                if (catalog == null || catalog.RoutinesLoaded)
-                    return;
-                // 与全量构建共用 _building，避免并发改同一 catalog
-                if (!_building.TryAdd(key, 0))
-                {
-                    for (int i = 0; i < 40 && _building.ContainsKey(key); i++)
-                        System.Threading.Thread.Sleep(50);
-                    return;
-                }
-                try
-                {
-                    if (catalog.RoutinesLoaded)
-                        return;
-                    var target = ScriptFactoryAccess.CloneWithDatabase(connInfo, database);
-                    if (target == null || string.IsNullOrWhiteSpace(target.FullConnectionString))
-                        return;
-                    using (var conn = new SqlConnection(WithConnectTimeout(target.FullConnectionString)))
-                    {
-                        conn.Open();
-                        catalog.Procedures.Clear();
-                        catalog.ScalarFunctions.Clear();
-                        catalog.TableFunctions.Clear();
-                        LoadRoutines(conn, catalog);
-                    }
-                }
-                catch
-                {
-                    catalog.RoutinesLoaded = false;
-                }
-                finally
-                {
-                    byte removed;
-                    _building.TryRemove(key, out removed);
-                }
-            }
-
-            /// <summary>缓存库名列表，避免每次 FROM 跨库判定都连 master 查 sys.databases。</summary>
+            /// <summary>缓存库名列表：内存 → meta.json，不连库。</summary>
             public List<string> GetDatabasesCached(ScriptFactoryAccess.ConnectionInfo connInfo)
             {
                 if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
@@ -384,9 +234,130 @@ namespace AxialSqlTools
                 string key = connInfo.ServerName ?? string.Empty;
                 if (_databaseListCache.TryGetValue(key, out var cached) && cached != null)
                     return cached;
-                var list = ScriptFactoryAccess.GetDatabases(connInfo) ?? new List<string>();
-                _databaseListCache[key] = list;
-                return list;
+                if (MetadataCacheStore.TryGetMeta(connInfo.ServerName, out var meta) && meta?.Databases != null)
+                {
+                    var list = new List<string>(meta.Databases);
+                    _databaseListCache[key] = list;
+                    return list;
+                }
+                return new List<string>();
+            }
+
+            public void PutCatalog(string server, string database, MetadataCatalog catalog)
+            {
+                if (string.IsNullOrWhiteSpace(server) || string.IsNullOrWhiteSpace(database) || catalog == null)
+                    return;
+                _cache[Key(server, database)] = catalog;
+                _cache[LinkedCatalogKey(server, database)] = catalog;
+            }
+
+            public void PutDatabaseList(string server, List<string> databases)
+            {
+                if (string.IsNullOrWhiteSpace(server))
+                    return;
+                _databaseListCache[server] = databases ?? new List<string>();
+            }
+
+            public void MarkServerLoadedInMemory(string server)
+            {
+                if (string.IsNullOrWhiteSpace(server))
+                    return;
+                _memoryLoadedServers[server] = 0;
+            }
+
+            public void PutLinkedServers(string server, List<string> linkedServers)
+            {
+                if (string.IsNullOrWhiteSpace(server))
+                    return;
+                _linkedServerCache[server] = linkedServers ?? new List<string>();
+            }
+
+            public bool IsServerLoadedInMemory(string serverName)
+            {
+                return !string.IsNullOrWhiteSpace(serverName) && _memoryLoadedServers.ContainsKey(serverName);
+            }
+
+            public void LoadServerFromDisk(string serverName, IProgress<IndexBuildProgress> progress = null)
+            {
+                if (string.IsNullOrWhiteSpace(serverName))
+                    return;
+                if (_memoryLoadedServers.ContainsKey(serverName))
+                    return;
+                List<string> databases = null;
+                if (MetadataCacheStore.TryGetMeta(serverName, out var meta) && meta?.Databases != null)
+                {
+                    databases = new List<string>(meta.Databases);
+                    _databaseListCache[serverName] = databases;
+                    if (meta.LinkedServers != null)
+                        _linkedServerCache[serverName] = new List<string>(meta.LinkedServers);
+                }
+                if (databases != null)
+                {
+                    int total = databases.Count;
+                    int done = 0;
+                    foreach (string db in databases)
+                    {
+                        var catalog = MetadataCacheStore.TryLoadCatalog(serverName, db);
+                        if (catalog != null)
+                            _cache[Key(serverName, catalog.Database ?? db)] = catalog;
+                        done++;
+                        progress?.Report(new IndexBuildProgress
+                        {
+                            ServerName = serverName,
+                            Title = "正在加载缓存到内存",
+                            CurrentItem = db,
+                            Completed = done,
+                            Total = total,
+                            Message = done + "/" + total + "  " + db
+                        });
+                    }
+                    _memoryLoadedServers[serverName] = 0;
+                    return;
+                }
+                int fileTotal = 0;
+                foreach (string path in MetadataCacheStore.ListCatalogFiles(serverName))
+                    fileTotal++;
+                int fileDone = 0;
+                foreach (string path in MetadataCacheStore.ListCatalogFiles(serverName))
+                {
+                    string db = System.IO.Path.GetFileNameWithoutExtension(path);
+                    var catalog = MetadataCacheStore.TryLoadCatalog(serverName, db);
+                    if (catalog != null)
+                        _cache[Key(serverName, catalog.Database ?? db)] = catalog;
+                    fileDone++;
+                    progress?.Report(new IndexBuildProgress
+                    {
+                        ServerName = serverName,
+                        Title = "正在加载缓存到内存",
+                        CurrentItem = db,
+                        Completed = fileDone,
+                        Total = fileTotal,
+                        Message = fileDone + "/" + fileTotal + "  " + db
+                    });
+                }
+                _memoryLoadedServers[serverName] = 0;
+            }
+
+            internal MetadataCatalog BuildCatalogForCache(
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string database,
+                int commandTimeoutSeconds)
+            {
+                return BuildCatalog(connInfo, database, commandTimeoutSeconds);
+            }
+
+            private MetadataCatalog TryLoadCatalogFromDisk(ScriptFactoryAccess.ConnectionInfo connInfo, string dbOverride)
+            {
+                if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
+                    return null;
+                string database = string.IsNullOrWhiteSpace(dbOverride) ? (connInfo.Database ?? "master") : dbOverride;
+                if (string.IsNullOrWhiteSpace(database))
+                    database = "master";
+                var catalog = MetadataCacheStore.TryLoadCatalog(connInfo.ServerName, database);
+                if (catalog == null)
+                    return null;
+                _cache[Key(connInfo.ServerName, database)] = catalog;
+                return catalog;
             }
 
             public bool ContainsDatabase(ScriptFactoryAccess.ConnectionInfo connInfo, string name)
@@ -440,6 +411,55 @@ WHERE s.name = @schema AND o.name = @name AND o.type IN ('P','FN','TF','IF') AND
                             {
                                 routine.Definition = val as string;
                                 return routine.Definition;
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                }
+                return null;
+            }
+
+            /// <summary>按需加载视图定义（悬停 DDL；不在整库扫描里拉 OBJECT_DEFINITION）。</summary>
+            public string EnsureViewDefinition(
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string database,
+                TableColumnInfo view)
+            {
+                if (view == null || !view.IsView) return null;
+                if (!string.IsNullOrEmpty(view.Definition))
+                    return view.Definition;
+                if (connInfo == null || string.IsNullOrWhiteSpace(view.Name))
+                    return null;
+
+                string db = string.IsNullOrWhiteSpace(database) ? connInfo.Database : database;
+                if (string.IsNullOrWhiteSpace(db)) db = "master";
+                string sch = string.IsNullOrWhiteSpace(view.Schema) ? "dbo" : view.Schema;
+                var target = ScriptFactoryAccess.CloneWithDatabase(connInfo, db);
+                if (target == null || string.IsNullOrWhiteSpace(target.FullConnectionString))
+                    return null;
+
+                const string sql = @"
+SELECT m.definition
+FROM sys.objects o
+JOIN sys.schemas s ON o.schema_id = s.schema_id
+JOIN sys.sql_modules m ON m.object_id = o.object_id
+WHERE s.name = @schema AND o.name = @name AND o.type = 'V' AND o.is_ms_shipped = 0;";
+                try
+                {
+                    using (var conn = new SqlConnection(WithConnectTimeout(target.FullConnectionString)))
+                    {
+                        conn.Open();
+                        using (var cmd = Cmd(conn, sql))
+                        {
+                            cmd.Parameters.AddWithValue("@schema", sch);
+                            cmd.Parameters.AddWithValue("@name", view.Name);
+                            object val = cmd.ExecuteScalar();
+                            if (val != null && val != DBNull.Value)
+                            {
+                                view.Definition = val as string;
+                                return view.Definition;
                             }
                         }
                     }
@@ -535,52 +555,27 @@ ORDER BY c.column_id;";
                 }
             }
 
-            /// <summary>链接服务器上的库列表（四段名 [server].master.sys.databases）。</summary>
+            /// <summary>链接服务器上的库列表：内存 → 磁盘。缺失则后台四段名拉取。不查库。</summary>
             public List<string> GetLinkedServerDatabases(ScriptFactoryAccess.ConnectionInfo connInfo, string linkedServer)
             {
-                var list = new List<string>();
-                if (connInfo == null || string.IsNullOrWhiteSpace(linkedServer))
-                    return list;
-
-                string cacheKey = LinkedDatabaseListKey(connInfo.ServerName, linkedServer);
-                if (_linkedDatabaseCache.TryGetValue(cacheKey, out var cached) && cached != null)
-                    return new List<string>(cached);
-
-                if (string.IsNullOrWhiteSpace(connInfo.FullConnectionString))
-                    return list;
-
-                string prefix = FourPartPrefix(linkedServer, "master");
-                const string sql = @"
-SELECT d.name
-FROM {0}.sys.databases d
-WHERE d.state = 0
-  AND d.name <> 'tempdb'
-ORDER BY d.name;";
-
-                try
+                var empty = new List<string>();
+                linkedServer = UnbracketSqlIdent(linkedServer);
+                if (string.IsNullOrWhiteSpace(linkedServer))
+                    return empty;
+                MetadataCacheRefreshService.Instance.EnsureLinkedServerCache(connInfo, linkedServer);
+                if (_databaseListCache.TryGetValue(linkedServer, out var fromMem) && fromMem != null && fromMem.Count > 0)
+                    return new List<string>(fromMem);
+                if (MetadataCacheStore.TryGetMeta(linkedServer, out var meta) && meta?.Databases != null)
                 {
-                    using (var conn = new SqlConnection(WithConnectTimeout(connInfo.FullConnectionString)))
-                    {
-                        conn.Open();
-                        using (var cmd = Cmd(conn, string.Format(sql, prefix)))
-                        using (var reader = cmd.ExecuteReader())
-                        {
-                            while (reader.Read())
-                            {
-                                if (!reader.IsDBNull(0))
-                                    list.Add(reader.GetString(0));
-                            }
-                        }
-                    }
-                    _linkedDatabaseCache[cacheKey] = list;
+                    var list = new List<string>(meta.Databases);
+                    _databaseListCache[linkedServer] = list;
+                    LoadServerFromDisk(linkedServer);
+                    return new List<string>(list);
                 }
-                catch
-                {
-                }
-                return list;
+                return empty;
             }
 
-            /// <summary>已注册的链接服务器 + 常见 IP 形态（用于 [server]. 补全）。</summary>
+            /// <summary>已注册的链接服务器：内存 → 当前服务器 meta.json。不查库。</summary>
             public List<string> GetLinkedServers(ScriptFactoryAccess.ConnectionInfo connInfo)
             {
                 if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
@@ -589,29 +584,29 @@ ORDER BY d.name;";
                 if (_linkedServerCache.TryGetValue(connInfo.ServerName, out var cached) && cached != null)
                     return new List<string>(cached);
 
-                var list = LoadLinkedServers(connInfo);
-                _linkedServerCache[connInfo.ServerName] = list;
-                return new List<string>(list);
+                if (MetadataCacheStore.TryGetMeta(connInfo.ServerName, out var meta) && meta?.LinkedServers != null)
+                {
+                    var list = new List<string>(meta.LinkedServers);
+                    _linkedServerCache[connInfo.ServerName] = list;
+                    return new List<string>(list);
+                }
+                _linkedServerCache[connInfo.ServerName] = new List<string>();
+                return new List<string>();
             }
 
             public bool IsLinkedServerName(ScriptFactoryAccess.ConnectionInfo connInfo, string name)
             {
+                name = UnbracketSqlIdent(name);
                 if (string.IsNullOrWhiteSpace(name))
                     return false;
                 if (IsLocalDatabaseName(connInfo, name))
                     return false;
                 if (IPv4Regex.IsMatch(name))
                     return true;
-                if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
-                    return false;
-                if (!_linkedServerCache.TryGetValue(connInfo.ServerName, out var cached) || cached == null)
+                var linked = GetLinkedServers(connInfo);
+                for (int i = 0; i < linked.Count; i++)
                 {
-                    cached = LoadLinkedServers(connInfo);
-                    _linkedServerCache[connInfo.ServerName] = cached;
-                }
-                for (int i = 0; i < cached.Count; i++)
-                {
-                    if (string.Equals(cached[i], name, StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(linked[i], name, StringComparison.OrdinalIgnoreCase))
                         return true;
                 }
                 return false;
@@ -619,6 +614,8 @@ ORDER BY d.name;";
 
             public bool IsLinkedServerDatabase(ScriptFactoryAccess.ConnectionInfo connInfo, string linkedServer, string database)
             {
+                linkedServer = UnbracketSqlIdent(linkedServer);
+                database = UnbracketSqlIdent(database);
                 if (string.IsNullOrWhiteSpace(linkedServer) || string.IsNullOrWhiteSpace(database))
                     return false;
                 foreach (var db in GetLinkedServerDatabases(connInfo, linkedServer))
@@ -629,26 +626,108 @@ ORDER BY d.name;";
                 return false;
             }
 
-            /// <summary>链接服务器目标库的表/视图目录。</summary>
+            /// <summary>链接服务器目标库目录：内存 → 磁盘。缺失则后台四段名拉取。不查库。</summary>
             public MetadataCatalog GetOrBuildLinkedCatalog(
                 ScriptFactoryAccess.ConnectionInfo connInfo,
                 string linkedServer,
                 string database)
             {
-                if (connInfo == null || string.IsNullOrWhiteSpace(linkedServer) || string.IsNullOrWhiteSpace(database))
+                linkedServer = UnbracketSqlIdent(linkedServer);
+                database = UnbracketSqlIdent(database);
+                if (string.IsNullOrWhiteSpace(linkedServer) || string.IsNullOrWhiteSpace(database))
                     return null;
-
-                string key = LinkedCatalogKey(linkedServer, database);
-                if (_cache.TryGetValue(key, out var cached) && cached != null && !cached.IsEmpty)
+                MetadataCacheRefreshService.Instance.EnsureLinkedServerCache(connInfo, linkedServer);
+                string lsKey = LinkedCatalogKey(linkedServer, database);
+                if (_cache.TryGetValue(lsKey, out var cached) && cached != null && !cached.IsEmpty)
                     return cached;
-
-                var catalog = BuildLinkedCatalog(connInfo, linkedServer, database);
-                if (catalog != null)
-                    _cache[key] = catalog;
+                if (_cache.TryGetValue(Key(linkedServer, database), out cached) && cached != null && !cached.IsEmpty)
+                    return cached;
+                var catalog = MetadataCacheStore.TryLoadCatalog(linkedServer, database);
+                if (catalog == null)
+                    return null;
+                _cache[lsKey] = catalog;
+                _cache[Key(linkedServer, database)] = catalog;
                 return catalog;
             }
 
-            private List<string> LoadLinkedServers(ScriptFactoryAccess.ConnectionInfo connInfo)
+            /// <summary>后台刷新用：经四段名枚举链接服务器上的库。补全热路径不要调用。</summary>
+            internal List<string> QueryLinkedServerDatabasesForCache(
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string linkedServer,
+                int commandTimeoutSeconds)
+            {
+                var list = new List<string>();
+                linkedServer = UnbracketSqlIdent(linkedServer);
+                if (string.IsNullOrWhiteSpace(connInfo?.FullConnectionString) || string.IsNullOrWhiteSpace(linkedServer))
+                    return list;
+                string prefix = FourPartPrefix(linkedServer, "master");
+                string sql = string.Format(@"
+SELECT d.name
+FROM {0}.sys.databases d
+WHERE d.state = 0
+  AND d.name <> 'tempdb'
+ORDER BY d.name;", prefix);
+                try
+                {
+                    using (var conn = new SqlConnection(WithConnectTimeout(connInfo.FullConnectionString)))
+                    {
+                        conn.Open();
+                        using (var cmd = Cmd(conn, sql, commandTimeoutSeconds))
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                if (!reader.IsDBNull(0))
+                                    list.Add(reader.GetString(0));
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                }
+                return list;
+            }
+
+            /// <summary>后台刷新用：经四段名构建链接服务器上某库目录。补全热路径不要调用。</summary>
+            internal MetadataCatalog BuildLinkedCatalogForCache(
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string linkedServer,
+                string database,
+                int commandTimeoutSeconds)
+            {
+                linkedServer = UnbracketSqlIdent(linkedServer);
+                database = UnbracketSqlIdent(database);
+                if (string.IsNullOrWhiteSpace(connInfo?.FullConnectionString)
+                    || string.IsNullOrWhiteSpace(linkedServer)
+                    || string.IsNullOrWhiteSpace(database))
+                    return null;
+                string prefix = FourPartPrefix(linkedServer, database);
+                try
+                {
+                    using (var conn = new SqlConnection(WithConnectTimeout(connInfo.FullConnectionString)))
+                    {
+                        conn.Open();
+                        var catalog = new MetadataCatalog
+                        {
+                            Server = linkedServer,
+                            Database = database,
+                            BuiltAt = DateTime.Now
+                        };
+                        LoadTablesAndViews(conn, catalog, prefix, commandTimeoutSeconds);
+                        LoadRoutines(conn, catalog, prefix, commandTimeoutSeconds);
+                        LoadSynonyms(conn, catalog, prefix, commandTimeoutSeconds);
+                        return catalog;
+                    }
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            /// <summary>后台刷新用：查 sys.servers。补全热路径不要调用。</summary>
+            internal List<string> QueryLinkedServersForCache(ScriptFactoryAccess.ConnectionInfo connInfo)
             {
                 var list = new List<string>();
                 if (string.IsNullOrWhiteSpace(connInfo?.FullConnectionString))
@@ -675,38 +754,6 @@ ORDER BY d.name;";
                 return list;
             }
 
-            private MetadataCatalog BuildLinkedCatalog(
-                ScriptFactoryAccess.ConnectionInfo connInfo,
-                string linkedServer,
-                string database)
-            {
-                if (string.IsNullOrWhiteSpace(connInfo?.FullConnectionString))
-                    return null;
-
-                string prefix = FourPartPrefix(linkedServer, database);
-                try
-                {
-                    using (var conn = new SqlConnection(WithConnectTimeout(connInfo.FullConnectionString)))
-                    {
-                        conn.Open();
-                        var catalog = new MetadataCatalog
-                        {
-                            Server = linkedServer,
-                            Database = database,
-                            BuiltAt = DateTime.Now
-                        };
-                        LoadTablesAndViews(conn, catalog, prefix);
-                        LoadRoutines(conn, catalog, prefix);
-                        LoadSynonyms(conn, catalog, prefix);
-                        return catalog;
-                    }
-                }
-                catch
-                {
-                    return null;
-                }
-            }
-
             private static bool IsLocalDatabaseName(ScriptFactoryAccess.ConnectionInfo connInfo, string name)
             {
                 return Instance.ContainsDatabase(connInfo, name);
@@ -726,7 +773,7 @@ ORDER BY d.name;";
                 return "[" + name.Replace("]", "]]") + "]";
             }
 
-            private MetadataCatalog BuildCatalog(ScriptFactoryAccess.ConnectionInfo connInfo, string database)
+            private MetadataCatalog BuildCatalog(ScriptFactoryAccess.ConnectionInfo connInfo, string database, int commandTimeoutSeconds = QueryTimeoutSeconds)
             {
                 // 切到目标库的独立连接，不污染查询会话
                 var target = ScriptFactoryAccess.CloneWithDatabase(connInfo, database);
@@ -749,9 +796,9 @@ ORDER BY d.name;";
                             BuiltAt = DateTime.Now
                         };
 
-                        LoadTablesAndViews(conn, catalog);
-                        LoadRoutines(conn, catalog);
-                        LoadSynonyms(conn, catalog);
+                        LoadTablesAndViews(conn, catalog, null, commandTimeoutSeconds);
+                        LoadRoutines(conn, catalog, null, commandTimeoutSeconds);
+                        LoadSynonyms(conn, catalog, null, commandTimeoutSeconds);
 
                         return catalog;
                     }
@@ -779,9 +826,9 @@ ORDER BY d.name;";
                 }
             }
 
-            private static SqlCommand Cmd(SqlConnection conn, string sql)
+            private static SqlCommand Cmd(SqlConnection conn, string sql, int timeoutSeconds = QueryTimeoutSeconds)
             {
-                return new SqlCommand(sql, conn) { CommandTimeout = QueryTimeoutSeconds };
+                return new SqlCommand(sql, conn) { CommandTimeout = timeoutSeconds };
             }
 
             private static string QualifySys(string fourPartPrefix, string objectName)
@@ -789,7 +836,7 @@ ORDER BY d.name;";
                 return string.IsNullOrEmpty(fourPartPrefix) ? objectName : fourPartPrefix + "." + objectName;
             }
 
-            private void LoadTablesAndViews(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null)
+            private void LoadTablesAndViews(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null, int timeoutSeconds = QueryTimeoutSeconds)
             {
                 string objects = QualifySys(fourPartPrefix, "sys.objects");
                 string schemas = QualifySys(fourPartPrefix, "sys.schemas");
@@ -812,8 +859,7 @@ SELECT s.name AS schema_name,
        ep_col.value AS column_description,
        ep_obj.value AS object_description,
        c.is_identity,
-       CASE WHEN pk.column_id IS NOT NULL THEN 1 ELSE 0 END AS is_primary_key,
-       CASE WHEN o.type = 'V' THEN OBJECT_DEFINITION(o.object_id) ELSE NULL END AS view_definition
+       CASE WHEN pk.column_id IS NOT NULL THEN 1 ELSE 0 END AS is_primary_key
 FROM {objects} o
 JOIN {schemas} s ON o.schema_id = s.schema_id
 JOIN {columns} c ON c.object_id = o.object_id
@@ -832,7 +878,7 @@ ORDER BY s.name, o.name, c.column_id;";
 
                 try
                 {
-                    using (var cmd = Cmd(conn, sql))
+                    using (var cmd = Cmd(conn, sql, timeoutSeconds))
                     using (var reader = cmd.ExecuteReader())
                     {
                         TableColumnInfo current = null;
@@ -852,7 +898,6 @@ ORDER BY s.name, o.name, c.column_id;";
                             string objDesc = reader.IsDBNull(11) ? null : reader.GetString(11);
                             bool isIdentity = !reader.IsDBNull(12) && reader.GetBoolean(12);
                             bool isPrimaryKey = !reader.IsDBNull(13) && reader.GetInt32(13) == 1;
-                            string viewDef = reader.FieldCount > 14 && !reader.IsDBNull(14) ? reader.GetString(14) : null;
 
                             if (current == null ||
                                 !string.Equals(current.Schema, schema, StringComparison.OrdinalIgnoreCase) ||
@@ -864,8 +909,7 @@ ORDER BY s.name, o.name, c.column_id;";
                                     Schema = schema,
                                     Name = name,
                                     Description = objDesc,
-                                    IsView = isView,
-                                    Definition = isView ? viewDef : null
+                                    IsView = isView
                                 };
                                 if (isView)
                                 {
@@ -895,10 +939,10 @@ ORDER BY s.name, o.name, c.column_id;";
                     // 表/视图失败不阻塞其余加载
                 }
 
-                LoadIndexes(conn, catalog, fourPartPrefix);
+                LoadIndexes(conn, catalog, fourPartPrefix, timeoutSeconds);
             }
 
-            private void LoadIndexes(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null)
+            private void LoadIndexes(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null, int timeoutSeconds = QueryTimeoutSeconds)
             {
                 string objects = QualifySys(fourPartPrefix, "sys.objects");
                 string schemas = QualifySys(fourPartPrefix, "sys.schemas");
@@ -923,7 +967,7 @@ ORDER BY s.name, o.name, i.index_id, ic.key_ordinal;";
 
                 try
                 {
-                    using (var cmd = Cmd(conn, sql))
+                    using (var cmd = Cmd(conn, sql, timeoutSeconds))
                     using (var reader = cmd.ExecuteReader())
                     {
                         IndexInfo current = null;
@@ -967,7 +1011,7 @@ ORDER BY s.name, o.name, i.index_id, ic.key_ordinal;";
                 }
             }
 
-            private void LoadRoutines(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null)
+            private void LoadRoutines(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null, int timeoutSeconds = QueryTimeoutSeconds)
             {
                 // 补全只需名/参数类型；不拉 sql_modules / OBJECT_DEFINITION（大库 5s 必超时 → 有表无过程）
                 string objects = QualifySys(fourPartPrefix, "sys.objects");
@@ -999,7 +1043,7 @@ ORDER BY s.name, o.name, p.parameter_id;";
 
                 try
                 {
-                    using (var cmd = Cmd(conn, sql))
+                    using (var cmd = Cmd(conn, sql, timeoutSeconds))
                     using (var reader = cmd.ExecuteReader())
                     {
                         RoutineInfo current = null;
@@ -1053,7 +1097,7 @@ ORDER BY s.name, o.name, p.parameter_id;";
                 }
             }
 
-            private void LoadSynonyms(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null)
+            private void LoadSynonyms(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null, int timeoutSeconds = QueryTimeoutSeconds)
             {
                 string synonyms = QualifySys(fourPartPrefix, "sys.synonyms");
                 string schemas = QualifySys(fourPartPrefix, "sys.schemas");
@@ -1071,7 +1115,7 @@ ORDER BY s.name, o.name;";
 
                 try
                 {
-                    using (var cmd = Cmd(conn, sql))
+                    using (var cmd = Cmd(conn, sql, timeoutSeconds))
                     using (var reader = cmd.ExecuteReader())
                     {
                         while (reader.Read())
@@ -1162,8 +1206,8 @@ ORDER BY s.name, o.name;";
                 _cache.Clear();
                 _databaseListCache.Clear();
                 _linkedServerCache.Clear();
-                _linkedDatabaseCache.Clear();
                 _tableColumnCache.Clear();
+                _memoryLoadedServers.Clear();
             }
 
             /// <summary>常用系统对象（includeSystemObjects 开启时追加到候选）。</summary>

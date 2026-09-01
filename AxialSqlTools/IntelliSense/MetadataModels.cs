@@ -1,3 +1,4 @@
+using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 
@@ -25,7 +26,8 @@ namespace AxialSqlTools
             /// <summary>选中补全项时插入文本是否带方括号 []。</summary>
             public bool bracketIdentifiers = true;
             public int maxCompletionItems = 50;
-            public int autoRefreshMinutes = 0; // 0 = 关闭后台刷新
+            /// <summary>磁盘缓存自动刷新间隔（天）。默认 7；0 = 关闭自动更新。</summary>
+            public int cacheRefreshDays = 7;
         }
 
         /// <summary>元数据缓存，按 (Server, Database) 维度存储。</summary>
@@ -104,7 +106,8 @@ namespace AxialSqlTools
         public class TableColumnInfo : DatabaseObjectInfo
         {
             public bool IsView { get; set; }
-            /// <summary>视图定义（OBJECT_DEFINITION），仅视图有值。</summary>
+            /// <summary>视图定义（OBJECT_DEFINITION），仅视图有值；按需拉取，不写入磁盘缓存。</summary>
+            [JsonIgnore]
             public string Definition { get; set; }
             public List<ColumnInfo> Columns { get; set; } = new List<ColumnInfo>();
             public List<IndexInfo> Indexes { get; set; } = new List<IndexInfo>();
@@ -143,7 +146,9 @@ namespace AxialSqlTools
         {
             public RoutineKind Kind { get; set; }
             public List<RoutineParam> Parameters { get; set; } = new List<RoutineParam>();
-            public string Definition { get; set; } // CREATE 脚本
+            /// <summary>CREATE 脚本；按需拉取，不写入磁盘缓存。</summary>
+            [JsonIgnore]
+            public string Definition { get; set; }
         }
 
         public class RoutineParam

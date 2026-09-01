@@ -13,6 +13,7 @@ namespace AxialSqlTools.IntelliSense
     public class QuickInfoProvider
     {
         private readonly TSql170Parser _parser = new TSql170Parser(true);
+        private ScriptFactoryAccess.ConnectionInfo _hoverConn;
 
         public QuickInfoData GetQuickInfo(
             string fullText,
@@ -23,6 +24,7 @@ namespace AxialSqlTools.IntelliSense
             if (string.IsNullOrEmpty(fullText) || caretOffset < 0)
                 return null;
 
+            _hoverConn = connInfo;
             try
             {
                 TSqlScript script;
@@ -169,6 +171,7 @@ namespace AxialSqlTools.IntelliSense
             ScriptFactoryAccess.ConnectionInfo connInfo)
         {
             if (string.IsNullOrEmpty(hoverWord)) return null;
+            _hoverConn = connInfo;
             try
             {
                 string cleanWord = hoverWord.Trim('[', ']', '"');
@@ -504,7 +507,11 @@ namespace AxialSqlTools.IntelliSense
             AddHeaderLine(data, table != null && table.IsView ? "视图" : "表", table?.Name ?? tref?.Name);
             if (!string.IsNullOrEmpty(table?.Description))
                 data.Description = table.Description;
-            data.DdlText = QuickInfoDdlBuilder.BuildCreateTable(table);
+            if (table != null && table.IsView && _hoverConn != null)
+                MetadataCatalogService.Instance.EnsureViewDefinition(_hoverConn, db, table);
+            data.DdlText = table != null && table.IsView
+                ? QuickInfoDdlBuilder.BuildCreateView(table)
+                : QuickInfoDdlBuilder.BuildCreateTable(table);
             return data.IsEmpty ? null : data;
         }
 

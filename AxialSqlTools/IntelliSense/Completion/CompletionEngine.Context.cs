@@ -18,7 +18,11 @@ namespace AxialSqlTools
                 public string Partial = string.Empty;
                 public bool AfterDot;
                 public bool UsesDoubleDot;
+                /// <summary>连续三个及以上点（newdaku...）不是合法限定名，不应再出对象补全。</summary>
+                public bool ExcessiveDots;
                 public int PartialStartOffset = -1;
+                /// <summary>限定名第一个片段的原文起点（含未闭合 [）。IP 链接服务器整段替换用。</summary>
+                public int NameStartOffset = -1;
             }
 
             /// <summary>
@@ -67,10 +71,12 @@ namespace AxialSqlTools
                 }
 
                 var segments = new List<string>();
+                int nameStart = -1;
                 // AfterDot = 光标/partial 紧跟在点号后（dbo.| / dbo.Ta|），不是「限定名里曾经出现过点」
                 // 否则 schema.table gr| 会被误判，GROUP BY / WHERE 等关键字被抑制
                 bool afterDot = i >= 0 && text[i] == '.';
                 bool doubleDot = false;
+                bool extraDots = false;
                 int guard = 0;
                 int maxGuard = Math.Max(32, (caretOffset + 1) * 4);
                 while (i >= 0)
@@ -89,7 +95,8 @@ namespace AxialSqlTools
                             dots++;
                             i--;
                         }
-                        if (dots >= 2) doubleDot = true;
+                        if (dots > 2) extraDots = true;
+                        else if (dots == 2) doubleDot = true;
                         continue;
                     }
 
@@ -124,7 +131,10 @@ namespace AxialSqlTools
                     if (!isExec && IsFromObjectNameTerminatorKeyword(seg))
                         return false;
                     if (!string.IsNullOrEmpty(seg))
+                    {
                         segments.Insert(0, seg);
+                        nameStart = segStart;
+                    }
                 }
 
                 while (i >= 0 && (text[i] == ' ' || text[i] == '\t' || text[i] == '\n' || text[i] == '\r')) i--;
@@ -139,6 +149,8 @@ namespace AxialSqlTools
                     ctx.Segments = segments;
                     ctx.AfterDot = afterDot;
                     ctx.UsesDoubleDot = doubleDot;
+                    ctx.ExcessiveDots = extraDots;
+                    ctx.NameStartOffset = AdjustNameStartForOpenBracket(text, nameStart >= 0 ? nameStart : ctx.PartialStartOffset);
                     return true;
                 }
 
@@ -160,6 +172,8 @@ namespace AxialSqlTools
                 ctx.Segments = segments;
                 ctx.AfterDot = afterDot;
                 ctx.UsesDoubleDot = doubleDot;
+                ctx.ExcessiveDots = extraDots;
+                ctx.NameStartOffset = AdjustNameStartForOpenBracket(text, nameStart >= 0 ? nameStart : ctx.PartialStartOffset);
                 return true;
             }
 
@@ -185,13 +199,25 @@ namespace AxialSqlTools
             /// <summary>
             /// 行首像新开一批：语句关键字（se→SELECT）或片段（ss→ssf）。
             /// JOIN/WHERE/ORDER 续写前缀不算（in/wh/ord 仍留在当前句）。
+            /// ex 同时是 EXEC 与 EXCEPT：行首按新语句，EXCEPT 仍在 BatchStart 的 AfterFrom 里。
             /// </summary>
             private static bool LooksLikeNewBatchPrefix(string partial)
             {
                 if (string.IsNullOrEmpty(partial)) return false;
+                if (IsExecStatementPrefix(partial))
+                    return true;
                 if (IsFromJoinOrClausePrefix(partial) || IsClauseContinuationPrefix(partial))
                     return false;
                 return IsTopLevelStatementPrefix(partial) || HasMatchingSnippetPrefix(partial);
+            }
+
+            /// <summary>ex/exe/exec → EXEC；单字母 e 仍留给 EXCEPT/EXISTS。</summary>
+            private static bool IsExecStatementPrefix(string partial)
+            {
+                if (string.IsNullOrEmpty(partial) || partial.Length < 2) return false;
+                string p = partial.ToUpperInvariant();
+                return "EXEC".StartsWith(p, StringComparison.Ordinal)
+                    || "EXECUTE".StartsWith(p, StringComparison.Ordinal);
             }
 
             /// <summary>行首像新语句：se→SELECT、up→UPDATE（相对 SESSION_USER 等函数优先）。</summary>
@@ -881,6 +907,7 @@ namespace AxialSqlTools
                 // AfterDot：仅表示光标在点号后继续输段（dbo.| / dbo.Ta|），
                 // 不能因 schema.table 内部的点而置位，否则表后输 gr 不提示 GROUP BY
                 bool afterDot = false;
+                int nameStart = -1;
                 int i = idx;
 
                 var cur = tokens[i];
@@ -888,12 +915,17 @@ namespace AxialSqlTools
                 {
                     afterDot = true;
                     i--;
+                    int extra = ConsumeConsecutiveDots(tokens, ref i);
+                    int run = 1 + extra;
+                    if (run > 2) ctx.ExcessiveDots = true;
+                    else if (run == 2) ctx.UsesDoubleDot = true;
                 }
                 else if (cur != null && IsWordLikeToken(cur) && cur.Offset + cur.Text.Length >= localOffset)
                 {
                     // 含 or/in/gr 等：ScriptDom 可能已把 partial 标成关键字 token
                     partial = cur.Text.Substring(0, Math.Max(0, localOffset - cur.Offset));
                     ctx.PartialStartOffset = cur.Offset;
+                    nameStart = cur.Offset;
                     var beforePartial = PreviousSignificantToken(tokens, idx);
                     if (beforePartial != null && beforePartial.TokenType == TSqlTokenType.Dot)
                         afterDot = true;
@@ -902,6 +934,7 @@ namespace AxialSqlTools
                 else if (cur != null && IsPartialObjectNameToken(cur))
                 {
                     parts.Insert(0, UnbracketIdentifier(cur.Text));
+                    nameStart = cur.Offset;
                     i--;
                 }
 
@@ -930,16 +963,14 @@ namespace AxialSqlTools
                         // 允许跨行收集：FROM db.table aa\nin| 的表名在上一行
                         if (parenDepth > 0) { i--; continue; }
                         i--;
-                        while (i >= 0 && IsInsignificantToken(tokens[i])) i--;
-                        if (i >= 0 && tokens[i].TokenType == TSqlTokenType.Dot)
-                        {
-                            ctx.UsesDoubleDot = true;
-                            i--;
-                            while (i >= 0 && IsInsignificantToken(tokens[i])) i--;
-                        }
+                        int extra = ConsumeConsecutiveDots(tokens, ref i);
+                        int run = 1 + extra;
+                        if (run > 2) ctx.ExcessiveDots = true;
+                        else if (run == 2) ctx.UsesDoubleDot = true;
                         if (i >= 0 && parenDepth == 0 && IsPartialObjectNameToken(tokens[i]))
                         {
                             parts.Insert(0, UnbracketIdentifier(tokens[i].Text));
+                            nameStart = tokens[i].Offset;
                             i--;
                         }
                         continue;
@@ -973,6 +1004,7 @@ namespace AxialSqlTools
                         if (parenDepth == 0 && IsPartialObjectNameToken(tok))
                         {
                             parts.Insert(0, UnbracketIdentifier(tok.Text));
+                            nameStart = tok.Offset;
                         }
                         i--;
                         continue;
@@ -987,7 +1019,24 @@ namespace AxialSqlTools
                 ctx.Segments = parts;
                 ctx.Partial = partial;
                 ctx.AfterDot = afterDot;
+                ctx.NameStartOffset = nameStart >= 0 ? nameStart : ctx.PartialStartOffset;
                 return ctx;
+            }
+
+            /// <summary>从当前 i 再吃连续 Dot（已跳过空白）。返回额外吃掉的点数；i 停在点号前的有效 token。</summary>
+            private static int ConsumeConsecutiveDots(List<TSqlParserToken> tokens, ref int i)
+            {
+                int n = 0;
+                while (i >= 0)
+                {
+                    while (i >= 0 && IsInsignificantToken(tokens[i])) i--;
+                    if (i < 0 || tokens[i] == null || tokens[i].TokenType != TSqlTokenType.Dot)
+                        break;
+                    n++;
+                    i--;
+                }
+                while (i >= 0 && IsInsignificantToken(tokens[i])) i--;
+                return n;
             }
 
             private static bool IsFromClauseAnchorKeyword(string text)
@@ -1027,6 +1076,9 @@ namespace AxialSqlTools
 
             private int ComputeReplaceStartOffset(int batchStart, int localOffset, string prefix, FromObjectNameContext fromName, List<TSqlParserToken> tokens)
             {
+                // IP 链接服务器：192. / 192.168. 被点拆成多段，必须整段换成 [ip]，不能只替换最后一个点后
+                if (fromName != null && fromName.InFromClause && JoinNumericFromSegments(fromName) != null && fromName.NameStartOffset >= 0)
+                    return batchStart + fromName.NameStartOffset;
                 // FROM / EXEC 多段名：只替换点号后的部分
                 if (fromName != null && fromName.AfterDot)
                 {
@@ -1078,6 +1130,12 @@ namespace AxialSqlTools
                 if (settings != null && !settings.bracketIdentifiers)
                     return bare;
                 return BracketIdent(bare);
+            }
+
+            /// <summary>链接服务器名含点或以数字开头，T-SQL 必须加 []。</summary>
+            private static string FormatLinkedServerInsert(string name)
+            {
+                return BracketIdent(UnbracketIdentifier(name));
             }
 
             private static string FormatObjectInsert(DatabaseObjectInfo obj, IntelliSenseSettings settings)
@@ -1254,12 +1312,14 @@ namespace AxialSqlTools
                        t.TokenType == TSqlTokenType.QuotedIdentifier;
             }
 
-            /// <summary>FROM 四段名/IP 中可能被解析为 Integer 的片段（如 192）。</summary>
+            /// <summary>FROM 四段名/IP 中可能被解析为 Integer/Numeric 的片段（如 192.）。</summary>
             private static bool IsPartialObjectNameToken(TSqlParserToken t)
             {
                 if (t == null) return false;
                 if (IsIdentifierLike(t)) return true;
-                return t.TokenType == TSqlTokenType.Integer || t.TokenType == TSqlTokenType.Real;
+                return t.TokenType == TSqlTokenType.Integer
+                    || t.TokenType == TSqlTokenType.Real
+                    || t.TokenType == TSqlTokenType.Numeric;
             }
 
             /// <summary>光标处正在输入的词（含 IN/IF 等被 ScriptDom 解析为关键字的 token）。</summary>
@@ -1385,6 +1445,73 @@ namespace AxialSqlTools
                     if (!char.IsDigit(c) && c != '.') return false;
                 }
                 return true;
+            }
+
+            /// <summary>把 FROM 里被点拆开的数字段拼回 192.168.1.148；含非数字段则不是 IP。</summary>
+            private static string JoinNumericFromSegments(FromObjectNameContext fromName)
+            {
+                if (fromName == null || fromName.UsesDoubleDot) return null;
+                var parts = new List<string>();
+                if (fromName.Segments != null)
+                {
+                    for (int i = 0; i < fromName.Segments.Count; i++)
+                    {
+                        string s = StripNumericDots(fromName.Segments[i]);
+                        if (string.IsNullOrEmpty(s) || !IsNumericOrIpPrefix(s))
+                            return null;
+                        parts.Add(s);
+                    }
+                }
+                if (!string.IsNullOrEmpty(fromName.Partial))
+                {
+                    string p = StripNumericDots(fromName.Partial);
+                    if (string.IsNullOrEmpty(p) || !IsNumericOrIpPrefix(p))
+                        return null;
+                    parts.Add(p);
+                }
+                if (parts.Count == 0) return null;
+                return string.Join(".", parts);
+            }
+
+            private static string StripNumericDots(string s)
+            {
+                if (string.IsNullOrEmpty(s)) return s;
+                return s.Trim('.');
+            }
+
+            private static bool IsCompleteIpv4(string name)
+            {
+                if (string.IsNullOrEmpty(name)) return false;
+                string[] oct = name.Split('.');
+                if (oct.Length != 4) return false;
+                for (int i = 0; i < oct.Length; i++)
+                {
+                    string o = oct[i];
+                    if (o.Length == 0 || o.Length > 3) return false;
+                    for (int j = 0; j < o.Length; j++)
+                    {
+                        if (!char.IsDigit(o[j])) return false;
+                    }
+                }
+                return true;
+            }
+
+            private static bool IsListingLinkedServerIp(FromObjectNameContext fromName)
+            {
+                string ip = JoinNumericFromSegments(fromName);
+                if (ip == null) return false;
+                if (IsCompleteIpv4(ip) && fromName.AfterDot && string.IsNullOrEmpty(fromName.Partial))
+                    return false;
+                return true;
+            }
+
+            private static int AdjustNameStartForOpenBracket(string text, int nameStart)
+            {
+                if (nameStart <= 0 || string.IsNullOrEmpty(text) || nameStart > text.Length)
+                    return nameStart;
+                if (text[nameStart - 1] == '[')
+                    return nameStart - 1;
+                return nameStart;
             }
 
             private bool SeenKeywordAfter(List<TSqlParserToken> tokens, int fromIndex, string keyword)

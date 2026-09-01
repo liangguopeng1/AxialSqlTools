@@ -11,6 +11,10 @@ namespace AxialSqlTools
         [JsonProperty("uiLanguage")]
         public string UiLanguage { get; set; } = UiSettingsStore.LanguageZhCn;
 
+        /// <summary>NLog 最低级别：Debug / Info / Warn / Error。默认 Info。</summary>
+        [JsonProperty("logLevel")]
+        public string LogLevel { get; set; } = UiSettingsStore.LogLevelInfo;
+
         /// <summary>IntelliSense 设置节点。null 兼容旧 settings.json。</summary>
         [JsonProperty("intelliSense")]
         public IntelliSenseSettings IntelliSense { get; set; }
@@ -35,6 +39,10 @@ namespace AxialSqlTools
     {
         public const string LanguageZhCn = "zh-CN";
         public const string LanguageEn = "en";
+        public const string LogLevelDebug = "Debug";
+        public const string LogLevelInfo = "Info";
+        public const string LogLevelWarn = "Warn";
+        public const string LogLevelError = "Error";
 
         private static readonly object SyncRoot = new object();
         private static UiSettings _cache;
@@ -93,6 +101,18 @@ namespace AxialSqlTools
         {
             var settings = Load();
             settings.UiLanguage = language;
+            Save(settings);
+        }
+
+        public static string GetLogLevel()
+        {
+            return NormalizeLogLevel(Load().LogLevel);
+        }
+
+        public static void SaveLogLevel(string level)
+        {
+            var settings = Load();
+            settings.LogLevel = NormalizeLogLevel(level);
             Save(settings);
         }
 
@@ -176,6 +196,8 @@ namespace AxialSqlTools
                 settings.UiLanguage = LanguageZhCn;
             }
 
+            settings.LogLevel = NormalizeLogLevel(settings.LogLevel);
+
             // IntelliSense 节点缺失时给默认值，保证功能可用。
             if (settings.IntelliSense == null)
             {
@@ -194,9 +216,30 @@ namespace AxialSqlTools
             return new UiSettings
             {
                 UiLanguage = source.UiLanguage,
+                LogLevel = NormalizeLogLevel(source.LogLevel),
                 IntelliSense = source.IntelliSense ?? new IntelliSenseSettings(),
                 TabHistory = source.TabHistory ?? new TabHistorySettings()
             };
+        }
+
+        internal static string NormalizeLogLevel(string level)
+        {
+            if (string.IsNullOrWhiteSpace(level))
+                return LogLevelInfo;
+            switch (level.Trim().ToLowerInvariant())
+            {
+                case "debug":
+                case "trace":
+                    return LogLevelDebug;
+                case "warn":
+                case "warning":
+                    return LogLevelWarn;
+                case "error":
+                case "fatal":
+                    return LogLevelError;
+                default:
+                    return LogLevelInfo;
+            }
         }
     }
 }

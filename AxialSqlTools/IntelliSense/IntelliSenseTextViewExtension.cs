@@ -5,6 +5,7 @@ using Microsoft.VisualStudio.TextManager.Interop;
 using NLog;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -24,8 +25,7 @@ namespace AxialSqlTools.IntelliSense
             new List<IntelliSenseTextViewExtension>();
         /// <summary>最近获得焦点/点击/输入的编辑器；只有它允许弹出悬停，避免多标签 ScreenToClient 串扰。</summary>
         private static IntelliSenseTextViewExtension _hoverOwner;
-        private static readonly object DiagLock = new object();
-        private static DateTime _lastDiagFileWrite = DateTime.MinValue;
+        private static DateTime _lastDiagLogUtc = DateTime.MinValue;
         private const int MoveCloseThreshold = 24;
         private const int HoverMoveThreshold = 4;
         private const int VK_LBUTTON = 0x01;
@@ -433,7 +433,7 @@ namespace AxialSqlTools.IntelliSense
                 TryResolveEditorHwnd();
             if (!ReferenceEquals(_hoverOwner, this))
             {
-                _logger.Info("QuickInfo hover owner -> 0x{0:X} ({1})", _editorHwnd.ToInt64(), reason);
+                _logger.Debug("QuickInfo hover owner -> 0x{0:X} ({1})", _editorHwnd.ToInt64(), reason);
                 Diag("claim", "hwnd=0x{0:X} reason={1}", _editorHwnd.ToInt64(), reason);
             }
             _hoverOwner = this;
@@ -536,11 +536,12 @@ namespace AxialSqlTools.IntelliSense
                 string text = GetFullText();
                 int offset = GetOffsetFromLineColumn(line, wordStart + Math.Max(0, word.Length / 2));
                 if (offset < 0) return;
-
+                var sw = Stopwatch.StartNew();
                 var connInfo = SafeGetCurrentConnection();
                 MetadataCatalog catalog = null;
                 if (connInfo != null)
                 {
+                    MetadataCacheRefreshService.Instance.EnsureServerCache(connInfo);
                     // 悬停跨库对象前也预热引用库
                     MetadataCatalogService.Instance.EnsureCatalogsReferencedInSql(connInfo, text);
                     catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo);
@@ -582,11 +583,11 @@ namespace AxialSqlTools.IntelliSense
                 if (opened && !string.Equals(_lastLoggedWord, word, StringComparison.OrdinalIgnoreCase))
                 {
                     _lastLoggedWord = word;
-                    _logger.Info("QuickInfo shown for word={0}", word);
+                    _logger.Info("QuickInfo shown for word={0} {1:F1}ms", word, sw.Elapsed.TotalMilliseconds);
                 }
                 else if (!opened)
                 {
-                    _logger.Info("QuickInfo Show returned false word={0}", word);
+                    _logger.Debug("QuickInfo Show returned false word={0}", word);
                 }
             }
             catch (Exception ex)
@@ -607,7 +608,7 @@ namespace AxialSqlTools.IntelliSense
             if ((DateTime.UtcNow - _lastDiagLog).TotalSeconds < 1) return;
             _lastDiagLog = DateTime.UtcNow;
             string detail = string.Format(format, args);
-            _logger.Info("QuickInfo blocked ({0}): {1}", reason, detail);
+            _logger.Debug("QuickInfo blocked ({0}): {1}", reason, detail);
             Diag("blocked_" + reason, detail);
         }
 
@@ -616,25 +617,15 @@ namespace AxialSqlTools.IntelliSense
             try
             {
                 var now = DateTime.UtcNow;
-                if ((now - _lastDiagFileWrite).TotalMilliseconds < 400
+                if ((now - _lastDiagLogUtc).TotalMilliseconds < 400
                     && !tag.StartsWith("claim", StringComparison.Ordinal)
                     && !tag.StartsWith("blocked", StringComparison.Ordinal)
                     && !tag.StartsWith("shown", StringComparison.Ordinal)
                     && !tag.StartsWith("not_active", StringComparison.Ordinal))
                     return;
-                _lastDiagFileWrite = now;
-                string line = string.Format(
-                    "{0:HH:mm:ss.fff}|{1}|hwnd=0x{2:X}|{3}",
-                    DateTime.Now,
-                    tag,
-                    _editorHwnd.ToInt64(),
-                    args != null && args.Length > 0 ? string.Format(format, args) : format);
-                string path = System.IO.Path.Combine(
-                    System.IO.Path.GetTempPath(), "axial-quickinfo-diag.txt");
-                lock (DiagLock)
-                {
-                    System.IO.File.AppendAllText(path, line + Environment.NewLine);
-                }
+                _lastDiagLogUtc = now;
+                string detail = args != null && args.Length > 0 ? string.Format(format, args) : format;
+                _logger.Debug("QuickInfo diag {0}|hwnd=0x{1:X}|{2}", tag, _editorHwnd.ToInt64(), detail);
             }
             catch
             {

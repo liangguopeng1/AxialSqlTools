@@ -453,6 +453,22 @@ namespace AxialSqlTools.IntelliSense
             // db.schema.table alias → 4 段；或 server.db.schema.table（链接服务器四段名）
             if (names.Count >= 4)
             {
+                string linkedServer4;
+                string linkedDb4;
+                if (TryFindServerDatabaseDoubleDot(tokens, fromIdx, scanEnd, names[names.Count - 2], out linkedServer4, out linkedDb4))
+                {
+                    var linkedDd = new TableRef
+                    {
+                        LinkedServer = linkedServer4,
+                        Database = linkedDb4,
+                        Schema = "dbo",
+                        Name = names[names.Count - 2]
+                    };
+                    NormalizeTableRef(linkedDd);
+                    string aliasDd = names[names.Count - 1];
+                    if (IsSqlKeyword(aliasDd)) aliasDd = null;
+                    return Tuple.Create(linkedDd, aliasDd);
+                }
                 // server.db.schema.table [alias]
                 bool fourPartLinked = names.Count == 4 && IsLikelySchemaName(names[2]);
                 bool fivePartLinked = names.Count >= 5 && IsLikelySchemaName(names[names.Count - 3]);
@@ -486,6 +502,20 @@ namespace AxialSqlTools.IntelliSense
             // db.schema.table（无别名）或 schema.table alias 或 db..table alias
             if (names.Count == 3)
             {
+                string linkedServer3;
+                string linkedDb3;
+                if (TryFindServerDatabaseDoubleDot(tokens, fromIdx, scanEnd, names[2], out linkedServer3, out linkedDb3))
+                {
+                    var linkedNoAlias = new TableRef
+                    {
+                        LinkedServer = linkedServer3,
+                        Database = linkedDb3,
+                        Schema = "dbo",
+                        Name = names[2]
+                    };
+                    NormalizeTableRef(linkedNoAlias);
+                    return Tuple.Create(linkedNoAlias, (string)null);
+                }
                 string database;
                 string schema;
                 if (TryFindDoubleDotRef(tokens, fromIdx, scanEnd, names[1], out database, out schema))
@@ -685,6 +715,54 @@ namespace AxialSqlTools.IntelliSense
                 default:
                     return false;
             }
+        }
+
+        /// <summary>识别 server.db..table（省略架构的四段名）。</summary>
+        private static bool TryFindServerDatabaseDoubleDot(
+            List<TSqlParserToken> tokens, int fromIdx, int scanEnd, string tableName,
+            out string linkedServer, out string database)
+        {
+            linkedServer = null;
+            database = null;
+            if (string.IsNullOrEmpty(tableName) || tokens == null) return false;
+            for (int i = fromIdx + 1; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (t == null || IsInsignificant(t)) continue;
+                if (t.Offset >= scanEnd) break;
+                if (!IsPartialObjectName(t) && !IsWordLike(t)) continue;
+                string serverCandidate = Unbracket(t.Text);
+                int j = i + 1;
+                int dotsAfterServer = 0;
+                while (j < tokens.Count)
+                {
+                    var nt = tokens[j];
+                    if (nt == null || IsInsignificant(nt)) { j++; continue; }
+                    if (nt.Offset >= scanEnd) break;
+                    if (nt.TokenType == TSqlTokenType.Dot) { dotsAfterServer++; j++; continue; }
+                    if (dotsAfterServer != 1) break;
+                    string dbCandidate = Unbracket(nt.Text);
+                    j++;
+                    int dotsAfterDb = 0;
+                    while (j < tokens.Count)
+                    {
+                        var nt2 = tokens[j];
+                        if (nt2 == null || IsInsignificant(nt2)) { j++; continue; }
+                        if (nt2.Offset >= scanEnd) break;
+                        if (nt2.TokenType == TSqlTokenType.Dot) { dotsAfterDb++; j++; continue; }
+                        if (dotsAfterDb < 2) break;
+                        if (string.Equals(Unbracket(nt2.Text), tableName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            linkedServer = serverCandidate;
+                            database = dbCandidate;
+                            return true;
+                        }
+                        break;
+                    }
+                    break;
+                }
+            }
+            return false;
         }
 
         private static bool TryFindDoubleDotRef(

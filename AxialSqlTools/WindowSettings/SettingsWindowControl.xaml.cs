@@ -10,6 +10,7 @@ namespace AxialSqlTools
     using System.Net.Http;
     using System.Text;
     using System.Threading;
+    using System.Threading.Tasks;
     using System.Windows;
     using System.Windows.Controls;
     using System.Collections.ObjectModel;
@@ -78,6 +79,7 @@ as select 1;
             formatTSqlExample();
             ApplyLocalizedTexts();
             LoadLanguageCombo();
+            LoadLogLevelCombo();
             ShowBuildTime();
         }
 
@@ -96,7 +98,6 @@ as select 1;
             TabUpdates.Header = UiStrings.Settings_Tab_Updates;
             LanguageLabelText.Text = UiStrings.Settings_LanguageLabel;
             LanguageHintText.Text = UiStrings.Settings_LanguageHint;
-            ButtonSaveLanguage.Content = UiStrings.Settings_SaveLanguage;
             UpdateSettingsWindowCaption();
             UiLocalization.Apply(this);
             LocalizeWikiDescriptions();
@@ -283,17 +284,42 @@ as select 1;
             }
         }
 
-        private void Button_SaveLanguage_Click(object sender, RoutedEventArgs e)
+        private void LoadLogLevelCombo()
         {
-            var selected = UiLanguageCombo.SelectedItem as ComboBoxItem;
-            var language = selected?.Tag as string ?? UiSettingsStore.LanguageZhCn;
+            LogLevelCombo.Items.Clear();
+            LogLevelCombo.Items.Add(new ComboBoxItem { Content = "Debug（详细）", Tag = UiSettingsStore.LogLevelDebug });
+            LogLevelCombo.Items.Add(new ComboBoxItem { Content = "Info（默认）", Tag = UiSettingsStore.LogLevelInfo });
+            LogLevelCombo.Items.Add(new ComboBoxItem { Content = "Warn", Tag = UiSettingsStore.LogLevelWarn });
+            LogLevelCombo.Items.Add(new ComboBoxItem { Content = "Error", Tag = UiSettingsStore.LogLevelError });
+            var current = UiSettingsStore.GetLogLevel();
+            foreach (ComboBoxItem item in LogLevelCombo.Items)
+            {
+                if (string.Equals(item.Tag as string, current, StringComparison.OrdinalIgnoreCase))
+                {
+                    LogLevelCombo.SelectedItem = item;
+                    break;
+                }
+            }
+            if (LogLevelCombo.SelectedItem == null)
+                LogLevelCombo.SelectedIndex = 1;
+        }
+
+        private void Button_SaveGeneral_Click(object sender, RoutedEventArgs e)
+        {
+            var logItem = LogLevelCombo.SelectedItem as ComboBoxItem;
+            var level = logItem?.Tag as string ?? UiSettingsStore.LogLevelInfo;
+            UiSettingsStore.SaveLogLevel(level);
+            AxialSqlToolsPackage.ApplyLogMinLevel(level);
+            var langItem = UiLanguageCombo.SelectedItem as ComboBoxItem;
+            var language = langItem?.Tag as string ?? UiSettingsStore.LanguageZhCn;
             UiSettingsStore.SaveUiLanguage(language);
             UiCultureService.Apply(language);
             ApplyLocalizedTexts();
             LoadLanguageCombo();
+            LoadLogLevelCombo();
             // Re-apply toolbar/menu captions for the new language (VSCT starts English; Chinese overlays must be reversible).
             MenuTextLocalizer.ApplyFromIde();
-            MessageBox.Show(UiStrings.Settings_LanguageSaved, UiStrings.Settings_Saved);
+            SavedMessage();
         }
 
         private void UserControl_Loaded(object sender, System.Windows.RoutedEventArgs e)
@@ -484,6 +510,7 @@ as select 1;
                 IntelliSenseAutoTriggerDelay.Text = isettings.autoTriggerDelayMs.ToString();
                 IntelliSenseHoverDelay.Text = isettings.hoverTooltipDelayMs.ToString();
                 IntelliSenseMaxItems.Text = isettings.maxCompletionItems.ToString();
+                IntelliSenseCacheRefreshDays.Text = isettings.cacheRefreshDays.ToString();
             }
             catch { }
 
@@ -510,19 +537,22 @@ as select 1;
         private void Button_SaveIntelliSenseSettings_Click(object sender, RoutedEventArgs e)
         {
             bool axialEnabled = IntelliSenseEnabled.IsChecked.GetValueOrDefault();
-            UiSettingsStore.SaveIntelliSenseSettings(new AxialSqlTools.IntelliSense.IntelliSenseSettings
-            {
-                enabled = axialEnabled,
-                disableSsmsIntelliSense = axialEnabled,
-                autoTrigger = IntelliSenseAutoTrigger.IsChecked.GetValueOrDefault(),
-                hoverTooltipEnabled = IntelliSenseHoverTooltip.IsChecked.GetValueOrDefault(),
-                includeKeywords = IntelliSenseIncludeKeywords.IsChecked.GetValueOrDefault(),
-                includeSystemObjects = IntelliSenseIncludeSystemObjects.IsChecked.GetValueOrDefault(),
-                bracketIdentifiers = IntelliSenseBracketIdentifiers.IsChecked.GetValueOrDefault(),
-                autoTriggerDelayMs = int.TryParse(IntelliSenseAutoTriggerDelay.Text, out var d1) ? d1 : 200,
-                hoverTooltipDelayMs = int.TryParse(IntelliSenseHoverDelay.Text, out var d2) ? d2 : 500,
-                maxCompletionItems = int.TryParse(IntelliSenseMaxItems.Text, out var mi) ? mi : 50
-            });
+            var current = UiSettingsStore.GetIntelliSenseSettings() ?? new AxialSqlTools.IntelliSense.IntelliSenseSettings();
+            current.enabled = axialEnabled;
+            current.disableSsmsIntelliSense = axialEnabled;
+            current.autoTrigger = IntelliSenseAutoTrigger.IsChecked.GetValueOrDefault();
+            current.hoverTooltipEnabled = IntelliSenseHoverTooltip.IsChecked.GetValueOrDefault();
+            current.includeKeywords = IntelliSenseIncludeKeywords.IsChecked.GetValueOrDefault();
+            current.includeSystemObjects = IntelliSenseIncludeSystemObjects.IsChecked.GetValueOrDefault();
+            current.bracketIdentifiers = IntelliSenseBracketIdentifiers.IsChecked.GetValueOrDefault();
+            current.autoTriggerDelayMs = int.TryParse(IntelliSenseAutoTriggerDelay.Text, out var d1) ? d1 : 200;
+            current.hoverTooltipDelayMs = int.TryParse(IntelliSenseHoverDelay.Text, out var d2) ? d2 : 500;
+            current.maxCompletionItems = int.TryParse(IntelliSenseMaxItems.Text, out var mi) ? mi : 50;
+            int days = int.TryParse(IntelliSenseCacheRefreshDays.Text, out var d3) ? d3 : 7;
+            if (days < 0) days = 0;
+            if (days > 365) days = 365;
+            current.cacheRefreshDays = days;
+            UiSettingsStore.SaveIntelliSenseSettings(current);
             AxialSqlTools.IntelliSense.IntelliSenseKeyHandler.EnsureAllHoverTimers();
             bool ssmsIntelliSenseEnabled = !axialEnabled;
             if (!IntelliSense.IntelliSenseDisableHelper.TrySetSsmsIntelliSenseEnabled(ssmsIntelliSenseEnabled, out string ssmsError))
@@ -544,6 +574,50 @@ as select 1;
             SavedMessage();
         }
 
+        private async void Button_RefreshIntelliSenseCache_Click(object sender, RoutedEventArgs e)
+        {
+            ScriptFactoryAccess.ConnectionInfo conn = null;
+            try
+            {
+                conn = ScriptFactoryAccess.GetCurrentConnectionInfo();
+            }
+            catch
+            {
+            }
+            if (conn == null || string.IsNullOrWhiteSpace(conn.ServerName))
+            {
+                try
+                {
+                    var sessions = ScriptFactoryAccess.GetConnectedObjectExplorerSessions();
+                    if (sessions != null && sessions.Count > 0)
+                        conn = sessions[0];
+                }
+                catch
+                {
+                }
+            }
+            if (conn == null || string.IsNullOrWhiteSpace(conn.ServerName))
+            {
+                MessageBox.Show("请先连接到 SQL Server。", UiStrings.Common_Error, MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            var button = sender as Button;
+            if (button != null)
+                button.IsEnabled = false;
+            try
+            {
+                await AxialSqlTools.IntelliSense.MetadataCacheRefreshService.Instance.RefreshWithProgressWindowAsync(conn);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, UiStrings.Common_Error, MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            finally
+            {
+                if (button != null)
+                    button.IsEnabled = true;
+            }
+        }
 
         private void Button_SaveSnippetFolder_Click(object sender, RoutedEventArgs e)
         {

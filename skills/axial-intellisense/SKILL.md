@@ -16,7 +16,9 @@ description: AxialSqlTools 的自研 SQL IntelliSense（补全 + ToolTip + 参�
 | `MetadataModels.cs` | `IntelliSenseSettings` + 元数据模型（`MetadataCatalog`/`TableColumnInfo`/`RoutineInfo` 等） |
 | `CompletionItem.cs` | 补全项 + `CompletionKind`/`CompletionContext` 枚举 |
 | `CompletionEngine.cs` | `partial` 主入口：`GetCompletion` + GO 分批 / TSql170Parser AST 缓存 |
-| `MetadataCatalogService.cs` | 按 `(Server, Database)` 内存缓存元数据；独立 SqlConnection 查 sys.*（5s 超时）；连接复用；缓存失效 |
+| `MetadataCatalogService.cs` | 按 `(Server, Database)` 内存目录；补全只读内存/磁盘，不查库 |
+| `MetadataCacheStore.cs` | `%APPDATA%\AxialSqlTools\intellisense-cache\{server}\meta.json` + `{database}.json` |
+| `MetadataCacheRefreshService.cs` | 按服务器刷全部用户库；静默/手动；进度弹框 |
 | `IntelliSenseKeyHandler.cs` | 防抖 DispatcherTimer + 弹框态键路由 + Tab 优先级链 + 光标坐标锚定 + 提交插入 |
 | `CompletionListWindow.xaml(.cs)` | WPF 无边框 Window，定位到光标屏幕坐标 |
 | `QuickInfoProvider.cs` | Token → 元数据对象 → 信息文本 |
@@ -53,7 +55,7 @@ description: AxialSqlTools 的自研 SQL IntelliSense（补全 + ToolTip + 参�
 
 TriggerCompletion:
   IVsTextBuffer 全文 → 按 GO 分批取光标所在批次 → TSql170Parser.Parse（缓存）
-  → CompletionEngine.GetContext → 对象上下文查 MetadataCatalogService
+  → CompletionEngine.GetContext → 对象上下文读 MetadataCatalogService（内存/磁盘）
   → Filter 候选 → IVsTextView.GetPointOfLineColumn 取光标屏幕坐标 → Window.ShowAt
 ```
 
@@ -64,10 +66,11 @@ TriggerCompletion:
 - `KeypressCommandFilter` 构造里按 `GetIntelliSenseEnabled()` 创建 `IntelliSenseKeyHandler`。
 
 ### Tab 优先级链（互斥）
-1. 弹框开 → Tab/Enter 提交补全（吞键）
-2. 弹框关 + 命中 snippet → snippet 替换
-3. 弹框关 + 命中 asterisk → asterisk 扩展
-4. 否则放行编辑器
+1. 弹框开 → Tab/Enter 提交补全（吞键；不因弹框刚出现而忽略）
+2. 弹框未开但防抖/后台计算中 → Tab 立即出候选并提交第一项（快打 `s`+Tab → SELECT）
+3. 弹框关 + 命中 snippet → snippet 替换
+4. 弹框关 + 命中 asterisk → asterisk 扩展
+5. 否则放行编辑器
 
 ### 双弹框降级（spec §6.1）
 - SSMS 内建禁用写 SSMS 自身注册表（非插件配置），**需重启 SSMS 才生效**。
@@ -80,6 +83,10 @@ TriggerCompletion:
 详见 `axial-scriptdom` skill「ScriptDom API 陷阱」节。要点：
 - `IVsTextView.GetPointOfLineColumn` 第三参数是 `POINT[]`（单元素数组），非 `out POINT`。
 - `VSConstants.VSStd2KCmdID` 无 `ESCAPE`，Escape 键用 `CANCEL`。
+- `FROM 192.` 会被点拆成多段；提交链接服务器必须整段替换为 `[192.168.1.148]`，不能只替换最后一个点后面。
+- `[server].db..table` 是省略架构的四段名，必须带 `LinkedServer` 去链接服务器缓存找表/列；不能当成当前库的 `db.schema.table` 或 `schema.table alias`。
+- 行首 `ex` 同时匹配 EXEC 与 EXCEPT：按新语句（`LooksLikeNewBatchPrefix` 对 exec 前缀放行），否则会落成 WhereClause 只出 EXCEPT/EXISTS。
+- 片段前缀支持包含匹配：`ss` 同时出 `ssf`（前缀）和 `sess`（包含）；关键字/函数仍只做前缀。
 
 ## 设置项
 
@@ -98,7 +105,7 @@ TriggerCompletion:
   "includeLocalTempTables": true,
   "includeLocalVariables": true,
   "maxCompletionItems": 50,
-  "autoRefreshMinutes": 0
+  "cacheRefreshDays": 7
 }
 ```
 
@@ -112,8 +119,8 @@ TriggerCompletion:
 3. 改 CTE/别名/临时表收集 → `Completion/CompletionEngine.LocalSymbols.cs`。
 4. 改批次切分或解析缓存 → `CompletionEngine.cs`（`TryGetBatchAt` / `ParseCached`）。
 5. 改弹框行为/键路由 → `IntelliSenseKeyHandler` + `CompletionListWindow`。
-6. 改元数据查询/缓存 → `MetadataCatalogService`（注意 `FormatDataType`、缓存失效时机）。
-7. 新增设置项 → `MetadataModels.IntelliSenseSettings` + `UiSettingsStore` Get/Save + `TabIntelliSense` 控件 + 加载/保存。
+6. 改元数据查询/缓存 → `MetadataCatalogService` + `MetadataCacheStore` / `MetadataCacheRefreshService`。补全热路径禁止查库。不要与 Quick Search `objects.jsonl` 共用文件。进度弹框在 `Modules/IndexBuildProgressWindow`。
+7. 新增设置项 → `MetadataModels.IntelliSenseSettings` + `UiSettingsStore` Get/Save + `TabIntelliSense` 控件 + 加载/保存。`cacheRefreshDays` 默认 7，0 关闭自动刷新。
 8. 新增 `.cs`/`.xaml` 必须**登记 csproj**（传统 csproj 不自动包含）。
 9. UI 线程切换用 `JoinableTaskFactory`；后台查询回 UI 用 DispatcherTimer/BeginInvoke。
 
