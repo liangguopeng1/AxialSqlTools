@@ -58,6 +58,7 @@ namespace AxialSqlTools
                 if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
                     return null;
                 string database = string.IsNullOrWhiteSpace(dbOverride) ? (connInfo.Database ?? "master") : dbOverride;
+                database = UnbracketSqlIdent(database);
                 if (string.IsNullOrWhiteSpace(database))
                     database = "master";
                 string key = Key(connInfo.ServerName, database);
@@ -129,12 +130,15 @@ namespace AxialSqlTools
                 return TryLoadCatalogFromDisk(connInfo, dbOverride);
             }
 
-            /// <summary>从 SQL 提取可能的库名（db.schema.obj / db..obj / [db].[schema].[obj]）。</summary>
+            /// <summary>从 SQL 提取可能的库名（db.schema.obj / db..obj / [db].[schema].[obj] / USE db）。</summary>
             internal static List<string> ExtractReferencedDatabaseNames(string sql)
             {
                 var result = new List<string>();
                 if (string.IsNullOrEmpty(sql)) return result;
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                string useDb = CompletionEngine.GetActiveUseDatabase(sql, sql.Length);
+                if (IsPlausibleDatabaseName(useDb) && seen.Add(useDb))
+                    result.Add(useDb);
                 // db.schema.obj 或 [db].[schema].[obj]
                 foreach (Match m in ThreePartNameRegex.Matches(sql))
                 {
@@ -351,6 +355,7 @@ namespace AxialSqlTools
                 if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
                     return null;
                 string database = string.IsNullOrWhiteSpace(dbOverride) ? (connInfo.Database ?? "master") : dbOverride;
+                database = UnbracketSqlIdent(database);
                 if (string.IsNullOrWhiteSpace(database))
                     database = "master";
                 var catalog = MetadataCacheStore.TryLoadCatalog(connInfo.ServerName, database);

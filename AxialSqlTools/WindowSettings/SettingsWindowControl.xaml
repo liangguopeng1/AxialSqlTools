@@ -213,15 +213,16 @@
                         <StackPanel Margin="5,8,5,4"
                                     IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
                             <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="自动触发延迟（毫秒）:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="补全列表弹出延迟（毫秒）:" VerticalAlignment="Center" Margin="0,0,6,0"/>
                                 <TextBox x:Name="IntelliSenseAutoTriggerDelay" Width="60" VerticalAlignment="Center"/>
                             </StackPanel>
-                            <TextBlock Margin="0,2,0,0" Opacity="0.75" FontSize="11" Text="生效：新开标签"/>
+                            <TextBlock Margin="0,2,0,0" Opacity="0.75" FontSize="11" TextWrapping="Wrap"
+                                       Text="输入停下后等待多久再弹出补全列表。生效：实时"/>
                         </StackPanel>
                         <StackPanel Margin="5,0,5,4"
                                     IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
                             <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="悬停延迟（毫秒）:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="悬停提示延迟（毫秒）:" VerticalAlignment="Center" Margin="0,0,6,0"/>
                                 <TextBox x:Name="IntelliSenseHoverDelay" Width="60" VerticalAlignment="Center"/>
                             </StackPanel>
                             <TextBlock Margin="0,2,0,0" Opacity="0.75" FontSize="11" Text="生效：实时"/>

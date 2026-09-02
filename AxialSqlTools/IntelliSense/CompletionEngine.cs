@@ -54,6 +54,22 @@ namespace AxialSqlTools
                     int localOffset = caretOffset - batchStart;
                     if (localOffset < 0) localOffset = 0;
 
+                    // 字符串/注释里的字母不是标识符：'b' 不应出 Beizhu/BETWEEN
+                    if (IsInsideStringOrComment(batchText, localOffset))
+                        return result;
+
+                    string useDb = GetActiveUseDatabase(fullText, caretOffset);
+                    if (!string.IsNullOrEmpty(useDb) &&
+                        (catalog == null || !string.Equals(catalog.Database, useDb, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        if (connInfo != null)
+                        {
+                            var useCat = MetadataCatalogService.Instance.GetCachedCatalog(connInfo, useDb);
+                            if (useCat != null)
+                                catalog = useCat;
+                        }
+                    }
+
                     // 原文兜底：分号后 / 行首输入关键字（不依赖 ScriptDom token，避免残缺 SQL 丢 token）
                     string rawPrefix;
                     bool afterStmtBreak;

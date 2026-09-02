@@ -7,9 +7,9 @@ description: Maps AxialSqlTools architecture, entry points, feature folders, and
 
 ## 先读
 
-1. `skills/_shared/architecture.md`
-2. `skills/_shared/conventions.md`
-3. 仓库根 `README.md`（功能列表与 Wiki 链接）
+1. 仓库根 `AGENTS.md`（全局约定、分层、skill 路由）
+2. `skills/_shared/architecture.md`、`skills/_shared/conventions.md`（需要更细的背景时）
+3. 仓库根 `README.md`（用户功能列表与 Wiki）
 
 ## 启动链路
 

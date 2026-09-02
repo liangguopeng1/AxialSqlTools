@@ -27,6 +27,14 @@ namespace AxialSqlTools.IntelliSense
             _hoverConn = connInfo;
             try
             {
+                string useDb = CompletionEngine.GetActiveUseDatabase(fullText, caretOffset);
+                if (!string.IsNullOrEmpty(useDb) && connInfo != null &&
+                    (catalog == null || !string.Equals(catalog.Database, useDb, StringComparison.OrdinalIgnoreCase)))
+                {
+                    var useCat = MetadataCatalogService.Instance.GetCachedCatalog(connInfo, useDb);
+                    if (useCat != null)
+                        catalog = useCat;
+                }
                 TSqlScript script;
                 using (var reader = new StringReader(fullText))
                 {
@@ -41,7 +49,7 @@ namespace AxialSqlTools.IntelliSense
                 if (hover == null || string.IsNullOrEmpty(hover.Name)) return null;
 
                 string dataSource = FormatDataSource(connInfo);
-                string defaultDb = connInfo?.Database ?? catalog?.Database;
+                string defaultDb = !string.IsNullOrEmpty(useDb) ? useDb : (connInfo?.Database ?? catalog?.Database);
 
                 // EXEC 存储过程悬停（含跨库 caiwu..proc）
                 var procInfo = TryBuildProcedureQuickInfo(fullText, caretOffset, hover.Name, catalog, connInfo, dataSource, defaultDb);
@@ -103,14 +111,18 @@ namespace AxialSqlTools.IntelliSense
                             }, schemaTable);
                 }
 
-                var directTable = ResolveTable(connInfo, catalog, new TableRef
+                // alias.col / schema.col：列名不能再当表名去当前库匹配
+                if (!hover.HasOwner)
                 {
-                    Name = hover.Name,
-                    Schema = fromRef?.Schema,
-                    Database = fromRef?.Database
-                });
-                if (directTable != null && string.Equals(directTable.Name, hover.Name, StringComparison.OrdinalIgnoreCase))
-                    return BuildTableQuickInfo(dataSource, defaultDb, ResolveTableRef(fromRef, directTable), directTable);
+                    var directTable = ResolveTable(connInfo, catalog, new TableRef
+                    {
+                        Name = hover.Name,
+                        Schema = fromRef?.Schema,
+                        Database = fromRef?.Database
+                    });
+                    if (directTable != null && string.Equals(directTable.Name, hover.Name, StringComparison.OrdinalIgnoreCase))
+                        return BuildTableQuickInfo(dataSource, defaultDb, ResolveTableRef(fromRef, directTable), directTable);
+                }
 
                 TableColumnInfo contextTable = null;
                 TableRef contextRef = null;
@@ -119,14 +131,14 @@ namespace AxialSqlTools.IntelliSense
                     contextTable = ResolveTable(connInfo, catalog, fromRef);
                     contextRef = fromRef;
                 }
-                if (contextTable != null)
+                if (contextTable != null && !hover.HasOwner)
                 {
                     var col = FindColumn(contextTable, hover.Name);
                     if (col != null)
                         return BuildColumnQuickInfo(dataSource, defaultDb, contextRef, contextTable, col);
                 }
 
-                if (catalog != null)
+                if (catalog != null && !hover.HasOwner)
                 {
                     var tcol = catalog.FindTableOrView(null, hover.Name);
                     if (tcol != null)
@@ -136,18 +148,6 @@ namespace AxialSqlTools.IntelliSense
                             Schema = tcol.Schema,
                             Name = tcol.Name
                         }, tcol);
-
-                    foreach (var t in catalog.Tables.Concat(catalog.Views))
-                    {
-                        var col = FindColumn(t, hover.Name);
-                        if (col != null)
-                            return BuildColumnQuickInfo(dataSource, defaultDb, new TableRef
-                            {
-                                Database = catalog.Database,
-                                Schema = t.Schema,
-                                Name = t.Name
-                            }, t, col);
-                    }
                 }
 
                 return null;
@@ -174,15 +174,20 @@ namespace AxialSqlTools.IntelliSense
             _hoverConn = connInfo;
             try
             {
+                string useDb = CompletionEngine.GetActiveUseDatabase(fullText, caretOffset);
+                if (!string.IsNullOrEmpty(useDb) && connInfo != null &&
+                    (catalog == null || !string.Equals(catalog.Database, useDb, StringComparison.OrdinalIgnoreCase)))
+                {
+                    var useCat = MetadataCatalogService.Instance.GetCachedCatalog(connInfo, useDb);
+                    if (useCat != null)
+                        catalog = useCat;
+                }
                 string cleanWord = hoverWord.Trim('[', ']', '"');
                 if (string.IsNullOrEmpty(cleanWord)) return null;
                 string dataSource = FormatDataSource(connInfo);
-                string defaultDb = connInfo?.Database ?? catalog?.Database;
+                string defaultDb = !string.IsNullOrEmpty(useDb) ? useDb : (connInfo?.Database ?? catalog?.Database);
 
-                var procInfo = TryBuildProcedureQuickInfo(fullText, caretOffset, cleanWord, catalog, connInfo, dataSource, defaultDb);
-                if (procInfo != null)
-                    return procInfo;
-
+                List<TSqlParserToken> tokens = null;
                 TableRef fromRef = null;
                 if (!string.IsNullOrEmpty(fullText))
                 {
@@ -191,18 +196,52 @@ namespace AxialSqlTools.IntelliSense
                         using (var reader = new StringReader(fullText))
                         {
                             var script = _parser.Parse(reader, out var errors) as TSqlScript;
-                            var tokens = script?.ScriptTokenStream?.ToList();
-                            if (tokens != null)
-                                fromRef = QuickInfoSqlContext.TryResolveTableByHoverName(tokens, caretOffset, cleanWord)
-                                          ?? QuickInfoSqlContext.TryResolveFromTable(tokens, caretOffset);
+                            tokens = script?.ScriptTokenStream?.ToList();
                         }
                     }
                     catch
                     {
                     }
+                    if (tokens != null)
+                    {
+                        var hover = QuickInfoSqlContext.TryGetHoverToken(tokens, caretOffset);
+                        if (hover != null && hover.HasOwner)
+                        {
+                            var aliasRef = QuickInfoSqlContext.TryResolveAlias(tokens, caretOffset, hover.Owner);
+                            if (aliasRef != null)
+                            {
+                                var table = ResolveTable(connInfo, catalog, aliasRef);
+                                if (table != null)
+                                {
+                                    var col = FindColumn(table, hover.Name);
+                                    if (col != null)
+                                        return BuildColumnQuickInfo(dataSource, defaultDb, aliasRef, table, col);
+                                }
+                            }
+                            var schemaTable = ResolveTable(connInfo, catalog, new TableRef
+                            {
+                                Schema = hover.Owner,
+                                Name = hover.Name
+                            });
+                            if (schemaTable != null)
+                                return BuildTableQuickInfo(dataSource, defaultDb, new TableRef
+                                {
+                                    Schema = schemaTable.Schema,
+                                    Name = schemaTable.Name,
+                                    Database = catalog?.Database
+                                }, schemaTable);
+                            return null;
+                        }
+                        fromRef = QuickInfoSqlContext.TryResolveTableByHoverName(tokens, caretOffset, cleanWord)
+                                  ?? QuickInfoSqlContext.TryResolveFromTable(tokens, caretOffset);
+                    }
                     if (fromRef == null)
                         fromRef = TryParseFromClause(fullText);
                 }
+
+                var procInfo = TryBuildProcedureQuickInfo(fullText, caretOffset, cleanWord, catalog, connInfo, dataSource, defaultDb);
+                if (procInfo != null)
+                    return procInfo;
 
                 // 悬停词就是 FROM/JOIN 中的表名时，直接用完整三段引用（含跨库）
                 if (fromRef != null && string.Equals(fromRef.Name, cleanWord, StringComparison.OrdinalIgnoreCase))
@@ -231,32 +270,6 @@ namespace AxialSqlTools.IntelliSense
                             Schema = named.Schema,
                             Name = named.Name
                         }, named);
-                }
-
-                if (fromRef != null)
-                {
-                    var contextTable = ResolveTable(connInfo, catalog, fromRef);
-                    if (contextTable != null)
-                    {
-                        var col = FindColumn(contextTable, cleanWord);
-                        if (col != null)
-                            return BuildColumnQuickInfo(dataSource, defaultDb, fromRef, contextTable, col);
-                    }
-                }
-
-                if (catalog != null)
-                {
-                    foreach (var t in catalog.Tables.Concat(catalog.Views))
-                    {
-                        var col = FindColumn(t, cleanWord);
-                        if (col != null)
-                            return BuildColumnQuickInfo(dataSource, defaultDb, new TableRef
-                            {
-                                Database = catalog.Database,
-                                Schema = t.Schema,
-                                Name = t.Name
-                            }, t, col);
-                    }
                 }
                 return null;
             }

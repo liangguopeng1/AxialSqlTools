@@ -474,11 +474,6 @@ namespace AxialSqlTools
             private void AddTablesAndViews(List<CompletionItem> items, MetadataCatalog catalog, IntelliSenseSettings settings, FromObjectNameContext fromName = null, ScriptFactoryAccess.ConnectionInfo connInfo = null, string namePrefix = null)
             {
                 if (catalog == null) return;
-                if (connInfo != null && !string.IsNullOrWhiteSpace(connInfo.Database)
-                    && !string.Equals(catalog.Database, connInfo.Database, StringComparison.OrdinalIgnoreCase))
-                {
-                    return;
-                }
                 string filter = GetLastSegment(namePrefix ?? fromName?.Partial);
                 int cap = Math.Max(50, settings.maxCompletionItems * 3);
                 var insertMode = ResolveTableInsertMode(fromName, connInfo);

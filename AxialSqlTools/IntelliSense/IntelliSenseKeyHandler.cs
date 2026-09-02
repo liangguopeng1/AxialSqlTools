@@ -333,6 +333,10 @@ namespace AxialSqlTools.IntelliSense
             if (IsCaretAtEmptyCompletionContext()) return true;
             try
             {
+                string full = GetFullText();
+                int caret = GetCaretOffset();
+                if (caret >= 0 && CompletionEngine.IsInsideStringOrComment(full, caret))
+                    return true;
                 if (_textView.GetCaretPos(out int line, out int col) != VSConstants.S_OK)
                     return false;
                 if (_textView.GetBuffer(out IVsTextLines textLines) != VSConstants.S_OK)
@@ -555,7 +559,17 @@ namespace AxialSqlTools.IntelliSense
             // 无论弹框是否已开，都走防抖：快打时用最终前缀一次计算，避免每键打满线程池。
             _debounceTimer.Stop();
             _completionInFlight = true;
+            ApplyAutoTriggerDelay();
             _debounceTimer.Start();
+        }
+
+        private void ApplyAutoTriggerDelay()
+        {
+            var settings = UiSettingsStore.GetIntelliSenseSettings();
+            int delay = settings.autoTriggerDelayMs > 0 ? settings.autoTriggerDelayMs : 200;
+            var want = TimeSpan.FromMilliseconds(delay);
+            if (_debounceTimer.Interval != want)
+                _debounceTimer.Interval = want;
         }
 
         /// <summary>强制/自动触发补全。force=true 立即（Ctrl+Space）。引擎计算在后台线程，避免 UI 卡死。</summary>
@@ -603,22 +617,22 @@ namespace AxialSqlTools.IntelliSense
 
                 _logger.Debug("TriggerCompletion: connection");
                 var connInfo = SafeGetCurrentConnection();
+                string useDb = CompletionEngine.GetActiveUseDatabase(text, caret);
                 if (connInfo != null)
                     MetadataCacheRefreshService.Instance.EnsureServerCache(connInfo);
-                // 自动触发：只用缓存，后台预热，避免新标签首次输入时 UI 同步连库卡死
-                // EXEC 例外：必须同步拿到过程目录（含跨库），否则候选恒空
                 MetadataCatalog catalog = null;
                 if (connInfo != null)
                 {
-                    // 粘贴/打开的跨库 SQL：预热 rt_fenjian / rt_kucun 等引用库
                     MetadataCatalogService.Instance.EnsureCatalogsReferencedInSql(connInfo, text);
+                    if (!string.IsNullOrEmpty(useDb))
+                        MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, useDb);
                     bool likelyExec = LooksLikeExecContext(text, caret);
-                    catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo);
+                    catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo, useDb);
                     if (catalog == null || (likelyExec && !catalog.RoutinesLoaded))
                     {
-                        MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo);
+                        MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, useDb);
                         if (force || likelyExec)
-                            catalog = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, null, requireRoutines: likelyExec);
+                            catalog = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, useDb, requireRoutines: likelyExec);
                     }
                 }
 

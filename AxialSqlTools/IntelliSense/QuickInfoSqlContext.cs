@@ -404,7 +404,7 @@ namespace AxialSqlTools.IntelliSense
                     if (lt == null || IsInsignificant(lt)) { look++; continue; }
                     if (lt.Offset >= regionEnd) return segments;
                     string lkw = lt.Text?.ToUpperInvariant();
-                    if (lkw == "," || IsJoinKeyword(lkw))
+                    if (lkw == "," || IsJoinKeyword(lkw) || lkw == "ON")
                         break;
                     if (lkw == "AS")
                     {

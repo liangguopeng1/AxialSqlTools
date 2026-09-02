@@ -538,15 +538,17 @@ namespace AxialSqlTools.IntelliSense
                 if (offset < 0) return;
                 var sw = Stopwatch.StartNew();
                 var connInfo = SafeGetCurrentConnection();
+                string useDb = CompletionEngine.GetActiveUseDatabase(text, offset);
                 MetadataCatalog catalog = null;
                 if (connInfo != null)
                 {
                     MetadataCacheRefreshService.Instance.EnsureServerCache(connInfo);
-                    // 悬停跨库对象前也预热引用库
                     MetadataCatalogService.Instance.EnsureCatalogsReferencedInSql(connInfo, text);
-                    catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo);
+                    if (!string.IsNullOrEmpty(useDb))
+                        MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, useDb);
+                    catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo, useDb);
                     if (catalog == null)
-                        MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo);
+                        MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, useDb);
                 }
 
                 var info = _provider.GetQuickInfo(text, offset, catalog, connInfo);

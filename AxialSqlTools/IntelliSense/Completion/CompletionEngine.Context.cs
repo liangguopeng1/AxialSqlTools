@@ -494,7 +494,7 @@ namespace AxialSqlTools
                 var cached = MetadataCatalogService.Instance.GetCachedCatalog(connInfo, database);
                 if (cached != null) return cached;
                 MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, database);
-                return null;
+                return MetadataCatalogService.Instance.GetCachedCatalog(connInfo, database);
             }
 
             private CompletionContext GetContext(List<TSqlParserToken> tokens, int localOffset, FromObjectNameContext fromName, out string prefix)
@@ -679,6 +679,180 @@ namespace AxialSqlTools
                 }
 
                 return CompletionContext.Unknown;
+            }
+
+            /// <summary>光标在字符串字面量或注释内（输入值/注释不应出补全）。</summary>
+            internal static bool IsInsideStringOrComment(string text, int caret)
+            {
+                if (string.IsNullOrEmpty(text) || caret <= 0) return false;
+                int n = Math.Min(caret, text.Length);
+                bool inLineComment = false;
+                bool inBlockComment = false;
+                bool inString = false;
+                for (int i = 0; i < n; i++)
+                {
+                    char c = text[i];
+                    char next = i + 1 < text.Length ? text[i + 1] : '\0';
+                    if (inLineComment)
+                    {
+                        if (c == '\n' || c == '\r') inLineComment = false;
+                        continue;
+                    }
+                    if (inBlockComment)
+                    {
+                        if (c == '*' && next == '/')
+                        {
+                            inBlockComment = false;
+                            i++;
+                        }
+                        continue;
+                    }
+                    if (inString)
+                    {
+                        if (c == '\'')
+                        {
+                            if (next == '\'') i++;
+                            else inString = false;
+                        }
+                        continue;
+                    }
+                    if (c == '-' && next == '-')
+                    {
+                        inLineComment = true;
+                        i++;
+                        continue;
+                    }
+                    if (c == '/' && next == '*')
+                    {
+                        inBlockComment = true;
+                        i++;
+                        continue;
+                    }
+                    if (c == '\'')
+                    {
+                        inString = true;
+                        continue;
+                    }
+                    if ((c == 'N' || c == 'n') && next == '\'')
+                    {
+                        bool identBefore = i > 0 && (char.IsLetterOrDigit(text[i - 1]) || text[i - 1] == '_');
+                        if (!identBefore)
+                        {
+                            inString = true;
+                            i++;
+                        }
+                    }
+                }
+                return inLineComment || inBlockComment || inString;
+            }
+
+            /// <summary>光标前最后一条 USE 的库名（含未执行的脚本；跨 GO）。注释/字符串内的 USE 忽略。</summary>
+            internal static string GetActiveUseDatabase(string text, int caret)
+            {
+                if (string.IsNullOrEmpty(text) || caret <= 0) return null;
+                int n = Math.Min(caret, text.Length);
+                bool inLineComment = false;
+                bool inBlockComment = false;
+                bool inString = false;
+                string last = null;
+                for (int i = 0; i < n; i++)
+                {
+                    char c = text[i];
+                    char next = i + 1 < text.Length ? text[i + 1] : '\0';
+                    if (inLineComment)
+                    {
+                        if (c == '\n' || c == '\r') inLineComment = false;
+                        continue;
+                    }
+                    if (inBlockComment)
+                    {
+                        if (c == '*' && next == '/')
+                        {
+                            inBlockComment = false;
+                            i++;
+                        }
+                        continue;
+                    }
+                    if (inString)
+                    {
+                        if (c == '\'')
+                        {
+                            if (next == '\'') i++;
+                            else inString = false;
+                        }
+                        continue;
+                    }
+                    if (c == '-' && next == '-')
+                    {
+                        inLineComment = true;
+                        i++;
+                        continue;
+                    }
+                    if (c == '/' && next == '*')
+                    {
+                        inBlockComment = true;
+                        i++;
+                        continue;
+                    }
+                    if (c == '\'')
+                    {
+                        inString = true;
+                        continue;
+                    }
+                    if ((c == 'N' || c == 'n') && next == '\'')
+                    {
+                        bool identBefore = i > 0 && (char.IsLetterOrDigit(text[i - 1]) || text[i - 1] == '_');
+                        if (!identBefore)
+                        {
+                            inString = true;
+                            i++;
+                            continue;
+                        }
+                    }
+                    if (IsUseKeywordAt(text, i, n))
+                    {
+                        int j = i + 3;
+                        while (j < n && char.IsWhiteSpace(text[j])) j++;
+                        if (j >= n) break;
+                        string db = null;
+                        if (text[j] == '[')
+                        {
+                            int close = text.IndexOf(']', j + 1);
+                            if (close < 0 || close > n)
+                                db = text.Substring(j + 1, Math.Max(0, n - j - 1)).Trim();
+                            else
+                            {
+                                db = text.Substring(j + 1, close - j - 1).Trim();
+                                i = close;
+                            }
+                        }
+                        else
+                        {
+                            int k = j;
+                            while (k < n && IsIdentChar(text[k])) k++;
+                            if (k > j)
+                            {
+                                db = text.Substring(j, k - j);
+                                i = k - 1;
+                            }
+                        }
+                        if (!string.IsNullOrEmpty(db)) last = UnbracketIdentifier(db);
+                        continue;
+                    }
+                }
+                return last;
+            }
+
+            private static bool IsUseKeywordAt(string text, int i, int n)
+            {
+                if (i + 3 > n) return false;
+                if ((text[i] != 'U' && text[i] != 'u') ||
+                    (text[i + 1] != 'S' && text[i + 1] != 's') ||
+                    (text[i + 2] != 'E' && text[i + 2] != 'e'))
+                    return false;
+                if (i > 0 && IsIdentChar(text[i - 1])) return false;
+                if (i + 3 < n && IsIdentChar(text[i + 3])) return false;
+                return true;
             }
 
             /// <summary>从原文取当前正在输入的前缀，并判断是否在分号/GO 后、是否行首。</summary>

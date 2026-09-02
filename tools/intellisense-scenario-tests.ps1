@@ -170,6 +170,21 @@ Add-Case '165' ("SELECT * FROM t" + [char]10 + "ex") @('EXEC') 'BatchStart'
 Add-Case '166' ("SELECT * FROM t" + [char]10 + "in") @('INNER JOIN') 'FromClause'
 # 片段包含匹配：ss → ssf（前缀）+ sess（包含）
 Add-Case '167' 'ss' @('ssf','sess') 'BatchStart'
+# 字符串/注释内不出补全
+Add-Case '168' "SELECT * FROM t WHERE x='b|" @() '' @('BETWEEN','BY','Beizhu')
+Add-Case '169' "SELECT * FROM t WHERE x=N'b|" @() '' @('BETWEEN','BY')
+Add-Case '170' "SELECT * FROM t -- b|" @() '' @('BETWEEN','BY')
+Add-Case '171' "SELECT * FROM t /* b|" @() '' @('BETWEEN','BY')
+# USE 未执行：按脚本当前库补全（连接仍是 master）
+Add-Case '172' ("USE  rt_storage" + [char]10 + [char]10 + "SELECT * FROM DB_|") @('DB_DiaoBoItem') 'FromClause'
+Add-Case '173' ("USE [rt_storage]" + [char]10 + [char]10 + "SELECT * FROM DB_|") @('DB_DiaoBoItem') 'FromClause'
+# 前面还有跨库 SELECT 时，USE 仍作用于后面的裸表名
+Add-Case '176' ("USE  rt_storage" + [char]10 + "SELECT * FROM jichushuju.dbo.t_products" + [char]10 + "SELECT * FROM DB_|") @('DB_DiaoBoItem') 'FromClause'
+# 跨库三段名：前一个 JOIN 已有 ON 时仍要补全后续库.表
+Add-Case '178' 'SELECT * FROM t a INNER JOIN u b ON a.id=b.id LEFT JOIN newdaku.dbo.db_book|' @('db_bookinfo_Base') 'FromClause'
+# 多个 JOIN 后 WHERE 别名.列：k/c 不能因为前面的 ON 丢别名
+Add-Case '181' ("USE rt_storage" + [char]10 + "SELECT a.x FROM DB_DiaoBoItem (nolock) a INNER JOIN DB_YeWuLiuZhuan (nolock) b ON a.x=b.x INNER JOIN BK_KuFang (nolock) k ON b.x=k.k_id where k.|") @('k_id') 'MemberAccess' @('PrimaryCode')
+Add-Case '182' 'SELECT a.x FROM t a INNER JOIN u b ON a.x=b.x LEFT JOIN newdaku.dbo.db_bookinfo_Base (nolock) c ON a.x=c.H_ID where c.|' @('DingJia') 'MemberAccess'
 
 Write-Host "Cases=$($cases.Count)"
 
@@ -220,9 +235,80 @@ $linkedConn = [Activator]::CreateInstance($connType)
 [void]$connType.GetProperty('ServerName').SetValue($linkedConn, 'local')
 [void]$connType.GetProperty('Database').SetValue($linkedConn, 'RtBase')
 
+$storageCatalog = [Activator]::CreateInstance($catalogType)
+$storageCatalog.Database = 'rt_storage'
+$diao = [Activator]::CreateInstance($tableType)
+$diao.Schema = 'dbo'
+$diao.Name = 'DB_DiaoBoItem'
+foreach ($cn in @('PrimaryCode','H_ID','ShuLiang')) {
+    $col = [Activator]::CreateInstance($colType)
+    $col.Name = $cn
+    $col.DataType = 'int'
+    [void]$diao.Columns.Add($col)
+}
+[void]$storageCatalog.Tables.Add($diao)
+$kufang = [Activator]::CreateInstance($tableType)
+$kufang.Schema = 'dbo'
+$kufang.Name = 'BK_KuFang'
+foreach ($cn in @('k_id')) {
+    $col = [Activator]::CreateInstance($colType)
+    $col.Name = $cn
+    $col.DataType = 'int'
+    [void]$kufang.Columns.Add($col)
+}
+[void]$storageCatalog.Tables.Add($kufang)
+$svc.PutCatalog('local', 'rt_storage', $storageCatalog)
+
+$masterCatalog = [Activator]::CreateInstance($catalogType)
+$masterCatalog.Database = 'master'
+$bak = [Activator]::CreateInstance($tableType)
+$bak.Schema = 'dbo'
+$bak.Name = 't_Product_ShuXingValues_bak_202607281153'
+foreach ($cn in @('id')) {
+    $col = [Activator]::CreateInstance($colType)
+    $col.Name = $cn
+    $col.DataType = 'int'
+    [void]$bak.Columns.Add($col)
+}
+[void]$masterCatalog.Tables.Add($bak)
+$svc.PutCatalog('local', 'master', $masterCatalog)
+
+$rtbaseCatalog = [Activator]::CreateInstance($catalogType)
+$rtbaseCatalog.Database = 'rtbase'
+$userInfo = [Activator]::CreateInstance($tableType)
+$userInfo.Schema = 'dbo'
+$userInfo.Name = 'UserInfo'
+foreach ($cn in @('id','单位名称','单位代码')) {
+    $col = [Activator]::CreateInstance($colType)
+    $col.Name = $cn
+    $col.DataType = 'nvarchar'
+    [void]$userInfo.Columns.Add($col)
+}
+[void]$rtbaseCatalog.Tables.Add($userInfo)
+$svc.PutCatalog('local', 'rtbase', $rtbaseCatalog)
+
+$newdakuCatalog = [Activator]::CreateInstance($catalogType)
+$newdakuCatalog.Database = 'newdaku'
+$book = [Activator]::CreateInstance($tableType)
+$book.Schema = 'dbo'
+$book.Name = 'db_bookinfo_Base'
+foreach ($cn in @('H_ID','DingJia')) {
+    $col = [Activator]::CreateInstance($colType)
+    $col.Name = $cn
+    $col.DataType = 'int'
+    [void]$book.Columns.Add($col)
+}
+[void]$newdakuCatalog.Tables.Add($book)
+$svc.PutCatalog('local', 'newdaku', $newdakuCatalog)
+
+$masterConn = [Activator]::CreateInstance($connType)
+[void]$connType.GetProperty('ServerName').SetValue($masterConn, 'local')
+[void]$connType.GetProperty('Database').SetValue($masterConn, 'master')
+
 $fail = New-Object System.Collections.Generic.List[string]
 $pass = 0
 $linkedCases = @('160','161','162')
+$useCases = @('172','173','176','178','181','182')
 foreach ($c in $cases) {
     $e = [Activator]::CreateInstance($engineType)
     $s = [Activator]::CreateInstance($settingsType)
@@ -233,6 +319,10 @@ foreach ($c in $cases) {
     if ($c.Name -in $linkedCases) {
         $cat = $mockCatalog
         $conn = $linkedConn
+    }
+    if ($c.Name -in $useCases) {
+        $cat = $masterCatalog
+        $conn = $masterConn
     }
     try {
         $r = $get.Invoke($e, @($c.Sql, $c.Caret, $cat, $s, $conn))
@@ -258,7 +348,16 @@ foreach ($c in $cases) {
     $why = ''
     if ($c.Ctx -and $r.Context.ToString() -ne $c.Ctx) { $ok = $false; $why = "ctx=$($r.Context)" }
     foreach ($exp in $c.Expect) {
-        if ($exp -and -not $n.Contains($exp)) {
+        $hit = $false
+        if ($exp) {
+            $hit = $n.Contains($exp)
+            if (-not $hit) {
+                foreach ($disp in $n) {
+                    if ($disp -eq $exp -or $disp.EndsWith(".$exp")) { $hit = $true; break }
+                }
+            }
+        }
+        if ($exp -and -not $hit) {
             $ok = $false
             $top = ($n | Select-Object -First 8) -join ','
             $why = "miss $exp top=[$top]"
@@ -312,8 +411,73 @@ if ($null -ne $qiInfo) {
 }
 if ($qiOk) { $pass++ } else { [void]$fail.Add("163 QuickInfo $qiWhy") }
 
+$qiSql2 = "SELECT a.x FROM t a LEFT JOIN rtbase.dbo.UserInfo (nolock) d ON a.x = d.id"
+$qiHover2 = $qiSql2.LastIndexOf('id')
+$qi2 = [Activator]::CreateInstance($qiType)
+$qiInfo2 = $qi2.GetQuickInfo($qiSql2, $qiHover2, $masterCatalog, $masterConn)
+$qi2Ok = $false
+$qi2Why = 'null'
+if ($null -ne $qiInfo2) {
+    $headers2 = if ($qiInfo2.HeaderLines) { ($qiInfo2.HeaderLines -join ' | ') } else { '' }
+    if ($headers2 -match 'UserInfo' -and $headers2 -notmatch 't_Product_ShuXingValues') { $qi2Ok = $true }
+    else { $qi2Why = "headers=[$headers2]" }
+} else { $qi2Why = 'null (alias d.id should be UserInfo)' }
+if ($qi2Ok) { $pass++ } else { [void]$fail.Add("174 QuickInfo alias $qi2Why") }
+
+$qiSql3 = "USE rt_storage`nSELECT * FROM DB_DiaoBoItem"
+$qiHover3 = $qiSql3.IndexOf('DB_DiaoBoItem') + 3
+$qi3 = [Activator]::CreateInstance($qiType)
+$qiInfo3 = $qi3.GetQuickInfo($qiSql3, $qiHover3, $masterCatalog, $masterConn)
+$qi3Ok = $false
+$qi3Why = 'null'
+if ($null -ne $qiInfo3) {
+    $headers3 = if ($qiInfo3.HeaderLines) { ($qiInfo3.HeaderLines -join ' | ') } else { '' }
+    if ($headers3 -match 'DB_DiaoBoItem' -and $headers3 -match 'rt_storage') { $qi3Ok = $true }
+    else { $qi3Why = "headers=[$headers3]" }
+}
+if ($qi3Ok) { $pass++ } else { [void]$fail.Add("175 QuickInfo USE $qi3Why") }
+
+$qiSql4 = "USE rt_storage`nSELECT * FROM jichushuju.dbo.t_products`nSELECT a.x FROM DB_DiaoBoItem (nolock) a LEFT JOIN rtbase.dbo.UserInfo (nolock) d ON a.x = d.id"
+$qiHover4 = $qiSql4.LastIndexOf('id')
+$qi4 = [Activator]::CreateInstance($qiType)
+$qiInfo4 = $qi4.GetQuickInfo($qiSql4, $qiHover4, $masterCatalog, $masterConn)
+$qi4Ok = $false
+$qi4Why = 'null'
+if ($null -ne $qiInfo4) {
+    $headers4 = if ($qiInfo4.HeaderLines) { ($qiInfo4.HeaderLines -join ' | ') } else { '' }
+    if ($headers4 -match 'UserInfo' -and $headers4 -notmatch 't_Product_ShuXingValues' -and $headers4 -notmatch 't_products') { $qi4Ok = $true }
+    else { $qi4Why = "headers=[$headers4]" }
+} else { $qi4Why = 'null (two-stmt d.id should be UserInfo)' }
+if ($qi4Ok) { $pass++ } else { [void]$fail.Add("177 QuickInfo two-stmt alias $qi4Why") }
+
+$qiSql5 = "SELECT a.x FROM t a INNER JOIN u b ON a.x=b.x LEFT JOIN rtbase.dbo.UserInfo (nolock) d ON a.x = d.id"
+$qiHover5 = $qiSql5.IndexOf('UserInfo') + 2
+$qi5 = [Activator]::CreateInstance($qiType)
+$qiInfo5 = $qi5.GetQuickInfo($qiSql5, $qiHover5, $masterCatalog, $masterConn)
+$qi5Ok = $false
+$qi5Why = 'null'
+if ($null -ne $qiInfo5) {
+    $headers5 = if ($qiInfo5.HeaderLines) { ($qiInfo5.HeaderLines -join ' | ') } else { '' }
+    if ($headers5 -match 'UserInfo' -and $headers5 -match 'rtbase') { $qi5Ok = $true }
+    else { $qi5Why = "headers=[$headers5]" }
+} else { $qi5Why = 'null (JOIN after ON should still resolve UserInfo)' }
+if ($qi5Ok) { $pass++ } else { [void]$fail.Add("179 QuickInfo later JOIN UserInfo $qi5Why") }
+
+$qiSql6 = "SELECT a.x FROM t a INNER JOIN u b ON a.x=b.x LEFT JOIN newdaku.dbo.db_bookinfo_Base (nolock) c ON a.x = c.H_ID"
+$qiHover6 = $qiSql6.IndexOf('db_bookinfo_Base') + 3
+$qi6 = [Activator]::CreateInstance($qiType)
+$qiInfo6 = $qi6.GetQuickInfo($qiSql6, $qiHover6, $masterCatalog, $masterConn)
+$qi6Ok = $false
+$qi6Why = 'null'
+if ($null -ne $qiInfo6) {
+    $headers6 = if ($qiInfo6.HeaderLines) { ($qiInfo6.HeaderLines -join ' | ') } else { '' }
+    if ($headers6 -match 'db_bookinfo_Base' -and $headers6 -match 'newdaku') { $qi6Ok = $true }
+    else { $qi6Why = "headers=[$headers6]" }
+} else { $qi6Why = 'null (JOIN after ON should still resolve db_bookinfo_Base)' }
+if ($qi6Ok) { $pass++ } else { [void]$fail.Add("180 QuickInfo later JOIN book $qi6Why") }
+
 Write-Host "PASS=$pass FAIL=$($fail.Count)"
 $fail | ForEach-Object { Write-Host "  $_" }
 if ($fail.Count -gt 0) { exit 1 }
-Write-Host "ALL $($cases.Count + 1) PASS"
+Write-Host "ALL $pass PASS"
 exit 0

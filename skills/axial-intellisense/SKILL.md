@@ -87,6 +87,11 @@ TriggerCompletion:
 - `[server].db..table` 是省略架构的四段名，必须带 `LinkedServer` 去链接服务器缓存找表/列；不能当成当前库的 `db.schema.table` 或 `schema.table alias`。
 - 行首 `ex` 同时匹配 EXEC 与 EXCEPT：按新语句（`LooksLikeNewBatchPrefix` 对 exec 前缀放行），否则会落成 WhereClause 只出 EXCEPT/EXISTS。
 - 片段前缀支持包含匹配：`ss` 同时出 `ssf`（前缀）和 `sess`（包含）；关键字/函数仍只做前缀。
+- 字符串字面量 / `--` / `/* */` 内不补全（`IsInsideStringOrComment`）；`'b'` 不出 Beizhu/BETWEEN。
+- `autoTriggerDelayMs`（设置名「补全列表弹出延迟」）在每次防抖启动时读取，保存后当前标签立即生效。
+- 脚本 `USE db`（即使未执行）覆盖连接当前库：补全/QuickInfo/缓存预热走该库。`GetActiveUseDatabase` 跨 GO，忽略注释和字符串。`AddTablesAndViews` 不得因 `connInfo.Database != catalog.Database` 丢掉 USE 库的表。
+- 悬停 `alias.col` 禁止在当前库扫所有表的同名列；找不到别名所属表就不出提示，避免 master 里随便一张带 `id` 的表。`GetQuickInfoByWord` 点号后同样按别名解析，不得把列名当表名。
+- FROM 多个 JOIN：扫表段时第一个 `ON` 不能结束整段 FROM，否则后面的 `db.schema.table` 悬停不到。`CollectAliasesFromTokens` 同样不能在 `ON` 处 return，否则 `where k.` 只剩前两张表。跨库补全 `GetCatalogNonBlocking` 在 `EnsureCatalogBuilding` 读完磁盘后要再取一次缓存。
 
 ## 设置项
 

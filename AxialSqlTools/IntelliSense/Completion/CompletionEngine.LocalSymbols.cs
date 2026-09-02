@@ -870,7 +870,7 @@ namespace AxialSqlTools
                         if (lt.Offset >= regionEnd) return;
                         string lkw = lt.Text?.ToUpperInvariant();
                         if (lkw == "," || lkw == "INNER" || lkw == "LEFT" || lkw == "RIGHT" || lkw == "FULL"
-                            || lkw == "CROSS" || lkw == "OUTER" || lkw == "JOIN")
+                            || lkw == "CROSS" || lkw == "OUTER" || lkw == "JOIN" || lkw == "ON")
                             break;
                         if (lkw == "AS")
                         {
