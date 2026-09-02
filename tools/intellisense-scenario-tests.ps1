@@ -185,6 +185,17 @@ Add-Case '178' 'SELECT * FROM t a INNER JOIN u b ON a.id=b.id LEFT JOIN newdaku.
 # 多个 JOIN 后 WHERE 别名.列：k/c 不能因为前面的 ON 丢别名
 Add-Case '181' ("USE rt_storage" + [char]10 + "SELECT a.x FROM DB_DiaoBoItem (nolock) a INNER JOIN DB_YeWuLiuZhuan (nolock) b ON a.x=b.x INNER JOIN BK_KuFang (nolock) k ON b.x=k.k_id where k.|") @('k_id') 'MemberAccess' @('PrimaryCode')
 Add-Case '182' 'SELECT a.x FROM t a INNER JOIN u b ON a.x=b.x LEFT JOIN newdaku.dbo.db_bookinfo_Base (nolock) c ON a.x=c.H_ID where c.|' @('DingJia') 'MemberAccess'
+# 超大脚本（无 GO）只解析当前语句：前面堆几千行后 where k. 仍要出列
+$pad = New-Object System.Text.StringBuilder
+for ($i = 0; $i -lt 2500; $i++) { [void]$pad.AppendLine('SELECT 1') }
+Add-Case '183' ("USE rt_storage`n" + $pad.ToString() + "SELECT a.x FROM DB_DiaoBoItem (nolock) a INNER JOIN BK_KuFang (nolock) k ON a.x=k.k_id where k.|") @('k_id') 'MemberAccess' @('PrimaryCode')
+# 大脚本切片后仍能从前文捞 #临时表 / 表变量 / 变量
+Add-Case '185' ("CREATE TABLE #tmp (id int, name nvarchar(50))" + [char]10 + $pad.ToString() + "SELECT * FROM #tmp t WHERE t.|") @('id','name') 'MemberAccess'
+Add-Case '186' ("DECLARE @tv TABLE (x int, y int)" + [char]10 + $pad.ToString() + "SELECT * FROM @tv t WHERE t.|") @('x','y') 'MemberAccess'
+Add-Case '187' ("DECLARE @foo int" + [char]10 + $pad.ToString() + "SELECT @|") @('@foo') 'LocalVariable'
+Add-Case '189' ("CREATE TABLE #tmp (id int)" + [char]10 + $pad.ToString() + "SELECT * FROM #|") @('#tmp') 'FromClause'
+# 前面未闭合 /* 时，不能把注释里的 SQL 当代码补全
+Add-Case '188' ("SELECT 1`n/*`n" + $pad.ToString() + "SELECT * FROM t WHERE an|") @() '' @('AND')
 
 Write-Host "Cases=$($cases.Count)"
 
@@ -308,7 +319,7 @@ $masterConn = [Activator]::CreateInstance($connType)
 $fail = New-Object System.Collections.Generic.List[string]
 $pass = 0
 $linkedCases = @('160','161','162')
-$useCases = @('172','173','176','178','181','182')
+$useCases = @('172','173','176','178','181','182','183')
 foreach ($c in $cases) {
     $e = [Activator]::CreateInstance($engineType)
     $s = [Activator]::CreateInstance($settingsType)
@@ -325,7 +336,10 @@ foreach ($c in $cases) {
         $conn = $masterConn
     }
     try {
+        $sw = [Diagnostics.Stopwatch]::StartNew()
         $r = $get.Invoke($e, @($c.Sql, $c.Caret, $cat, $s, $conn))
+        $sw.Stop()
+        if ($c.Name -eq '183') { Write-Host ("183 GetCompletion large-script {0:F1}ms sqlLen=$($c.Sql.Length)" -f $sw.Elapsed.TotalMilliseconds) }
     } catch {
         [void]$fail.Add("$($c.Name) EX=$($_.Exception.Message)")
         continue
@@ -475,6 +489,22 @@ if ($null -ne $qiInfo6) {
     else { $qi6Why = "headers=[$headers6]" }
 } else { $qi6Why = 'null (JOIN after ON should still resolve db_bookinfo_Base)' }
 if ($qi6Ok) { $pass++ } else { [void]$fail.Add("180 QuickInfo later JOIN book $qi6Why") }
+
+$qiSql7 = ("USE rt_storage`n" + $pad.ToString() + "SELECT a.x FROM DB_DiaoBoItem (nolock) a INNER JOIN BK_KuFang (nolock) k ON a.x=k.k_id")
+$qiHover7 = $qiSql7.LastIndexOf('BK_KuFang') + 3
+$qi7 = [Activator]::CreateInstance($qiType)
+$swQi = [Diagnostics.Stopwatch]::StartNew()
+$qiInfo7 = $qi7.GetQuickInfo($qiSql7, $qiHover7, $masterCatalog, $masterConn)
+$swQi.Stop()
+Write-Host ("183 QuickInfo large-script {0:F1}ms" -f $swQi.Elapsed.TotalMilliseconds)
+$qi7Ok = $false
+$qi7Why = 'null'
+if ($null -ne $qiInfo7) {
+    $headers7 = if ($qiInfo7.HeaderLines) { ($qiInfo7.HeaderLines -join ' | ') } else { '' }
+    if ($headers7 -match 'BK_KuFang' -and $headers7 -match 'rt_storage') { $qi7Ok = $true }
+    else { $qi7Why = "headers=[$headers7]" }
+} else { $qi7Why = 'null (large script should still resolve last JOIN table)' }
+if ($qi7Ok) { $pass++ } else { [void]$fail.Add("184 QuickInfo large-script $qi7Why") }
 
 Write-Host "PASS=$pass FAIL=$($fail.Count)"
 $fail | ForEach-Object { Write-Host "  $_" }

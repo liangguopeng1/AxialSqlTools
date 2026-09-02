@@ -45,7 +45,7 @@ namespace AxialSqlTools
                     case CompletionContext.FromClause:
                         if (fromName != null && fromName.ExcessiveDots)
                             break;
-                        AddFromClauseItems(items, fromName, catalog, settings, connInfo, prefix);
+                        AddFromClauseItems(items, fromName, catalog, settings, connInfo, prefix, local);
                         if (settings.includeKeywords && ShouldSuggestAfterFromKeywords(fromName, prefix))
                         {
                             AddKeywords(items, AfterFromKeywords);
@@ -57,7 +57,7 @@ namespace AxialSqlTools
 
                     case CompletionContext.InsertTarget:
                         if (settings.includeKeywords) AddKeywords(items, InsertKeywords);
-                        AddFromClauseItems(items, fromName, catalog, settings, connInfo, prefix);
+                        AddFromClauseItems(items, fromName, catalog, settings, connInfo, prefix, local);
                         break;
 
                     case CompletionContext.InsertColumnList:
@@ -67,7 +67,7 @@ namespace AxialSqlTools
 
                     case CompletionContext.UpdateTarget:
                     case CompletionContext.DeleteTarget:
-                        AddFromClauseItems(items, fromName, catalog, settings, connInfo, prefix);
+                        AddFromClauseItems(items, fromName, catalog, settings, connInfo, prefix, local);
                         if (settings.includeKeywords && !string.IsNullOrEmpty(prefix)
                             && (fromName == null || !fromName.AfterDot))
                             AddKeywords(items, new[] { "SET", "FROM", "WHERE" });
@@ -151,10 +151,12 @@ namespace AxialSqlTools
                 MetadataCatalog catalog,
                 IntelliSenseSettings settings,
                 ScriptFactoryAccess.ConnectionInfo connInfo,
-                string namePrefix = null)
+                string namePrefix = null,
+                LocalSymbols local = null)
             {
                 if (fromName == null || !fromName.InFromClause)
                 {
+                    AddLocalFromObjects(items, local, settings, namePrefix);
                     AddDatabases(items, connInfo, settings);
                     AddLinkedServers(items, connInfo, settings);
                     AddTablesViewsAndRoutines(items, catalog, settings, includeTableFunctions: true, fromName: fromName, connInfo: connInfo, namePrefix: namePrefix);
@@ -164,6 +166,8 @@ namespace AxialSqlTools
                     return;
 
                 int segCount = fromName.Segments?.Count ?? 0;
+                if (segCount == 0 && !fromName.AfterDot)
+                    AddLocalFromObjects(items, local, settings, namePrefix);
                 string ipName = JoinNumericFromSegments(fromName);
                 if (ipName != null)
                 {
@@ -445,6 +449,36 @@ namespace AxialSqlTools
                 foreach (var kw in keywords)
                 {
                     items.Add(new CompletionItem(kw, kw, CompletionKind.Keyword, "关键字"));
+                }
+            }
+
+            private void AddLocalFromObjects(List<CompletionItem> items, LocalSymbols local, IntelliSenseSettings settings, string namePrefix)
+            {
+                if (local == null) return;
+                string filter = GetLastSegment(namePrefix);
+                if (local.Ctes != null)
+                {
+                    foreach (var cte in local.Ctes)
+                    {
+                        if (string.IsNullOrEmpty(cte.Name) || !ObjectNameMatchesFilter(cte.Name, filter)) continue;
+                        items.Add(new CompletionItem(cte.Name, cte.Name, CompletionKind.Table, "CTE"));
+                    }
+                }
+                if (settings != null && settings.includeLocalTempTables && local.TempTables != null)
+                {
+                    foreach (var tt in local.TempTables)
+                    {
+                        if (string.IsNullOrEmpty(tt.Name) || !ObjectNameMatchesFilter(tt.Name, filter)) continue;
+                        items.Add(new CompletionItem(tt.Name, tt.Name, CompletionKind.Table, "临时表"));
+                    }
+                }
+                if (settings != null && settings.includeLocalVariables && local.TableVariables != null)
+                {
+                    foreach (var tv in local.TableVariables)
+                    {
+                        if (string.IsNullOrEmpty(tv.Name) || !ObjectNameMatchesFilter(tv.Name, filter)) continue;
+                        items.Add(new CompletionItem(tv.Name, tv.Name, CompletionKind.Variable, "表变量"));
+                    }
                 }
             }
 
@@ -914,15 +948,17 @@ namespace AxialSqlTools
                 string owner = GetOwnerBeforeDot(prefix);
                 if (string.IsNullOrEmpty(owner)) return;
 
-                // 本地对象优先
+                // 本地对象优先（含别名 → #tmp / @tv）
                 if (AddLocalMemberColumns(items, owner, local, settings))
-                {
                     return;
-                }
+                TableRef tref;
+                if (local != null && local.Aliases != null && local.Aliases.TryGetValue(owner, out tref)
+                    && tref != null && !string.IsNullOrEmpty(tref.Name)
+                    && AddLocalMemberColumns(items, tref.Name, local, settings))
+                    return;
 
                 // 别名映射
-                TableRef tref;
-                if (local.Aliases.TryGetValue(owner, out tref))
+                if (local != null && local.Aliases != null && local.Aliases.TryGetValue(owner, out tref))
                 {
                     var tcol = ResolveTableRef(connInfo, catalog, tref);
                     if (tcol != null)

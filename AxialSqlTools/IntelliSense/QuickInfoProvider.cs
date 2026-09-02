@@ -1,7 +1,6 @@
 using Microsoft.SqlServer.TransactSql.ScriptDom;
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 
@@ -12,7 +11,6 @@ namespace AxialSqlTools.IntelliSense
     /// </summary>
     public class QuickInfoProvider
     {
-        private readonly TSql170Parser _parser = new TSql170Parser(true);
         private ScriptFactoryAccess.ConnectionInfo _hoverConn;
 
         public QuickInfoData GetQuickInfo(
@@ -27,6 +25,8 @@ namespace AxialSqlTools.IntelliSense
             _hoverConn = connInfo;
             try
             {
+                if (CompletionEngine.IsInsideStringOrComment(fullText, caretOffset))
+                    return null;
                 string useDb = CompletionEngine.GetActiveUseDatabase(fullText, caretOffset);
                 if (!string.IsNullOrEmpty(useDb) && connInfo != null &&
                     (catalog == null || !string.Equals(catalog.Database, useDb, StringComparison.OrdinalIgnoreCase)))
@@ -35,17 +35,14 @@ namespace AxialSqlTools.IntelliSense
                     if (useCat != null)
                         catalog = useCat;
                 }
-                TSqlScript script;
-                using (var reader = new StringReader(fullText))
-                {
-                    script = _parser.Parse(reader, out var errors) as TSqlScript;
-                }
-                if (script == null) return null;
-
-                var tokens = script.ScriptTokenStream?.ToList();
+                if (!CompletionEngine.TryGetParseSlice(fullText, caretOffset, out string slice, out int sliceStart))
+                    return null;
+                int localOffset = caretOffset - sliceStart;
+                if (localOffset < 0) localOffset = 0;
+                CompletionEngine.GetTokensForSlice(slice, out var tokens);
                 if (tokens == null || tokens.Count == 0) return null;
 
-                var hover = QuickInfoSqlContext.TryGetHoverToken(tokens, caretOffset);
+                var hover = QuickInfoSqlContext.TryGetHoverToken(tokens, localOffset);
                 if (hover == null || string.IsNullOrEmpty(hover.Name)) return null;
 
                 string dataSource = FormatDataSource(connInfo);
@@ -57,7 +54,7 @@ namespace AxialSqlTools.IntelliSense
                     return procInfo;
 
                 // 优先按悬停词命中 FROM/JOIN 中的表（支持 db.schema.table / db..table / JOIN 表）
-                var hoverTableRef = QuickInfoSqlContext.TryResolveTableByHoverName(tokens, caretOffset, hover.Name);
+                var hoverTableRef = QuickInfoSqlContext.TryResolveTableByHoverName(tokens, localOffset, hover.Name);
                 if (hoverTableRef != null && !hover.HasOwner)
                 {
                     var ht = ResolveTable(connInfo, catalog, hoverTableRef);
@@ -78,12 +75,12 @@ namespace AxialSqlTools.IntelliSense
                         return BuildTableQuickInfo(dataSource, defaultDb, schemaQualified, ht);
                 }
 
-                var fromRef = hoverTableRef ?? QuickInfoSqlContext.TryResolveFromTable(tokens, caretOffset);
+                var fromRef = hoverTableRef ?? QuickInfoSqlContext.TryResolveFromTable(tokens, localOffset);
 
                 if (hover.HasOwner)
                 {
-                    var aliasRef = QuickInfoSqlContext.TryResolveAlias(tokens, caretOffset, hover.Owner)
-                                   ?? ResolveAliasOwner(hover.Owner, tokens, caretOffset, fromRef);
+                    var aliasRef = QuickInfoSqlContext.TryResolveAlias(tokens, localOffset, hover.Owner)
+                                   ?? ResolveAliasOwner(hover.Owner, tokens, localOffset, fromRef);
                     if (aliasRef != null)
                     {
                         var table = ResolveTable(connInfo, catalog, aliasRef);
@@ -174,6 +171,8 @@ namespace AxialSqlTools.IntelliSense
             _hoverConn = connInfo;
             try
             {
+                if (CompletionEngine.IsInsideStringOrComment(fullText, caretOffset))
+                    return null;
                 string useDb = CompletionEngine.GetActiveUseDatabase(fullText, caretOffset);
                 if (!string.IsNullOrEmpty(useDb) && connInfo != null &&
                     (catalog == null || !string.Equals(catalog.Database, useDb, StringComparison.OrdinalIgnoreCase)))
@@ -189,54 +188,56 @@ namespace AxialSqlTools.IntelliSense
 
                 List<TSqlParserToken> tokens = null;
                 TableRef fromRef = null;
+                string slice = fullText;
                 if (!string.IsNullOrEmpty(fullText))
                 {
                     try
                     {
-                        using (var reader = new StringReader(fullText))
+                        if (CompletionEngine.TryGetParseSlice(fullText, caretOffset, out slice, out int sliceStart))
                         {
-                            var script = _parser.Parse(reader, out var errors) as TSqlScript;
-                            tokens = script?.ScriptTokenStream?.ToList();
+                            int localOffset = caretOffset - sliceStart;
+                            if (localOffset < 0) localOffset = 0;
+                            CompletionEngine.GetTokensForSlice(slice, out tokens);
+                            if (tokens != null)
+                            {
+                                var hover = QuickInfoSqlContext.TryGetHoverToken(tokens, localOffset);
+                                if (hover != null && hover.HasOwner)
+                                {
+                                    var aliasRef = QuickInfoSqlContext.TryResolveAlias(tokens, localOffset, hover.Owner);
+                                    if (aliasRef != null)
+                                    {
+                                        var table = ResolveTable(connInfo, catalog, aliasRef);
+                                        if (table != null)
+                                        {
+                                            var col = FindColumn(table, hover.Name);
+                                            if (col != null)
+                                                return BuildColumnQuickInfo(dataSource, defaultDb, aliasRef, table, col);
+                                        }
+                                    }
+                                    var schemaTable = ResolveTable(connInfo, catalog, new TableRef
+                                    {
+                                        Schema = hover.Owner,
+                                        Name = hover.Name
+                                    });
+                                    if (schemaTable != null)
+                                        return BuildTableQuickInfo(dataSource, defaultDb, new TableRef
+                                        {
+                                            Schema = schemaTable.Schema,
+                                            Name = schemaTable.Name,
+                                            Database = catalog?.Database
+                                        }, schemaTable);
+                                    return null;
+                                }
+                                fromRef = QuickInfoSqlContext.TryResolveTableByHoverName(tokens, localOffset, cleanWord)
+                                          ?? QuickInfoSqlContext.TryResolveFromTable(tokens, localOffset);
+                            }
                         }
                     }
                     catch
                     {
                     }
-                    if (tokens != null)
-                    {
-                        var hover = QuickInfoSqlContext.TryGetHoverToken(tokens, caretOffset);
-                        if (hover != null && hover.HasOwner)
-                        {
-                            var aliasRef = QuickInfoSqlContext.TryResolveAlias(tokens, caretOffset, hover.Owner);
-                            if (aliasRef != null)
-                            {
-                                var table = ResolveTable(connInfo, catalog, aliasRef);
-                                if (table != null)
-                                {
-                                    var col = FindColumn(table, hover.Name);
-                                    if (col != null)
-                                        return BuildColumnQuickInfo(dataSource, defaultDb, aliasRef, table, col);
-                                }
-                            }
-                            var schemaTable = ResolveTable(connInfo, catalog, new TableRef
-                            {
-                                Schema = hover.Owner,
-                                Name = hover.Name
-                            });
-                            if (schemaTable != null)
-                                return BuildTableQuickInfo(dataSource, defaultDb, new TableRef
-                                {
-                                    Schema = schemaTable.Schema,
-                                    Name = schemaTable.Name,
-                                    Database = catalog?.Database
-                                }, schemaTable);
-                            return null;
-                        }
-                        fromRef = QuickInfoSqlContext.TryResolveTableByHoverName(tokens, caretOffset, cleanWord)
-                                  ?? QuickInfoSqlContext.TryResolveFromTable(tokens, caretOffset);
-                    }
                     if (fromRef == null)
-                        fromRef = TryParseFromClause(fullText);
+                        fromRef = TryParseFromClause(slice);
                 }
 
                 var procInfo = TryBuildProcedureQuickInfo(fullText, caretOffset, cleanWord, catalog, connInfo, dataSource, defaultDb);

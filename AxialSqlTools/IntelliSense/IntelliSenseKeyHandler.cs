@@ -6,7 +6,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -334,7 +333,7 @@ namespace AxialSqlTools.IntelliSense
             try
             {
                 string full = GetFullText();
-                int caret = GetCaretOffset();
+                int caret = GetCaretOffset(full);
                 if (caret >= 0 && CompletionEngine.IsInsideStringOrComment(full, caret))
                     return true;
                 if (_textView.GetCaretPos(out int line, out int col) != VSConstants.S_OK)
@@ -608,7 +607,7 @@ namespace AxialSqlTools.IntelliSense
                 _completionInFlight = true;
                 _logger.Debug("TriggerCompletion: read text");
                 string text = GetFullText();
-                int caret = GetCaretOffset();
+                int caret = GetCaretOffset(text);
                 if (caret < 0)
                 {
                     CloseSession();
@@ -623,7 +622,10 @@ namespace AxialSqlTools.IntelliSense
                 MetadataCatalog catalog = null;
                 if (connInfo != null)
                 {
-                    MetadataCatalogService.Instance.EnsureCatalogsReferencedInSql(connInfo, text);
+                    string scanSql = text;
+                    if (CompletionEngine.TryGetParseSlice(text, caret, out string slice, out _))
+                        scanSql = slice;
+                    MetadataCatalogService.Instance.EnsureCatalogsReferencedInSql(connInfo, scanSql);
                     if (!string.IsNullOrEmpty(useDb))
                         MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, useDb);
                     bool likelyExec = LooksLikeExecContext(text, caret);
@@ -646,7 +648,6 @@ namespace AxialSqlTools.IntelliSense
                     try
                     {
                         var sw = Stopwatch.StartNew();
-                        // 独立实例，避免与并发刷新争用 _lastBatchText 缓存
                         var engine = new CompletionEngine();
                         var result = engine.GetCompletion(text, caret, catalog, settings, connInfo);
                         sw.Stop();
@@ -938,35 +939,20 @@ namespace AxialSqlTools.IntelliSense
 
         private string GetFullText()
         {
-            if (_textView.GetBuffer(out IVsTextLines textLines) != VSConstants.S_OK)
-                return string.Empty;
-
-            textLines.GetLastLineIndex(out int lastLine, out int lastCol);
-            var sb = new StringBuilder();
-            for (int i = 0; i <= lastLine; i++)
-            {
-                textLines.GetLengthOfLine(i, out int lineLen);
-                textLines.GetLineText(i, 0, i, lineLen, out string lineText);
-                sb.Append(lineText);
-                if (i < lastLine) sb.Append("\r\n");
-            }
-            return sb.ToString();
+            return EditorSelectionHelper.GetFullText(_textView);
         }
 
         private int GetCaretOffset()
         {
+            return GetCaretOffset(GetFullText());
+        }
+
+        private int GetCaretOffset(string text)
+        {
             if (_textView.GetCaretPos(out int line, out int col) != VSConstants.S_OK)
                 return -1;
-            if (_textView.GetBuffer(out IVsTextLines textLines) != VSConstants.S_OK)
-                return -1;
-
-            int offset = 0;
-            for (int i = 0; i < line; i++)
-            {
-                textLines.GetLengthOfLine(i, out int lineLen);
-                offset += lineLen + 2; // \r\n
-            }
-            return offset + col;
+            if (string.IsNullOrEmpty(text)) return 0;
+            return EditorSelectionHelper.LineColToOffset(text, line, col);
         }
 
         private POINT? GetCaretScreenPoint()
@@ -1031,24 +1017,8 @@ namespace AxialSqlTools.IntelliSense
             line = 0;
             col = 0;
             if (offset < 0) return;
-            if (_textView.GetBuffer(out IVsTextLines textLines) != VSConstants.S_OK) return;
-
-            textLines.GetLastLineIndex(out int lastLine, out _);
-            int pos = 0;
-            for (int i = 0; i <= lastLine; i++)
-            {
-                textLines.GetLengthOfLine(i, out int lineLen);
-                if (offset <= pos + lineLen)
-                {
-                    line = i;
-                    col = offset - pos;
-                    return;
-                }
-                pos += lineLen + 2;
-            }
-            line = lastLine;
-            textLines.GetLengthOfLine(lastLine, out int lastLen);
-            col = lastLen;
+            string text = GetFullText();
+            EditorSelectionHelper.OffsetToLineCol(text, offset, out line, out col);
         }
 
         private void ReplacePrefixWith(string newText)

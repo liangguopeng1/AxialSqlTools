@@ -1486,6 +1486,14 @@ namespace AxialSqlTools
                        t.TokenType == TSqlTokenType.QuotedIdentifier;
             }
 
+            private static bool IsFromObjectToken(TSqlParserToken t)
+            {
+                if (t == null) return false;
+                if (IsWordLikeToken(t) || IsPartialObjectNameToken(t) || IsIdentifierLike(t))
+                    return true;
+                return t.TokenType == TSqlTokenType.Variable;
+            }
+
             /// <summary>FROM 四段名/IP 中可能被解析为 Integer/Numeric 的片段（如 192.）。</summary>
             private static bool IsPartialObjectNameToken(TSqlParserToken t)
             {

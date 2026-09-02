@@ -116,6 +116,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\skills\axial-build-release
 
 
 
+```powershell
+.\tools\dev-reload.ps1 -Action Uninstall
+.\tools\dev-reload.ps1 -Action Install
+```
+
+卸载：关闭 SSMS → `VSIXInstaller /quiet /uninstall:AxialSqlTools` → 删除残留扩展目录。  
+安装：与默认 Reload 相同（构建后覆盖安装）；已有 VSIX 时加 `-SkipBuild`。
+
 可选参数：`-Configuration Debug`（更快、带符号）、`-SkipBuild`、`-NoLaunch`
 
 

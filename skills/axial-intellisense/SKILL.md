@@ -54,7 +54,7 @@ description: AxialSqlTools 的自研 SQL IntelliSense（补全 + ToolTip + 参�
   4. TYPECHAR → MaybeScheduleAutoTrigger → 防抖 timer（弹框关）/ BeginInvoke 立即刷新（弹框开）
 
 TriggerCompletion:
-  IVsTextBuffer 全文 → 按 GO 分批取光标所在批次 → TSql170Parser.Parse（缓存）
+  IVsTextBuffer 全文（一次 GetLineText）→ GO 批次；超 24KB 再切当前语句 → TSql170Parser.Parse（进程内切片缓存）
   → CompletionEngine.GetContext → 对象上下文读 MetadataCatalogService（内存/磁盘）
   → Filter 候选 → IVsTextView.GetPointOfLineColumn 取光标屏幕坐标 → Window.ShowAt
 ```
@@ -92,6 +92,8 @@ TriggerCompletion:
 - 脚本 `USE db`（即使未执行）覆盖连接当前库：补全/QuickInfo/缓存预热走该库。`GetActiveUseDatabase` 跨 GO，忽略注释和字符串。`AddTablesAndViews` 不得因 `connInfo.Database != catalog.Database` 丢掉 USE 库的表。
 - 悬停 `alias.col` 禁止在当前库扫所有表的同名列；找不到别名所属表就不出提示，避免 master 里随便一张带 `id` 的表。`GetQuickInfoByWord` 点号后同样按别名解析，不得把列名当表名。
 - FROM 多个 JOIN：扫表段时第一个 `ON` 不能结束整段 FROM，否则后面的 `db.schema.table` 悬停不到。`CollectAliasesFromTokens` 同样不能在 `ON` 处 return，否则 `where k.` 只剩前两张表。跨库补全 `GetCatalogNonBlocking` 在 `EnsureCatalogBuilding` 读完磁盘后要再取一次缓存。
+- 大脚本：`TryGetParseSlice` 先 GO 再按语句切（24KB 以上）；QuickInfo 与补全共用 `ParseSlice` 缓存，禁止每次悬停 Parse 全文。热路径读缓冲用一次 `GetLineText(0,0,last)`，不要按行拼。切片后用 `CollectLocalSymbolsFromText` 扫本批次光标前的 `CREATE TABLE #` / `INTO #` / `DECLARE @`（含表变量列）。`IsInsideStringOrComment` 必须用全文，否则前面未闭合 `/*` 会把注释当代码。`t.` 别名要跟到 `#tmp`/`@tv` 本地列，不能只按别名本身当对象名。
+- 悬停热路径：`GetCurrentConnectionInfo` 反射扫连接对象很贵，必须短 TTL 缓存。悬停不要每次 `EnsureCatalogsReferencedInSql`；QuickInfo 只需 `GetTokensForSlice`（词法），不要为悬停 `Parse` 整句 AST。
 
 ## 设置项
 
@@ -122,7 +124,7 @@ TriggerCompletion:
 1. 改补全候选 → `Completion/CompletionEngine.Items.cs`（`BuildItems` / `Add*` / `FilterAndSort` / `GetMatchScore`）。
 2. 改上下文判定 / FROM·EXEC 名解析 → `Completion/CompletionEngine.Context.cs`（`GetContext` / `ParseFromObjectName*` / §4 映射表）。
 3. 改 CTE/别名/临时表收集 → `Completion/CompletionEngine.LocalSymbols.cs`。
-4. 改批次切分或解析缓存 → `CompletionEngine.cs`（`TryGetBatchAt` / `ParseCached`）。
+4. 改批次切分或解析缓存 → `CompletionEngine.cs`（`TryGetParseSlice` / `ParseSlice`）。
 5. 改弹框行为/键路由 → `IntelliSenseKeyHandler` + `CompletionListWindow`。
 6. 改元数据查询/缓存 → `MetadataCatalogService` + `MetadataCacheStore` / `MetadataCacheRefreshService`。补全热路径禁止查库。不要与 Quick Search `objects.jsonl` 共用文件。进度弹框在 `Modules/IndexBuildProgressWindow`。
 7. 新增设置项 → `MetadataModels.IntelliSenseSettings` + `UiSettingsStore` Get/Save + `TabIntelliSense` 控件 + 加载/保存。`cacheRefreshDays` 默认 7，0 关闭自动刷新。

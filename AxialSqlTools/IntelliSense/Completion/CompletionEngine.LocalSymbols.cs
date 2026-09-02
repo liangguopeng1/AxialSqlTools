@@ -26,6 +26,275 @@ namespace AxialSqlTools
                 return local;
             }
 
+            /// <summary>当前切片 AST + 本 GO 批次光标前的 #临时表 / 表变量 / 变量（大脚本切片后 AST 看不到前文）。</summary>
+            private LocalSymbols BuildLocalSymbols(TSqlScript script, string fullText, int caret)
+            {
+                var local = ExtractLocalSymbols(script);
+                EnrichLocalSymbolsFromBatch(local, fullText, caret);
+                return local;
+            }
+
+            private void EnrichLocalSymbolsFromBatch(LocalSymbols local, string fullText, int caret)
+            {
+                if (local == null || string.IsNullOrEmpty(fullText)) return;
+                if (!TryGetBatchAt(fullText, caret, out string batch, out int batchStart))
+                    return;
+                CollectLocalSymbolsFromText(batch, caret - batchStart, local);
+            }
+
+            private static void CollectLocalSymbolsFromText(string text, int limit, LocalSymbols local)
+            {
+                if (string.IsNullOrEmpty(text) || local == null || limit <= 0) return;
+                int n = Math.Min(limit, text.Length);
+                bool inLineComment = false;
+                bool inBlockComment = false;
+                bool inString = false;
+                int i = 0;
+                while (i < n)
+                {
+                    char c = text[i];
+                    char next = i + 1 < n ? text[i + 1] : '\0';
+                    if (inLineComment)
+                    {
+                        if (c == '\n' || c == '\r') inLineComment = false;
+                        i++;
+                        continue;
+                    }
+                    if (inBlockComment)
+                    {
+                        if (c == '*' && next == '/') { inBlockComment = false; i += 2; continue; }
+                        i++;
+                        continue;
+                    }
+                    if (inString)
+                    {
+                        if (c == '\'')
+                        {
+                            if (next == '\'') i += 2;
+                            else { inString = false; i++; }
+                            continue;
+                        }
+                        i++;
+                        continue;
+                    }
+                    if (c == '-' && next == '-') { inLineComment = true; i += 2; continue; }
+                    if (c == '/' && next == '*') { inBlockComment = true; i += 2; continue; }
+                    if (c == '\'') { inString = true; i++; continue; }
+                    if ((c == 'N' || c == 'n') && next == '\'')
+                    {
+                        bool identBefore = i > 0 && (char.IsLetterOrDigit(text[i - 1]) || text[i - 1] == '_');
+                        if (!identBefore) { inString = true; i += 2; continue; }
+                    }
+                    if (KeywordAt(text, i, n, "CREATE"))
+                    {
+                        int j = SkipWs(text, i + 6, n);
+                        if (KeywordAt(text, j, n, "TABLE"))
+                        {
+                            j = SkipWs(text, j + 5, n);
+                            string name = ReadSqlName(text, ref j, n);
+                            if (!string.IsNullOrEmpty(name) && name[0] == '#')
+                            {
+                                j = SkipWs(text, j, n);
+                                var cols = new List<string>();
+                                if (j < n && text[j] == '(')
+                                    ParseTableColumnNames(text, ref j, n, cols);
+                                MergeLocalTable(local.TempTables, name, cols);
+                            }
+                            i = Math.Max(i + 1, j);
+                            continue;
+                        }
+                    }
+                    if (KeywordAt(text, i, n, "INTO"))
+                    {
+                        int j = SkipWs(text, i + 4, n);
+                        string name = ReadSqlName(text, ref j, n);
+                        if (!string.IsNullOrEmpty(name) && name[0] == '#')
+                            MergeLocalTable(local.TempTables, name, null);
+                        i = Math.Max(i + 1, j);
+                        continue;
+                    }
+                    if (KeywordAt(text, i, n, "DECLARE"))
+                    {
+                        i = CollectDeclareList(text, i + 7, n, local);
+                        continue;
+                    }
+                    i++;
+                }
+            }
+
+            private static int CollectDeclareList(string text, int i, int n, LocalSymbols local)
+            {
+                while (i < n)
+                {
+                    i = SkipWs(text, i, n);
+                    if (i >= n) break;
+                    if (text[i] == ';') break;
+                    string name = ReadSqlName(text, ref i, n);
+                    if (string.IsNullOrEmpty(name) || name[0] != '@') break;
+                    i = SkipWs(text, i, n);
+                    if (KeywordAt(text, i, n, "TABLE"))
+                    {
+                        i = SkipWs(text, i + 5, n);
+                        var cols = new List<string>();
+                        if (i < n && text[i] == '(')
+                            ParseTableColumnNames(text, ref i, n, cols);
+                        MergeLocalTable(local.TableVariables, name, cols);
+                    }
+                    else
+                    {
+                        MergeScalar(local, name);
+                        int depth = 0;
+                        bool inStr = false;
+                        while (i < n)
+                        {
+                            char c = text[i];
+                            char next = i + 1 < n ? text[i + 1] : '\0';
+                            if (inStr)
+                            {
+                                if (c == '\'')
+                                {
+                                    if (next == '\'') i += 2;
+                                    else { inStr = false; i++; }
+                                    continue;
+                                }
+                                i++;
+                                continue;
+                            }
+                            if (c == '\'') { inStr = true; i++; continue; }
+                            if (c == '(') { depth++; i++; continue; }
+                            if (c == ')') { if (depth > 0) depth--; i++; continue; }
+                            if (depth == 0 && c == ',') { i++; break; }
+                            if (depth == 0 && (c == ';' || KeywordAt(text, i, n, "SELECT") || KeywordAt(text, i, n, "INSERT")
+                                || KeywordAt(text, i, n, "UPDATE") || KeywordAt(text, i, n, "DELETE")
+                                || KeywordAt(text, i, n, "CREATE") || KeywordAt(text, i, n, "EXEC")
+                                || KeywordAt(text, i, n, "WITH") || KeywordAt(text, i, n, "GO")))
+                                return i;
+                            i++;
+                        }
+                        continue;
+                    }
+                    i = SkipWs(text, i, n);
+                    if (i < n && text[i] == ',') { i++; continue; }
+                    break;
+                }
+                return i;
+            }
+
+            private static int SkipWs(string text, int i, int n)
+            {
+                while (i < n && char.IsWhiteSpace(text[i])) i++;
+                return i;
+            }
+
+            private static string ReadSqlName(string text, ref int i, int n)
+            {
+                if (i >= n) return null;
+                if (text[i] == '[')
+                {
+                    int start = i + 1;
+                    i++;
+                    while (i < n && text[i] != ']')
+                    {
+                        if (text[i] == ']' && i + 1 < n && text[i + 1] == ']') { i += 2; continue; }
+                        i++;
+                    }
+                    string inner = i > start ? text.Substring(start, Math.Min(i, n) - start) : string.Empty;
+                    if (i < n && text[i] == ']') i++;
+                    return inner;
+                }
+                if (!(IsIdentChar(text[i]) || text[i] == '#')) return null;
+                int s = i;
+                while (i < n && (IsIdentChar(text[i]) || text[i] == '#')) i++;
+                return text.Substring(s, i - s);
+            }
+
+            private static readonly HashSet<string> TableConstraintKeywords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "CONSTRAINT", "PRIMARY", "UNIQUE", "CHECK", "FOREIGN", "INDEX", "KEY", "WITH", "PERIOD"
+            };
+
+            private static void ParseTableColumnNames(string text, ref int i, int n, List<string> cols)
+            {
+                if (i >= n || text[i] != '(') return;
+                i++;
+                int depth = 1;
+                bool expectName = true;
+                bool inStr = false;
+                while (i < n && depth > 0)
+                {
+                    char c = text[i];
+                    char next = i + 1 < n ? text[i + 1] : '\0';
+                    if (inStr)
+                    {
+                        if (c == '\'')
+                        {
+                            if (next == '\'') i += 2;
+                            else { inStr = false; i++; }
+                            continue;
+                        }
+                        i++;
+                        continue;
+                    }
+                    if (c == '\'') { inStr = true; i++; continue; }
+                    if (c == '-' && next == '-') { while (i < n && text[i] != '\n' && text[i] != '\r') i++; continue; }
+                    if (c == '/' && next == '*')
+                    {
+                        i += 2;
+                        while (i + 1 < n && !(text[i] == '*' && text[i + 1] == '/')) i++;
+                        i += 2;
+                        continue;
+                    }
+                    if (c == '(') { depth++; i++; continue; }
+                    if (c == ')') { depth--; i++; expectName = depth == 1; continue; }
+                    if (c == ',' && depth == 1) { expectName = true; i++; continue; }
+                    if (expectName && depth == 1 && (IsIdentChar(c) || c == '[' || c == '#'))
+                    {
+                        string name = ReadSqlName(text, ref i, n);
+                        if (!string.IsNullOrEmpty(name) && !TableConstraintKeywords.Contains(name))
+                            cols.Add(name);
+                        expectName = false;
+                        continue;
+                    }
+                    i++;
+                }
+            }
+
+            private static void MergeLocalTable(List<LocalTableInfo> dest, string name, List<string> cols)
+            {
+                if (dest == null || string.IsNullOrEmpty(name)) return;
+                var existing = dest.Find(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase));
+                if (existing == null)
+                {
+                    var t = new LocalTableInfo { Name = name };
+                    if (cols != null)
+                    {
+                        foreach (var col in cols)
+                        {
+                            if (!string.IsNullOrEmpty(col)) t.ColumnNames.Add(col);
+                        }
+                    }
+                    dest.Add(t);
+                    return;
+                }
+                if (existing.ColumnNames.Count == 0 && cols != null)
+                {
+                    foreach (var col in cols)
+                    {
+                        if (!string.IsNullOrEmpty(col)) existing.ColumnNames.Add(col);
+                    }
+                }
+            }
+
+            private static void MergeScalar(LocalSymbols local, string name)
+            {
+                if (local == null || string.IsNullOrEmpty(name)) return;
+                foreach (var v in local.ScalarVariables)
+                {
+                    if (string.Equals(v, name, StringComparison.OrdinalIgnoreCase)) return;
+                }
+                local.ScalarVariables.Add(name);
+            }
+
             private void CollectFromStatement(TSqlStatement stmt, LocalSymbols local)
             {
                 if (stmt is DeclareTableVariableStatement dtv)
@@ -762,7 +1031,7 @@ namespace AxialSqlTools
                             i++;
                             continue;
                         }
-                        if (!(IsWordLikeToken(t) || IsPartialObjectNameToken(t) || IsIdentifierLike(t)))
+                        if (!(IsFromObjectToken(t)))
                         {
                             i++;
                             continue;

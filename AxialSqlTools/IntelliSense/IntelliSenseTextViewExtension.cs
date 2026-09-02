@@ -8,7 +8,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Windows.Threading;
 using static Microsoft.VisualStudio.VSConstants;
 
@@ -534,7 +533,7 @@ namespace AxialSqlTools.IntelliSense
                 }
 
                 string text = GetFullText();
-                int offset = GetOffsetFromLineColumn(line, wordStart + Math.Max(0, word.Length / 2));
+                int offset = GetOffsetFromLineColumn(text, line, wordStart + Math.Max(0, word.Length / 2));
                 if (offset < 0) return;
                 var sw = Stopwatch.StartNew();
                 var connInfo = SafeGetCurrentConnection();
@@ -542,13 +541,16 @@ namespace AxialSqlTools.IntelliSense
                 MetadataCatalog catalog = null;
                 if (connInfo != null)
                 {
-                    MetadataCacheRefreshService.Instance.EnsureServerCache(connInfo);
-                    MetadataCatalogService.Instance.EnsureCatalogsReferencedInSql(connInfo, text);
                     if (!string.IsNullOrEmpty(useDb))
-                        MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, useDb);
-                    catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo, useDb);
+                        catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo, useDb);
                     if (catalog == null)
+                        catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo);
+                    if (catalog == null)
+                    {
+                        MetadataCacheRefreshService.Instance.EnsureServerCache(connInfo);
                         MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, useDb);
+                        catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo, useDb);
+                    }
                 }
 
                 var info = _provider.GetQuickInfo(text, offset, catalog, connInfo);
@@ -916,29 +918,12 @@ namespace AxialSqlTools.IntelliSense
 
         private string GetFullText()
         {
-            if (_textView.GetBuffer(out IVsTextLines textLines) != S_OK) return string.Empty;
-            textLines.GetLastLineIndex(out int lastLine, out int lastCol);
-            var sb = new StringBuilder();
-            for (int i = 0; i <= lastLine; i++)
-            {
-                textLines.GetLengthOfLine(i, out int lineLen);
-                textLines.GetLineText(i, 0, i, lineLen, out string lineText);
-                sb.Append(lineText);
-                if (i < lastLine) sb.Append("\r\n");
-            }
-            return sb.ToString();
+            return EditorSelectionHelper.GetFullText(_textView);
         }
 
-        private int GetOffsetFromLineColumn(int line, int col)
+        private int GetOffsetFromLineColumn(string text, int line, int col)
         {
-            if (_textView.GetBuffer(out IVsTextLines textLines) != S_OK) return -1;
-            int offset = 0;
-            for (int i = 0; i < line; i++)
-            {
-                textLines.GetLengthOfLine(i, out int lineLen);
-                offset += lineLen + 2;
-            }
-            return offset + col;
+            return EditorSelectionHelper.LineColToOffset(text, line, col);
         }
 
         private ScriptFactoryAccess.ConnectionInfo SafeGetCurrentConnection()

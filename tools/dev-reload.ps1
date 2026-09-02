@@ -1,25 +1,41 @@
 <#
 .SYNOPSIS
-  Dev one-shot: build, close SSMS, install extension (overwrite), relaunch SSMS with open queries.
+  Dev one-shot: build, close SSMS, install or uninstall the extension, optionally relaunch SSMS.
 
 .DESCRIPTION
-  No uninstall step. Auto-detects SSMS 22 on C: or D: drive.
-  Installs silently to the SSMS extension folder SSMS actually loads (per-user AppData first,
-  then per-machine Program Files). Direct file overwrite when possible; otherwise VSIXInstaller
-  with /quiet /force /shutdownprocesses (no UI prompts). Verifies installed DLL matches build output.
-  Before closing SSMS, saves open document paths via DTE and passes them back to Ssms.exe on launch.
+  Auto-detects SSMS 22 on C: or D: drive.
+  Default -Action Reload: Release build → close SSMS → overwrite install → relaunch.
+  -Action Install: same install path (build unless -SkipBuild).
+  -Action Uninstall: close SSMS → VSIXInstaller /uninstall:AxialSqlTools → delete leftover folders.
+  Install prefers direct overwrite of the folder SSMS actually loads (per-user AppData first);
+  otherwise VSIXInstaller /quiet /force /shutdownprocesses.
+
+  Uninstall command (script prints the resolved path):
+    & "<SSMS>\Release\Common7\IDE\VSIXInstaller.exe" /quiet /uninstall:AxialSqlTools
+
+  Install command:
+    & "<SSMS>\Release\Common7\IDE\VSIXInstaller.exe" /quiet /force /shutdownprocesses "<repo>\AxialSqlTools\bin\Release\AxialSqlTools.vsix"
 
 .EXAMPLE
   .\tools\dev-reload.ps1
 
 .EXAMPLE
-  .\tools\dev-reload.ps1 -Configuration Debug
+  .\tools\dev-reload.ps1 -Action Uninstall
 
 .EXAMPLE
-  .\tools\dev-reload.ps1 -SkipBuild -NoLaunch
+  .\tools\dev-reload.ps1 -Action Install
+
+.EXAMPLE
+  .\tools\dev-reload.ps1 -Action Install -SkipBuild -NoLaunch
+
+.EXAMPLE
+  .\tools\dev-reload.ps1 -Configuration Debug
 #>
 [CmdletBinding()]
 param(
+    [ValidateSet('Reload', 'Install', 'Uninstall')]
+    [string]$Action = 'Reload',
+
     [ValidateSet('Release', 'Debug')]
     [string]$Configuration = 'Release',
 
@@ -254,11 +270,19 @@ function Install-VsixDirectCopy([string]$VsixFile, [string]$TargetDir) {
     }
 }
 
+function Write-VsixCommand([string]$Kind, [string]$InstallerPath, [string[]]$InstallerArgs) {
+    $quoted = $InstallerArgs | ForEach-Object {
+        if ($_ -match '\s') { "`"$_`"" } else { $_ }
+    }
+    Write-Host "$Kind command:"
+    Write-Host "  `"$InstallerPath`" $($quoted -join ' ')"
+}
+
 function Invoke-VsixInstaller([string]$InstallerPath, [string]$VsixFile, [switch]$Admin) {
     $installArgs = @('/quiet', '/force', '/shutdownprocesses', "/logFile:$env:TEMP\axial-vsix-install.log", $VsixFile)
     if ($Admin) { $installArgs = @('/admin') + $installArgs }
     $label = if ($Admin) { 'per-machine (/admin)' } else { 'per-user' }
-    Write-Host "VSIXInstaller ($label): $VsixFile"
+    Write-VsixCommand -Kind "Install ($label)" -InstallerPath $InstallerPath -InstallerArgs $installArgs
     $install = Start-Process -FilePath $InstallerPath -ArgumentList $installArgs -Wait -PassThru
     if ($install.ExitCode -ne 0) {
         throw "VSIX install failed ($label) with exit code $($install.ExitCode). Log: $env:TEMP\axial-vsix-install.log"
@@ -267,11 +291,57 @@ function Invoke-VsixInstaller([string]$InstallerPath, [string]$VsixFile, [switch
     Start-Sleep -Seconds 1
 }
 
+function Uninstall-VsixQuiet([string]$InstallerPath, [string]$IdeDir) {
+    Wait-VsixInstallerExit
+    $log = Join-Path $env:TEMP 'axial-vsix-uninstall.log'
+    $uninstallArgs = @('/quiet', "/uninstall:$extensionId", "/logFile:$log")
+    Write-VsixCommand -Kind 'Uninstall' -InstallerPath $InstallerPath -InstallerArgs $uninstallArgs
+    $uninstall = Start-Process -FilePath $InstallerPath -ArgumentList $uninstallArgs -Wait -PassThru
+    if ($uninstall.ExitCode -ne 0) {
+        Write-Host "Uninstall exited $($uninstall.ExitCode) (may already be gone). Log: $log" -ForegroundColor DarkYellow
+    }
+    Wait-VsixInstallerExit
+
+    $extDirs = Find-AxialExtensionDirs -IdeDir $IdeDir
+    if ($extDirs.Count -eq 0) {
+        Write-Host 'Extension uninstalled (no leftover folders).'
+        return
+    }
+
+    foreach ($dir in $extDirs) {
+        Write-Host "Remove leftover: $dir"
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $left = Find-AxialExtensionDirs -IdeDir $IdeDir
+    if ($left.Count -eq 0) {
+        Write-Host 'Extension uninstalled.'
+        return
+    }
+
+    Write-Host 'Leftover folders remain; trying /admin uninstall ...' -ForegroundColor Yellow
+    $adminArgs = @('/admin') + $uninstallArgs
+    Write-VsixCommand -Kind 'Uninstall (/admin)' -InstallerPath $InstallerPath -InstallerArgs $adminArgs
+    [void](Start-Process -FilePath $InstallerPath -ArgumentList $adminArgs -Wait -PassThru)
+    Wait-VsixInstallerExit
+    foreach ($dir in $left) {
+        Write-Host "Remove leftover: $dir"
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $left = Find-AxialExtensionDirs -IdeDir $IdeDir
+    if ($left.Count -gt 0) {
+        throw "Uninstall leftover: $($left -join '; ')"
+    }
+    Write-Host 'Extension uninstalled (/admin).'
+}
+
 function Install-VsixQuiet([string]$InstallerPath, [string]$VsixFile, [string]$IdeDir, [string]$BuiltDll) {
     if (-not (Test-Path $VsixFile)) {
         throw "VSIX not found: $VsixFile. Build first or omit -SkipBuild."
     }
 
+    Write-VsixCommand -Kind 'Install' -InstallerPath $InstallerPath -InstallerArgs @('/quiet', '/force', '/shutdownprocesses', $VsixFile)
     Wait-VsixInstallerExit
 
     $buildTime = Get-BuildTimeLabel -BuildInfoPath (Join-Path $projectDir 'BuildInfo.cs')
@@ -389,7 +459,18 @@ function Start-SsmsApp([string]$SsmsExe, [string[]]$SqlFiles) {
 
 $ssms = Get-SsmsPaths
 Write-Host "SSMS: $($ssms.Root)"
+Write-Host "Action: $Action"
 Write-Host "Configuration: $Configuration"
+
+if ($Action -eq 'Uninstall') {
+    Write-Step 'Stop SSMS'
+    Stop-SsmsProcesses
+    Write-Step 'Uninstall extension'
+    Uninstall-VsixQuiet -InstallerPath $ssms.VsixInstaller -IdeDir $ssms.IdeDir
+    Write-Host ''
+    Write-Host 'Done. Extension uninstalled.' -ForegroundColor Green
+    return
+}
 
 if (-not $SkipBuild) {
     Write-Step 'Build extension'
@@ -417,7 +498,7 @@ else {
 Write-Step 'Stop SSMS'
 Stop-SsmsProcesses
 
-Write-Step 'Install extension (overwrite, no uninstall)'
+Write-Step 'Install extension'
 Install-VsixQuiet -InstallerPath $ssms.VsixInstaller -VsixFile $vsixPath -IdeDir $ssms.IdeDir -BuiltDll $builtDllPath
 
 if ($NoLaunch) {

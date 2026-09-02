@@ -44,6 +44,13 @@ namespace AxialSqlTools
             public override string ToString() => DisplayName;
         }
 
+        private static readonly object EditorConnCacheLock = new object();
+        private static ConnectionInfo _cachedEditorConn;
+        private static bool _cachedInMaster;
+        private static int _cachedViewKey;
+        private static DateTime _cachedAtUtc;
+        private const int EditorConnCacheMs = 800;
+
         /// <summary>
         /// Microsoft.Data.SqlClient defaults Encrypt=true. Force TrustServerCertificate so
         /// self-signed / internal SQL Server certs work across all plugin features.
@@ -504,6 +511,29 @@ ORDER BY [name];";
 
         /// <summary>优先读取查询编辑器工具栏当前库（m_connection.Database），避免 AdvancedOptions 滞后。</summary>
         public static ConnectionInfo GetCurrentConnectionInfoForEditor(Microsoft.VisualStudio.TextManager.Interop.IVsTextView textView = null, bool inMaster = false)
+        {
+            int viewKey = textView == null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(textView);
+            lock (EditorConnCacheLock)
+            {
+                if (_cachedAtUtc != DateTime.MinValue
+                    && _cachedInMaster == inMaster
+                    && _cachedViewKey == viewKey
+                    && (DateTime.UtcNow - _cachedAtUtc).TotalMilliseconds < EditorConnCacheMs)
+                    return _cachedEditorConn;
+            }
+
+            var result = ReadCurrentConnectionInfoForEditor(textView, inMaster);
+            lock (EditorConnCacheLock)
+            {
+                _cachedEditorConn = result;
+                _cachedInMaster = inMaster;
+                _cachedViewKey = viewKey;
+                _cachedAtUtc = DateTime.UtcNow;
+            }
+            return result;
+        }
+
+        private static ConnectionInfo ReadCurrentConnectionInfoForEditor(Microsoft.VisualStudio.TextManager.Interop.IVsTextView textView, bool inMaster)
         {
             var scriptFactory = ServiceCache.ScriptFactory;
             if (scriptFactory == null) return null;

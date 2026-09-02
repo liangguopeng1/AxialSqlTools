@@ -11,16 +11,13 @@ namespace AxialSqlTools
     {
         /// <summary>
         /// ScriptDOM 解析 + 上下文判定 + 候选生成。
-        /// 按 GO 分批，仅解析光标所在批次，缓存上次解析结果。
+        /// 按 GO 分批；大批次再切到光标所在语句。解析结果进程内共享缓存。
         /// 任何解析失败返回 Unknown 上下文，不抛异常。
         /// </summary>
         public partial class CompletionEngine
         {
-            private string _lastBatchText;
             private TSqlScript _lastScript;
             private List<TSqlParserToken> _lastTokens;
-
-            private readonly TSql170Parser _parser = new TSql170Parser(true);
 
             public CompletionResult GetCompletion(
                 string fullText,
@@ -45,7 +42,7 @@ namespace AxialSqlTools
                 {
                     string batchText;
                     int batchStart;
-                    if (!TryGetBatchAt(fullText, caretOffset, out batchText, out batchStart))
+                    if (!TryGetParseSlice(fullText, caretOffset, out batchText, out batchStart))
                     {
                         return result;
                     }
@@ -54,8 +51,8 @@ namespace AxialSqlTools
                     int localOffset = caretOffset - batchStart;
                     if (localOffset < 0) localOffset = 0;
 
-                    // 字符串/注释里的字母不是标识符：'b' 不应出 Beizhu/BETWEEN
-                    if (IsInsideStringOrComment(batchText, localOffset))
+                    // 用全文判断注释：切片会丢掉前面未闭合的 /*
+                    if (IsInsideStringOrComment(fullText, caretOffset))
                         return result;
 
                     string useDb = GetActiveUseDatabase(fullText, caretOffset);
@@ -82,7 +79,7 @@ namespace AxialSqlTools
                     {
                         string execPrefix = execNameEarly.Partial ?? string.Empty;
                         if (string.IsNullOrEmpty(execPrefix)) execPrefix = rawPrefix;
-                        var localEarly = script != null ? ExtractLocalSymbols(script) : new LocalSymbols();
+                        var localEarly = BuildLocalSymbols(script, fullText, caretOffset);
                         if (script != null)
                             CollectAliases(script, localOffset, localEarly, _lastTokens);
                         result.Context = CompletionContext.AfterExec;
@@ -106,7 +103,7 @@ namespace AxialSqlTools
                             if (string.IsNullOrEmpty(fromPrefix)) fromPrefix = rawPrefix;
                             result.Context = CompletionContext.FromClause;
                             result.Prefix = fromPrefix;
-                            result.Items = BuildItems(CompletionContext.FromClause, fromPrefix, fromNameRaw, new LocalSymbols(), catalog, settings, connInfo);
+                            result.Items = BuildItems(CompletionContext.FromClause, fromPrefix, fromNameRaw, BuildLocalSymbols(null, fullText, caretOffset), catalog, settings, connInfo);
                             result.Items = FilterAndSort(result.Items, fromPrefix, settings, connInfo, fromNameRaw);
                             result.ReplaceStartOffset = ComputeReplaceStartOffset(batchStart, localOffset, fromPrefix, fromNameRaw, _lastTokens);
                             result.ReplaceEndOffset = caretOffset;
@@ -118,7 +115,7 @@ namespace AxialSqlTools
                             {
                                 result.Context = CompletionContext.BatchStart;
                                 result.Prefix = rawPrefix;
-                                result.Items = BuildItems(CompletionContext.BatchStart, rawPrefix, null, new LocalSymbols(), catalog, settings, connInfo);
+                                result.Items = BuildItems(CompletionContext.BatchStart, rawPrefix, null, BuildLocalSymbols(null, fullText, caretOffset), catalog, settings, connInfo);
                                 result.Items = FilterAndSort(result.Items, rawPrefix, settings, connInfo, null);
                                 result.ReplaceStartOffset = caretOffset - rawPrefix.Length;
                                 result.ReplaceEndOffset = caretOffset;
@@ -128,7 +125,7 @@ namespace AxialSqlTools
                     }
 
                     var tokens = _lastTokens ?? new List<TSqlParserToken>();
-                    var local = ExtractLocalSymbols(script);
+                    var local = BuildLocalSymbols(script, fullText, caretOffset);
                     CollectAliases(script, localOffset, local, tokens);
 
                     string prefix;
@@ -356,24 +353,57 @@ namespace AxialSqlTools
             private static readonly Regex GoBatchSplit =
                 new Regex(@"(?im)^[ \t]*GO[ \t]*(?:;)?[ \t]*\r?\n", RegexOptions.Compiled);
 
-            private bool TryGetBatchAt(string fullText, int caretOffset, out string batchText, out int batchStart)
+            /// <summary>超过此长度的 GO 批次只解析光标所在语句，避免整页几千行 ScriptDOM。</summary>
+            internal const int LargeBatchParseChars = 24 * 1024;
+
+            private static readonly object ParseGate = new object();
+            private static readonly TSql170Parser SharedParser = new TSql170Parser(true);
+            private static string SharedSlice;
+            private static TSqlScript SharedScript;
+            private static List<TSqlParserToken> SharedTokens;
+            private static bool SharedHasAst;
+
+            internal static bool TryGetParseSlice(string fullText, int caretOffset, out string slice, out int sliceStart)
+            {
+                slice = fullText;
+                sliceStart = 0;
+                if (string.IsNullOrEmpty(fullText)) return false;
+                if (!TryGetBatchAt(fullText, caretOffset, out string batch, out int batchStart))
+                    return false;
+                if (batch.Length <= LargeBatchParseChars)
+                {
+                    slice = batch;
+                    sliceStart = batchStart;
+                    return true;
+                }
+                int localCaret = caretOffset - batchStart;
+                if (localCaret < 0) localCaret = 0;
+                if (localCaret > batch.Length) localCaret = batch.Length;
+                FindCurrentStatementBounds(batch, localCaret, out int stmtStart, out int stmtEnd);
+                if (stmtStart < 0) stmtStart = 0;
+                if (stmtEnd > batch.Length) stmtEnd = batch.Length;
+                if (stmtEnd < stmtStart) stmtEnd = stmtStart;
+                sliceStart = batchStart + stmtStart;
+                slice = batch.Substring(stmtStart, stmtEnd - stmtStart);
+                return true;
+            }
+
+            private static bool TryGetBatchAt(string fullText, int caretOffset, out string batchText, out int batchStart)
             {
                 batchText = fullText;
                 batchStart = 0;
+                if (fullText.IndexOf("GO", StringComparison.OrdinalIgnoreCase) < 0)
+                    return true;
 
                 var matches = GoBatchSplit.Matches(fullText);
                 if (matches.Count == 0)
-                {
                     return true;
-                }
 
                 int start = 0;
                 foreach (Match m in matches)
                 {
                     if (m.Index > caretOffset)
-                    {
                         break;
-                    }
                     start = m.Index + m.Length;
                 }
 
@@ -392,55 +422,372 @@ namespace AxialSqlTools
                 return true;
             }
 
-            private TSqlScript ParseCached(string batchText)
+            private static void FindCurrentStatementBounds(string text, int caret, out int stmtStart, out int stmtEnd)
             {
-                if (string.Equals(_lastBatchText, batchText, StringComparison.Ordinal) && _lastScript != null)
+                stmtStart = 0;
+                stmtEnd = text.Length;
+                if (string.IsNullOrEmpty(text))
+                    return;
+                int n = text.Length;
+                int probe = Math.Min(Math.Max(0, caret), n);
+                bool inLineComment = false;
+                bool inBlockComment = false;
+                bool inString = false;
+                int paren = 0;
+                int lastStmt = 0;
+                bool afterSetOp = false;
+                bool afterCte = false;
+                bool afterInsert = false;
+                int i = 0;
+                while (i < probe)
                 {
-                    return _lastScript;
-                }
-
-                _lastBatchText = batchText;
-                _lastScript = null;
-                _lastTokens = null;
-
-                try
-                {
-                    using (var reader = new StringReader(batchText))
+                    char c = text[i];
+                    char next = i + 1 < n ? text[i + 1] : '\0';
+                    if (inLineComment)
                     {
-                        var fragment = _parser.Parse(reader, out var errors);
-                        _lastScript = fragment as TSqlScript;
-                        if (_lastScript != null)
-                        {
-                            _lastTokens = _lastScript.ScriptTokenStream?.ToList() ?? new List<TSqlParserToken>();
-                        }
+                        if (c == '\n' || c == '\r') inLineComment = false;
+                        i++;
+                        continue;
                     }
-                    // 未闭合 [identifier 时 Parse 常返回空 ScriptTokenStream；用 GetTokenStream 兜底
-                    if (_lastTokens == null || _lastTokens.Count == 0)
-                        _lastTokens = TokenizeFallback(batchText);
+                    if (inBlockComment)
+                    {
+                        if (c == '*' && next == '/')
+                        {
+                            inBlockComment = false;
+                            i += 2;
+                            continue;
+                        }
+                        i++;
+                        continue;
+                    }
+                    if (inString)
+                    {
+                        if (c == '\'')
+                        {
+                            if (next == '\'') i += 2;
+                            else { inString = false; i++; }
+                            continue;
+                        }
+                        i++;
+                        continue;
+                    }
+                    if (c == '-' && next == '-') { inLineComment = true; i += 2; continue; }
+                    if (c == '/' && next == '*') { inBlockComment = true; i += 2; continue; }
+                    if (c == '\'') { inString = true; i++; continue; }
+                    if ((c == 'N' || c == 'n') && next == '\'')
+                    {
+                        bool identBefore = i > 0 && (char.IsLetterOrDigit(text[i - 1]) || text[i - 1] == '_');
+                        if (!identBefore) { inString = true; i += 2; continue; }
+                    }
+                    if (c == '[')
+                    {
+                        i++;
+                        while (i < n && text[i] != ']') i++;
+                        if (i < n) i++;
+                        continue;
+                    }
+                    if (c == '(') { paren++; i++; continue; }
+                    if (c == ')') { if (paren > 0) paren--; i++; continue; }
+                    if (c == ';' && paren == 0)
+                    {
+                        lastStmt = i + 1;
+                        afterSetOp = false;
+                        afterCte = false;
+                        afterInsert = false;
+                        i++;
+                        continue;
+                    }
+                    if (paren != 0 || !IsIdentChar(c))
+                    {
+                        i++;
+                        continue;
+                    }
+                    int kwLen;
+                    StmtKw kw = MatchStmtKeyword(text, i, n, out kwLen);
+                    if (kw == StmtKw.None)
+                    {
+                        i++;
+                        continue;
+                    }
+                    if (kw == StmtKw.Union || kw == StmtKw.Except || kw == StmtKw.Intersect)
+                    {
+                        afterSetOp = true;
+                        i += kwLen;
+                        continue;
+                    }
+                    if (kw == StmtKw.Values)
+                    {
+                        afterInsert = false;
+                        i += kwLen;
+                        continue;
+                    }
+                    if (kw == StmtKw.With && IsWithTableHint(text, i + kwLen, n))
+                    {
+                        i += kwLen;
+                        continue;
+                    }
+                    bool continuation = afterSetOp
+                        || (afterCte && (kw == StmtKw.Select || kw == StmtKw.Insert || kw == StmtKw.Update || kw == StmtKw.Delete || kw == StmtKw.Merge))
+                        || (afterInsert && (kw == StmtKw.Select || kw == StmtKw.Exec));
+                    if (!continuation)
+                        lastStmt = i;
+                    afterSetOp = false;
+                    afterCte = kw == StmtKw.With;
+                    afterInsert = kw == StmtKw.Insert;
+                    i += kwLen;
                 }
-                catch
+                stmtStart = lastStmt;
+                i = probe;
+                while (i < n)
                 {
-                    _lastScript = null;
-                    _lastTokens = TokenizeFallback(batchText);
+                    char c = text[i];
+                    char next = i + 1 < n ? text[i + 1] : '\0';
+                    if (inLineComment)
+                    {
+                        if (c == '\n' || c == '\r') inLineComment = false;
+                        i++;
+                        continue;
+                    }
+                    if (inBlockComment)
+                    {
+                        if (c == '*' && next == '/')
+                        {
+                            inBlockComment = false;
+                            i += 2;
+                            continue;
+                        }
+                        i++;
+                        continue;
+                    }
+                    if (inString)
+                    {
+                        if (c == '\'')
+                        {
+                            if (next == '\'') i += 2;
+                            else { inString = false; i++; }
+                            continue;
+                        }
+                        i++;
+                        continue;
+                    }
+                    if (c == '-' && next == '-') { inLineComment = true; i += 2; continue; }
+                    if (c == '/' && next == '*') { inBlockComment = true; i += 2; continue; }
+                    if (c == '\'') { inString = true; i++; continue; }
+                    if ((c == 'N' || c == 'n') && next == '\'')
+                    {
+                        bool identBefore = i > 0 && (char.IsLetterOrDigit(text[i - 1]) || text[i - 1] == '_');
+                        if (!identBefore) { inString = true; i += 2; continue; }
+                    }
+                    if (c == '[')
+                    {
+                        i++;
+                        while (i < n && text[i] != ']') i++;
+                        if (i < n) i++;
+                        continue;
+                    }
+                    if (c == '(') { paren++; i++; continue; }
+                    if (c == ')') { if (paren > 0) paren--; i++; continue; }
+                    if (c == ';' && paren == 0)
+                    {
+                        stmtEnd = i;
+                        return;
+                    }
+                    if (paren != 0 || !IsIdentChar(c))
+                    {
+                        i++;
+                        continue;
+                    }
+                    int kwLen;
+                    StmtKw kw = MatchStmtKeyword(text, i, n, out kwLen);
+                    if (kw == StmtKw.None)
+                    {
+                        i++;
+                        continue;
+                    }
+                    if (kw == StmtKw.Union || kw == StmtKw.Except || kw == StmtKw.Intersect)
+                    {
+                        afterSetOp = true;
+                        i += kwLen;
+                        continue;
+                    }
+                    if (kw == StmtKw.Values)
+                    {
+                        afterInsert = false;
+                        i += kwLen;
+                        continue;
+                    }
+                    if (kw == StmtKw.With && IsWithTableHint(text, i + kwLen, n))
+                    {
+                        i += kwLen;
+                        continue;
+                    }
+                    bool continuation = afterSetOp
+                        || (afterCte && (kw == StmtKw.Select || kw == StmtKw.Insert || kw == StmtKw.Update || kw == StmtKw.Delete || kw == StmtKw.Merge))
+                        || (afterInsert && (kw == StmtKw.Select || kw == StmtKw.Exec));
+                    if (!continuation && i > probe)
+                    {
+                        stmtEnd = i;
+                        return;
+                    }
+                    afterSetOp = false;
+                    afterCte = kw == StmtKw.With;
+                    afterInsert = kw == StmtKw.Insert;
+                    i += kwLen;
                 }
-
-                return _lastScript;
+                stmtEnd = n;
             }
 
-            private List<TSqlParserToken> TokenizeFallback(string batchText)
+            private enum StmtKw
             {
-                try
+                None, Select, Insert, Update, Delete, Merge, With, Exec, Create, Alter, Drop, Declare, Use, Truncate, Union, Except, Intersect, Values
+            }
+
+            private static StmtKw MatchStmtKeyword(string text, int i, int n, out int len)
+            {
+                len = 0;
+                char c = char.ToUpperInvariant(text[i]);
+                switch (c)
                 {
-                    using (var reader = new StringReader(batchText ?? string.Empty))
+                    case 'S':
+                        if (KeywordAt(text, i, n, "SELECT")) { len = 6; return StmtKw.Select; }
+                        break;
+                    case 'I':
+                        if (KeywordAt(text, i, n, "INSERT")) { len = 6; return StmtKw.Insert; }
+                        if (KeywordAt(text, i, n, "INTERSECT")) { len = 9; return StmtKw.Intersect; }
+                        break;
+                    case 'U':
+                        if (KeywordAt(text, i, n, "UPDATE")) { len = 6; return StmtKw.Update; }
+                        if (KeywordAt(text, i, n, "USE")) { len = 3; return StmtKw.Use; }
+                        if (KeywordAt(text, i, n, "UNION")) { len = 5; return StmtKw.Union; }
+                        break;
+                    case 'D':
+                        if (KeywordAt(text, i, n, "DELETE")) { len = 6; return StmtKw.Delete; }
+                        if (KeywordAt(text, i, n, "DROP")) { len = 4; return StmtKw.Drop; }
+                        if (KeywordAt(text, i, n, "DECLARE")) { len = 7; return StmtKw.Declare; }
+                        break;
+                    case 'M':
+                        if (KeywordAt(text, i, n, "MERGE")) { len = 5; return StmtKw.Merge; }
+                        break;
+                    case 'W':
+                        if (KeywordAt(text, i, n, "WITH")) { len = 4; return StmtKw.With; }
+                        break;
+                    case 'E':
+                        if (KeywordAt(text, i, n, "EXECUTE")) { len = 7; return StmtKw.Exec; }
+                        if (KeywordAt(text, i, n, "EXEC")) { len = 4; return StmtKw.Exec; }
+                        if (KeywordAt(text, i, n, "EXCEPT")) { len = 6; return StmtKw.Except; }
+                        break;
+                    case 'C':
+                        if (KeywordAt(text, i, n, "CREATE")) { len = 6; return StmtKw.Create; }
+                        break;
+                    case 'A':
+                        if (KeywordAt(text, i, n, "ALTER")) { len = 5; return StmtKw.Alter; }
+                        break;
+                    case 'T':
+                        if (KeywordAt(text, i, n, "TRUNCATE")) { len = 8; return StmtKw.Truncate; }
+                        break;
+                    case 'V':
+                        if (KeywordAt(text, i, n, "VALUES")) { len = 6; return StmtKw.Values; }
+                        break;
+                }
+                return StmtKw.None;
+            }
+
+            private static bool KeywordAt(string text, int i, int n, string upper)
+            {
+                int len = upper.Length;
+                if (i + len > n) return false;
+                for (int k = 0; k < len; k++)
+                {
+                    if (char.ToUpperInvariant(text[i + k]) != upper[k])
+                        return false;
+                }
+                if (i > 0 && IsIdentChar(text[i - 1])) return false;
+                if (i + len < n && IsIdentChar(text[i + len])) return false;
+                return true;
+            }
+
+            private static bool IsWithTableHint(string text, int afterWith, int n)
+            {
+                int j = afterWith;
+                while (j < n && char.IsWhiteSpace(text[j])) j++;
+                return j < n && text[j] == '(';
+            }
+
+            internal static void GetTokensForSlice(string slice, out List<TSqlParserToken> tokens)
+            {
+                tokens = new List<TSqlParserToken>();
+                if (string.IsNullOrEmpty(slice)) return;
+                lock (ParseGate)
+                {
+                    if (string.Equals(SharedSlice, slice, StringComparison.Ordinal) && SharedTokens != null)
                     {
-                        var ts = _parser.GetTokenStream(reader, out var _);
-                        return ts?.ToList() ?? new List<TSqlParserToken>();
+                        tokens = SharedTokens;
+                        return;
                     }
+                    try
+                    {
+                        using (var reader = new StringReader(slice))
+                        {
+                            var ts = SharedParser.GetTokenStream(reader, out var _);
+                            tokens = ts?.ToList() ?? new List<TSqlParserToken>();
+                        }
+                    }
+                    catch
+                    {
+                        tokens = new List<TSqlParserToken>();
+                    }
+                    SharedSlice = slice;
+                    SharedTokens = tokens;
+                    SharedScript = null;
+                    SharedHasAst = false;
                 }
-                catch
+            }
+
+            internal static void ParseSlice(string slice, out TSqlScript script, out List<TSqlParserToken> tokens)
+            {
+                script = null;
+                tokens = new List<TSqlParserToken>();
+                if (string.IsNullOrEmpty(slice)) return;
+                lock (ParseGate)
                 {
-                    return new List<TSqlParserToken>();
+                    if (string.Equals(SharedSlice, slice, StringComparison.Ordinal) && SharedTokens != null && SharedHasAst)
+                    {
+                        script = SharedScript;
+                        tokens = SharedTokens;
+                        return;
+                    }
+                    try
+                    {
+                        using (var reader = new StringReader(slice))
+                        {
+                            script = SharedParser.Parse(reader, out var _) as TSqlScript;
+                            tokens = script?.ScriptTokenStream?.ToList() ?? new List<TSqlParserToken>();
+                        }
+                        if (tokens.Count == 0)
+                        {
+                            using (var reader = new StringReader(slice))
+                            {
+                                var ts = SharedParser.GetTokenStream(reader, out var _);
+                                tokens = ts?.ToList() ?? new List<TSqlParserToken>();
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        script = null;
+                        tokens = new List<TSqlParserToken>();
+                    }
+                    SharedSlice = slice;
+                    SharedScript = script;
+                    SharedTokens = tokens;
+                    SharedHasAst = true;
                 }
+            }
+
+            private TSqlScript ParseCached(string batchText)
+            {
+                ParseSlice(batchText, out _lastScript, out _lastTokens);
+                return _lastScript;
             }
 
             #endregion
