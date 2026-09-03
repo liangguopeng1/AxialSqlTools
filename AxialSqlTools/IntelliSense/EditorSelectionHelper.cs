@@ -13,6 +13,26 @@ namespace AxialSqlTools.IntelliSense
             return startLine != endLine || startCol != endCol;
         }
 
+        public static int TryGetPositionOfLineIndex(IVsTextView textView, int line, int col)
+        {
+            if (textView == null) return -1;
+            if (textView.GetBuffer(out IVsTextLines lines) != VSConstants.S_OK || lines == null)
+                return -1;
+            if (lines.GetPositionOfLineIndex(line, col, out int pos) == VSConstants.S_OK)
+                return pos;
+            return -1;
+        }
+
+        public static bool TryGetLineIndexOfPosition(IVsTextView textView, int position, out int line, out int col)
+        {
+            line = 0;
+            col = 0;
+            if (textView == null) return false;
+            if (textView.GetBuffer(out IVsTextLines lines) != VSConstants.S_OK || lines == null)
+                return false;
+            return lines.GetLineIndexOfPosition(position, out line, out col) == VSConstants.S_OK;
+        }
+
         /// <summary>一次 COM 取出全文，避免按行 GetLineText。</summary>
         public static string GetFullText(IVsTextView textView)
         {

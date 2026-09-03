@@ -713,17 +713,207 @@ namespace AxialSqlTools
             /// <summary>
             /// 一次扫描 0→caret：返回光标处是否在字符串/注释内，以及最后一条 USE 库名（跨 GO；注释/字符串内的 USE 忽略）。
             /// 合并 IsInsideStringOrComment + GetActiveUseDatabase 的两次全文扫描为一次，降低大脚本热路径开销。
+            /// 增量缓存只保留指纹与扫描状态，不持有全文，避免 1MB+ 文档被静态引用钉住。
             /// </summary>
+            private static readonly object PrefixScanGate = new object();
+            private static int _psTo;
+            private static int _psLen;
+            private static char _ps0, _psQ1, _psMid, _psQ3, _psLast;
+            private static int _psHq1, _psHmid, _psHq3;
+            private static bool _psLine, _psBlock, _psStr;
+            private static string _psUse;
+            private const int PrefixCpGap = 64 * 1024;
+            private const int PrefixCpMax = 40;
+            private static int[] _psCpAt;
+            private static bool[] _psCpLine, _psCpBlock, _psCpStr;
+            private static string[] _psCpUse;
+            private static int _psCpCount;
+
             internal static bool ScanPrefixState(string text, int caret, out string useDatabase)
+            {
+                return ScanPrefixState(text, caret, out useDatabase, cacheResult: true);
+            }
+
+            /// <param name="cacheResult">
+            /// false：给目录头尾裁剪等短副本用，不读不写静态缓存，避免 96KB clip 冲掉 1MB 原文的增量扫描状态。
+            /// </param>
+            internal static bool ScanPrefixState(string text, int caret, out string useDatabase, bool cacheResult)
             {
                 useDatabase = null;
                 if (string.IsNullOrEmpty(text) || caret <= 0) return false;
                 int n = Math.Min(caret, text.Length);
-                bool inLineComment = false;
-                bool inBlockComment = false;
-                bool inString = false;
-                string last = null;
-                for (int i = 0; i < n; i++)
+                if (!cacheResult)
+                {
+                    bool inLineU = false, inBlockU = false, inStrU = false;
+                    string lastU = null;
+                    ScanPrefixRange(text, 0, n, ref inLineU, ref inBlockU, ref inStrU, ref lastU);
+                    useDatabase = lastU;
+                    return inLineU || inBlockU || inStrU;
+                }
+                lock (PrefixScanGate)
+                {
+                    int start = 0;
+                    bool inLineComment = false, inBlockComment = false, inString = false;
+                    string last = null;
+                    bool resumed = false;
+                    if (_psTo > 0 && _psTo <= n && CanReusePrefixScan(text, n)
+                        && PrefixFingerprintMatches(text, _psTo))
+                    {
+                        start = _psTo;
+                        inLineComment = _psLine;
+                        inBlockComment = _psBlock;
+                        inString = _psStr;
+                        last = _psUse;
+                        resumed = true;
+                    }
+                    else if (_psTo > n && text.Length == _psLen && PrefixFingerprintMatches(text, _psTo)
+                             && TryResumePrefixCheckpoint(n, out start, out inLineComment, out inBlockComment, out inString, out last))
+                    {
+                        resumed = true;
+                    }
+                    if (!resumed)
+                        ClearPrefixCheckpoints();
+                    int i = start;
+                    while (i < n)
+                    {
+                        int gapAt = ((i / PrefixCpGap) + 1) * PrefixCpGap;
+                        int chunkEnd = gapAt < n ? gapAt : n;
+                        if (chunkEnd <= i) chunkEnd = n;
+                        ScanPrefixRange(text, i, chunkEnd, ref inLineComment, ref inBlockComment, ref inString, ref last);
+                        i = chunkEnd;
+                        if (i < n)
+                            RecordPrefixCheckpoint(i, inLineComment, inBlockComment, inString, last);
+                    }
+                    SavePrefixFingerprint(text, n, inLineComment, inBlockComment, inString, last);
+                    useDatabase = last;
+                    return inLineComment || inBlockComment || inString;
+                }
+            }
+
+            private static void ClearPrefixCheckpoints()
+            {
+                _psCpCount = 0;
+            }
+
+            private static void RecordPrefixCheckpoint(int at, bool line, bool block, bool str, string use)
+            {
+                if (at <= 0) return;
+                if (_psCpAt == null)
+                {
+                    _psCpAt = new int[PrefixCpMax];
+                    _psCpLine = new bool[PrefixCpMax];
+                    _psCpBlock = new bool[PrefixCpMax];
+                    _psCpStr = new bool[PrefixCpMax];
+                    _psCpUse = new string[PrefixCpMax];
+                }
+                for (int i = 0; i < _psCpCount; i++)
+                {
+                    if (_psCpAt[i] == at)
+                    {
+                        _psCpLine[i] = line;
+                        _psCpBlock[i] = block;
+                        _psCpStr[i] = str;
+                        _psCpUse[i] = use;
+                        return;
+                    }
+                }
+                if (_psCpCount >= PrefixCpMax) return;
+                int k = _psCpCount++;
+                _psCpAt[k] = at;
+                _psCpLine[k] = line;
+                _psCpBlock[k] = block;
+                _psCpStr[k] = str;
+                _psCpUse[k] = use;
+            }
+
+            private static bool TryResumePrefixCheckpoint(
+                int n, out int start, out bool line, out bool block, out bool str, out string use)
+            {
+                start = 0;
+                line = false;
+                block = false;
+                str = false;
+                use = null;
+                int best = -1;
+                for (int i = 0; i < _psCpCount; i++)
+                {
+                    int at = _psCpAt[i];
+                    if (at <= n && (best < 0 || at > _psCpAt[best]))
+                        best = i;
+                }
+                if (best < 0) return false;
+                start = _psCpAt[best];
+                line = _psCpLine[best];
+                block = _psCpBlock[best];
+                str = _psCpStr[best];
+                use = _psCpUse[best];
+                return start > 0;
+            }
+
+            /// <summary>仅在同文档微调（逐字输入）时复用扫描状态；换文档/大段粘贴必须重扫，避免误用注释状态。</summary>
+            private static bool CanReusePrefixScan(string text, int n)
+            {
+                if (_psLen <= 0 || _psTo <= 0) return false;
+                int len = text.Length;
+                if (len == _psLen) return n >= _psTo;
+                int grew = len - _psLen;
+                return grew > 0 && grew < 256 && n >= _psTo;
+            }
+
+            private static bool PrefixFingerprintMatches(string text, int to)
+            {
+                if (to <= 0 || to > text.Length) return false;
+                if (text[0] != _ps0 || text[to - 1] != _psLast) return false;
+                if (text[to / 4] != _psQ1 || text[to / 2] != _psMid || text[(to * 3) / 4] != _psQ3)
+                    return false;
+                return WindowHash(text, to / 4, to) == _psHq1
+                    && WindowHash(text, to / 2, to) == _psHmid
+                    && WindowHash(text, (to * 3) / 4, to) == _psHq3;
+            }
+
+            private static void SavePrefixFingerprint(string text, int to, bool line, bool block, bool str, string use)
+            {
+                if (to <= 0 || to > text.Length)
+                {
+                    _psTo = 0;
+                    _psLen = 0;
+                    _psUse = null;
+                    ClearPrefixCheckpoints();
+                    return;
+                }
+                _psTo = to;
+                _psLen = text.Length;
+                _ps0 = text[0];
+                _psQ1 = text[to / 4];
+                _psMid = text[to / 2];
+                _psQ3 = text[(to * 3) / 4];
+                _psLast = text[to - 1];
+                _psHq1 = WindowHash(text, to / 4, to);
+                _psHmid = WindowHash(text, to / 2, to);
+                _psHq3 = WindowHash(text, (to * 3) / 4, to);
+                _psLine = line;
+                _psBlock = block;
+                _psStr = str;
+                _psUse = use;
+            }
+
+            private static int WindowHash(string text, int center, int to)
+            {
+                int h = 17;
+                int i = center - 32;
+                if (i < 0) i = 0;
+                int end = center + 32;
+                if (end > to) end = to;
+                for (; i < end; i++)
+                    h = unchecked(h * 31 + text[i]);
+                return h;
+            }
+
+            private static void ScanPrefixRange(
+                string text, int start, int n,
+                ref bool inLineComment, ref bool inBlockComment, ref bool inString, ref string last)
+            {
+                for (int i = start; i < n; i++)
                 {
                     char c = text[i];
                     char next = i + 1 < text.Length ? text[i + 1] : '\0';
@@ -777,17 +967,18 @@ namespace AxialSqlTools
                             continue;
                         }
                     }
-                    if (IsUseKeywordAt(text, i, n))
+                    if (IsUseKeywordAt(text, i, text.Length))
                     {
                         int j = i + 3;
-                        while (j < n && char.IsWhiteSpace(text[j])) j++;
-                        if (j >= n) break;
+                        int len = text.Length;
+                        while (j < len && char.IsWhiteSpace(text[j])) j++;
+                        if (j >= len) continue;
                         string db = null;
                         if (text[j] == '[')
                         {
                             int close = text.IndexOf(']', j + 1);
-                            if (close < 0 || close > n)
-                                db = text.Substring(j + 1, Math.Max(0, n - j - 1)).Trim();
+                            if (close < 0 || close > len)
+                                db = text.Substring(j + 1, Math.Max(0, len - j - 1)).Trim();
                             else
                             {
                                 db = text.Substring(j + 1, close - j - 1).Trim();
@@ -797,7 +988,7 @@ namespace AxialSqlTools
                         else
                         {
                             int k = j;
-                            while (k < n && IsIdentChar(text[k])) k++;
+                            while (k < len && IsIdentChar(text[k])) k++;
                             if (k > j)
                             {
                                 db = text.Substring(j, k - j);
@@ -805,17 +996,19 @@ namespace AxialSqlTools
                             }
                         }
                         if (!string.IsNullOrEmpty(db)) last = UnbracketIdentifier(db);
-                        continue;
                     }
                 }
-                useDatabase = last;
-                return inLineComment || inBlockComment || inString;
             }
 
             /// <summary>光标前最后一条 USE 的库名（含未执行的脚本；跨 GO）。注释/字符串内的 USE 忽略。</summary>
             internal static string GetActiveUseDatabase(string text, int caret)
             {
-                ScanPrefixState(text, caret, out string useDb);
+                return GetActiveUseDatabase(text, caret, cacheResult: true);
+            }
+
+            internal static string GetActiveUseDatabase(string text, int caret, bool cacheResult)
+            {
+                ScanPrefixState(text, caret, out string useDb, cacheResult);
                 return useDb;
             }
 

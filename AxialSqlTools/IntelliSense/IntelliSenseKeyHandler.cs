@@ -332,10 +332,6 @@ namespace AxialSqlTools.IntelliSense
             if (IsCaretAtEmptyCompletionContext()) return true;
             try
             {
-                string full = GetFullText();
-                int caret = GetCaretOffset(full);
-                if (caret >= 0 && CompletionEngine.IsInsideStringOrComment(full, caret))
-                    return true;
                 if (_textView.GetCaretPos(out int line, out int col) != VSConstants.S_OK)
                     return false;
                 if (_textView.GetBuffer(out IVsTextLines textLines) != VSConstants.S_OK)
@@ -344,6 +340,7 @@ namespace AxialSqlTools.IntelliSense
                 if (col <= 0) return true;
                 textLines.GetLineText(line, 0, line, Math.Min(col, lineLen), out string before);
                 if (string.IsNullOrEmpty(before)) return true;
+                if (LineLooksInsideCommentOrString(before)) return true;
 
                 // 必须紧贴光标有触发条件，不能跳过空白去认前面的 SELECT/WHERE 关键字
                 char last = before[before.Length - 1];
@@ -365,6 +362,49 @@ namespace AxialSqlTools.IntelliSense
             {
                 return false;
             }
+        }
+
+        /// <summary>只看当前行，避免为判断注释而 GetFullText 拷贝 1MB+。</summary>
+        private static bool LineLooksInsideCommentOrString(string before)
+        {
+            bool inString = false;
+            for (int i = 0; i < before.Length; i++)
+            {
+                char c = before[i];
+                char next = i + 1 < before.Length ? before[i + 1] : '\0';
+                if (inString)
+                {
+                    if (c == '\'')
+                    {
+                        if (next == '\'') i++;
+                        else inString = false;
+                    }
+                    continue;
+                }
+                if (c == '-' && next == '-') return true;
+                if (c == '/' && next == '*')
+                {
+                    int close = before.IndexOf("*/", i + 2);
+                    if (close < 0) return true;
+                    i = close + 1;
+                    continue;
+                }
+                if (c == '\'')
+                {
+                    inString = true;
+                    continue;
+                }
+                if ((c == 'N' || c == 'n') && next == '\'')
+                {
+                    bool identBefore = i > 0 && (char.IsLetterOrDigit(before[i - 1]) || before[i - 1] == '_');
+                    if (!identBefore)
+                    {
+                        inString = true;
+                        i++;
+                    }
+                }
+            }
+            return inString;
         }
 
         /// <summary>构成正在输入的标识符前缀的字符（不含已闭合的 ]）。</summary>
@@ -633,10 +673,9 @@ namespace AxialSqlTools.IntelliSense
                         MetadataCatalog catalog = null;
                         if (connInfo != null)
                         {
-                            string scanSql = text;
-                            if (CompletionEngine.TryGetParseSlice(text, caret, out string slice, out int sliceStart))
-                                scanSql = slice;
-                            MetadataCatalogService.Instance.EnsureCatalogsReferencedInSql(connInfo, scanSql);
+                            // 头尾裁剪取库名，不用当前语句切片（切片会丢掉文首 USE，还会冲掉前缀扫描缓存）
+                            MetadataCatalogService.Instance.EnsureCatalogsReferencedInSql(
+                                connInfo, MetadataCatalogService.ClipSqlForCatalogScan(text));
                             if (!string.IsNullOrEmpty(useDb))
                                 MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, useDb);
                             bool likelyExec = LooksLikeExecContext(text, caret);
@@ -883,7 +922,7 @@ namespace AxialSqlTools.IntelliSense
                 }
                 _logger.Debug("Catalog warmup from document len={0} db={1}", text.Length, connInfo.Database);
                 var snap = connInfo;
-                var sql = text;
+                var sql = MetadataCatalogService.ClipSqlForCatalogScan(text);
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
                     try
@@ -952,6 +991,10 @@ namespace AxialSqlTools.IntelliSense
 
         private int GetCaretOffset()
         {
+            if (_textView.GetCaretPos(out int line, out int col) != VSConstants.S_OK)
+                return -1;
+            int pos = EditorSelectionHelper.TryGetPositionOfLineIndex(_textView, line, col);
+            if (pos >= 0) return pos;
             return GetCaretOffset(GetFullText());
         }
 
@@ -959,6 +1002,8 @@ namespace AxialSqlTools.IntelliSense
         {
             if (_textView.GetCaretPos(out int line, out int col) != VSConstants.S_OK)
                 return -1;
+            int pos = EditorSelectionHelper.TryGetPositionOfLineIndex(_textView, line, col);
+            if (pos >= 0) return pos;
             if (string.IsNullOrEmpty(text)) return 0;
             return EditorSelectionHelper.LineColToOffset(text, line, col);
         }
@@ -1025,6 +1070,8 @@ namespace AxialSqlTools.IntelliSense
             line = 0;
             col = 0;
             if (offset < 0) return;
+            if (EditorSelectionHelper.TryGetLineIndexOfPosition(_textView, offset, out line, out col))
+                return;
             string text = GetFullText();
             EditorSelectionHelper.OffsetToLineCol(text, offset, out line, out col);
         }

@@ -137,9 +137,10 @@ namespace AxialSqlTools
             internal static List<string> ExtractReferencedDatabaseNames(string sql)
             {
                 var result = new List<string>();
+                sql = ClipSqlForCatalogScan(sql);
                 if (string.IsNullOrEmpty(sql)) return result;
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                string useDb = CompletionEngine.GetActiveUseDatabase(sql, sql.Length);
+                string useDb = CompletionEngine.GetActiveUseDatabase(sql, sql.Length, cacheResult: false);
                 if (IsPlausibleDatabaseName(useDb) && seen.Add(useDb))
                     result.Add(useDb);
                 // db.schema.obj 或 [db].[schema].[obj]
@@ -159,8 +160,17 @@ namespace AxialSqlTools
                 return result;
             }
 
-            /// <summary>
-            /// 提取 DDL 语句（CREATE/ALTER/DROP/TRUNCATE）目标对象所在的库：
+            private const int CatalogScanHeadChars = 32 * 1024;
+            private const int CatalogScanTailChars = 64 * 1024;
+
+            /// <summary>大脚本只扫头尾提取库名，避免对 1MB+ 粘贴做三份全文正则并长期抓住原文。</summary>
+            internal static string ClipSqlForCatalogScan(string sql)
+            {
+                if (string.IsNullOrEmpty(sql)) return sql;
+                int n = sql.Length;
+                if (n <= CatalogScanHeadChars + CatalogScanTailChars) return sql;
+                return sql.Substring(0, CatalogScanHeadChars) + "\n" + sql.Substring(n - CatalogScanTailChars);
+            }
             /// 三段名 db.schema.obj → db；否则 USE 库或当前连接库。
             /// 区别于 ExtractReferencedDatabaseNames（后者提取所有引用库，含查询引用），
             /// 失效只应针对 DDL 实际修改的目标库，避免误伤仅被查询引用的库（如 SELECT * FROM otherdb..t）。
@@ -169,7 +179,7 @@ namespace AxialSqlTools
             {
                 var result = new List<string>();
                 if (string.IsNullOrEmpty(sql)) return result;
-                string useDb = CompletionEngine.GetActiveUseDatabase(sql, sql.Length);
+                string useDb = CompletionEngine.GetActiveUseDatabase(sql, sql.Length, cacheResult: false);
                 string fallback = !string.IsNullOrWhiteSpace(useDb) && IsPlausibleDatabaseName(useDb)
                     ? useDb
                     : (string.IsNullOrWhiteSpace(currentDatabase) ? "master" : UnbracketSqlIdent(currentDatabase));

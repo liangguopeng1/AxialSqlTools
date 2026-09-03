@@ -3,7 +3,6 @@ using Microsoft.VisualStudio.OLE.Interop;
 using Microsoft.VisualStudio.TextManager.Interop;
 using System;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Windows.Input;
 using System.Windows.Threading;
 using AxialSqlTools.IntelliSense;
@@ -252,7 +251,7 @@ namespace AxialSqlTools
             }
             _logger.Info("Catalog warmup from filter len={0} db={1}", text.Length, connInfo.Database);
             var snap = connInfo;
-            var sql = text;
+            var sql = MetadataCatalogService.ClipSqlForCatalogScan(text);
             _lastWarmupTextLen = text.Length;
             System.Threading.ThreadPool.QueueUserWorkItem(_ =>
             {
@@ -298,16 +297,27 @@ namespace AxialSqlTools
             }
         }
 
+        private const int CatalogWarmupMinGrowth = 256;
+
         /// <summary>
         /// 文档已有足够 SQL 且尚未预热过该长度 → 创建 KeyHandler + 预热。
         /// 覆盖「先粘贴后挂 Filter」：此时没有增长量可观测。
+        /// 逐字输入不重扫目录，避免每次按键拷贝并正则 1MB+ 原文。
         /// </summary>
         private void ScanExistingDocumentForWarmup(string reason)
         {
             if (!UiSettingsStore.GetIntelliSenseEnabled()) return;
             int len = GetTextLengthSafe();
             _lastSeenTextLen = len;
+            if (len + CatalogWarmupMinGrowth < _lastWarmupTextLen)
+                _lastWarmupTextLen = 0;
             if (len < 60 || len <= _lastWarmupTextLen) return;
+            int growth = len - _lastWarmupTextLen;
+            if (_lastWarmupTextLen > 0 && growth < CatalogWarmupMinGrowth)
+            {
+                _lastWarmupTextLen = len;
+                return;
+            }
             // 已在创建/重试预热中则勿重复打点
             if (_pendingPasteWarmup || _warmupRetryLeft > 0 || _intelliSenseInitPending)
                 return;
@@ -421,18 +431,7 @@ namespace AxialSqlTools
         {
             try
             {
-                if (textView == null || textView.GetBuffer(out IVsTextLines textLines) != VSConstants.S_OK)
-                    return string.Empty;
-                textLines.GetLastLineIndex(out int lastLine, out _);
-                var sb = new StringBuilder();
-                for (int i = 0; i <= lastLine; i++)
-                {
-                    textLines.GetLengthOfLine(i, out int lineLen);
-                    textLines.GetLineText(i, 0, i, lineLen, out string lineText);
-                    sb.Append(lineText);
-                    if (i < lastLine) sb.Append("\r\n");
-                }
-                return sb.ToString();
+                return EditorSelectionHelper.GetFullText(textView) ?? string.Empty;
             }
             catch
             {

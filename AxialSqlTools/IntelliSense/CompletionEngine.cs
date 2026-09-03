@@ -3,7 +3,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text.RegularExpressions;
 
 namespace AxialSqlTools
 {
@@ -355,14 +354,18 @@ namespace AxialSqlTools
 
             #region 批次与解析
 
-            private static readonly Regex GoBatchSplit =
-                new Regex(@"(?im)^[ \t]*GO[ \t]*(?:;)?[ \t]*\r?\n", RegexOptions.Compiled);
-
             /// <summary>超过此长度的 GO 批次只解析光标所在语句，避免整页几千行 ScriptDOM。</summary>
             internal const int LargeBatchParseChars = 24 * 1024;
 
+            /// <summary>大脚本找 GO 批次时只回看这么多字符，避免全文 IndexOf("GO") 误中 GongYingShang 后再 Regex.Matches 扫 1MB+。</summary>
+            private const int LargeBatchLookbackChars = 256 * 1024;
+
             /// <summary>切片超过此长度不缓存 AST（TSqlScript 对象图内存高），只缓存扁平 token，控制大单语句的内存峰值。</summary>
             internal const int LargeSliceAstCacheChars = 64 * 1024;
+            /// <summary>无分号时从光标回看找顶层语句起点；须大于常见派生表子查询，否则会切到内层 SELECT、丢掉 CARTNEW 等外层别名。</summary>
+            private const int StmtLookbackChars = 128 * 1024;
+            /// <summary>光标后延伸找 FROM / 语句结束。悬停在 SELECT 列表时定义在后面的别名仍要进切片。</summary>
+            private const int StmtLookAheadChars = 128 * 1024;
 
             private static readonly object ParseGate = new object();
             private static readonly TSql170Parser SharedParser = new TSql170Parser(true);
@@ -376,79 +379,299 @@ namespace AxialSqlTools
                 slice = fullText;
                 sliceStart = 0;
                 if (string.IsNullOrEmpty(fullText)) return false;
-                if (!TryGetBatchAt(fullText, caretOffset, out string batch, out int batchStart))
+                if (!TryGetBatchRange(fullText, caretOffset, out int batchStart, out int batchEnd))
                     return false;
-                if (batch.Length <= LargeBatchParseChars)
-                {
-                    slice = batch;
-                    sliceStart = batchStart;
-                    return true;
-                }
-                int localCaret = caretOffset - batchStart;
-                if (localCaret < 0) localCaret = 0;
-                if (localCaret > batch.Length) localCaret = batch.Length;
-                FindCurrentStatementBounds(batch, localCaret, out int stmtStart, out int stmtEnd);
-                if (stmtStart < 0) stmtStart = 0;
-                if (stmtEnd > batch.Length) stmtEnd = batch.Length;
+                int stmtStart = batchStart;
+                int stmtEnd = batchEnd;
+                if (batchEnd - batchStart > LargeBatchParseChars)
+                    FindCurrentStatementBounds(fullText, batchStart, batchEnd, caretOffset, out stmtStart, out stmtEnd);
+                if (stmtStart < batchStart) stmtStart = batchStart;
+                if (stmtEnd > batchEnd) stmtEnd = batchEnd;
                 if (stmtEnd < stmtStart) stmtEnd = stmtStart;
-                sliceStart = batchStart + stmtStart;
-                slice = batch.Substring(stmtStart, stmtEnd - stmtStart);
+                ExpandBoundsToCoverTopLevelFrom(fullText, caretOffset, ref stmtStart, ref stmtEnd);
+                if (stmtStart < batchStart) stmtStart = batchStart;
+                if (stmtEnd > batchEnd) stmtEnd = batchEnd;
+                if (stmtEnd < stmtStart) stmtEnd = stmtStart;
+                // 切完仍过大：再从光标收一刀，防止无分号填充句把 32KB+ 送进解析器。
+                // 只认括号深度 0 的语句起点，避免切到派生表里的 SELECT 而丢掉外层别名。
+                if (stmtEnd - stmtStart > LargeBatchParseChars)
+                {
+                    int lookFrom = caretOffset - StmtLookbackChars;
+                    if (lookFrom < stmtStart) lookFrom = stmtStart;
+                    lookFrom = LineStartAt(fullText, lookFrom);
+                    int tighter = FindLineStartStmtBefore(fullText, lookFrom, caretOffset, fullText.Length);
+                    if (tighter > stmtStart && tighter <= caretOffset)
+                        stmtStart = tighter;
+                    ExpandBoundsToCoverTopLevelFrom(fullText, caretOffset, ref stmtStart, ref stmtEnd);
+                    if (stmtStart < batchStart) stmtStart = batchStart;
+                    if (stmtEnd > batchEnd) stmtEnd = batchEnd;
+                }
+                sliceStart = stmtStart;
+                int sliceLen = stmtEnd - stmtStart;
+                if (sliceLen <= 0)
+                    slice = string.Empty;
+                else if (stmtStart == 0 && sliceLen == fullText.Length)
+                    slice = fullText;
+                else
+                    slice = fullText.Substring(stmtStart, sliceLen);
                 return true;
             }
 
-            private static bool TryGetBatchAt(string fullText, int caretOffset, out string batchText, out int batchStart)
+            /// <summary>当前 GO 批次在原文中的区间。大脚本只在光标附近回看，不 Substring 拷贝整批。</summary>
+            internal static bool TryGetBatchRange(string fullText, int caretOffset, out int batchStart, out int batchEnd)
             {
-                batchText = fullText;
                 batchStart = 0;
-                if (fullText.IndexOf("GO", StringComparison.OrdinalIgnoreCase) < 0)
-                    return true;
+                batchEnd = 0;
+                if (string.IsNullOrEmpty(fullText)) return false;
+                int n = fullText.Length;
+                int caret = caretOffset;
+                if (caret < 0) caret = 0;
+                if (caret > n) caret = n;
+                int searchFrom = caret - LargeBatchLookbackChars;
+                if (searchFrom < 0) searchFrom = 0;
+                else if (searchFrom > 0)
+                    searchFrom = LineStartAt(fullText, searchFrom);
 
-                var matches = GoBatchSplit.Matches(fullText);
-                if (matches.Count == 0)
-                    return true;
-
-                int start = 0;
-                foreach (Match m in matches)
+                int start = searchFrom;
+                int pos = caret;
+                while (pos > searchFrom)
                 {
-                    if (m.Index > caretOffset)
-                        break;
-                    start = m.Index + m.Length;
+                    int ls = LineStartAt(fullText, pos > 0 ? pos - 1 : 0);
+                    if (ls < searchFrom) break;
+                    if (IsGoBatchLine(fullText, ls, n))
+                    {
+                        int afterGo = SkipLine(fullText, ls, n);
+                        if (afterGo <= caret)
+                        {
+                            start = afterGo;
+                            break;
+                        }
+                    }
+                    if (ls <= searchFrom) break;
+                    pos = ls;
                 }
 
-                int end = fullText.Length;
-                foreach (Match m in matches)
+                int searchTo = caret + StmtLookAheadChars;
+                if (searchTo > n) searchTo = n;
+                int end = searchTo;
+                int fwd = caret < n ? LineStartAt(fullText, caret) : n;
+                while (fwd < searchTo)
                 {
-                    if (m.Index >= start && m.Index >= caretOffset)
+                    if (fwd >= caret && IsGoBatchLine(fullText, fwd, n))
                     {
-                        end = m.Index;
+                        end = fwd;
                         break;
                     }
+                    int next = SkipLine(fullText, fwd, n);
+                    if (next <= fwd) break;
+                    fwd = next;
                 }
 
                 batchStart = start;
-                batchText = fullText.Substring(start, Math.Max(0, Math.Min(end, fullText.Length) - start));
+                batchEnd = end;
                 return true;
             }
 
-            private static void FindCurrentStatementBounds(string text, int caret, out int stmtStart, out int stmtEnd)
+            /// <summary>
+            /// 回看行首语句关键字。括号内的 SELECT（派生表/子查询）不算当前句，
+            /// 否则大脚本会切到内层 SELECT，外层 AS CARTNEW 进不了切片。
+            /// </summary>
+            private static int FindLineStartStmtBefore(string text, int rangeStart, int probe, int n)
             {
-                stmtStart = 0;
-                stmtEnd = text.Length;
-                if (string.IsNullOrEmpty(text))
-                    return;
+                if (string.IsNullOrEmpty(text) || probe <= rangeStart) return rangeStart;
+                int depth = 0;
+                for (int i = probe - 1; i >= rangeStart; i--)
+                {
+                    char c = text[i];
+                    if (c == ')') { depth++; continue; }
+                    if (c == '(')
+                    {
+                        if (depth > 0) depth--;
+                        continue;
+                    }
+                    if (depth != 0) continue;
+                    if (i > 0 && text[i - 1] != '\n' && text[i - 1] != '\r') continue;
+                    int j = i;
+                    while (j < probe && (text[j] == ' ' || text[j] == '\t')) j++;
+                    int kwLen;
+                    StmtKw kw = MatchStmtKeyword(text, j, n, out kwLen);
+                    if (kw != StmtKw.None && kw != StmtKw.Union && kw != StmtKw.Except
+                        && kw != StmtKw.Intersect && kw != StmtKw.Values)
+                    {
+                        if (!IsSetOpBefore(text, j, rangeStart, n))
+                            return j;
+                    }
+                }
+                return rangeStart;
+            }
+
+            /// <summary>切片必须盖住当前查询顶层 FROM，否则 SELECT 列表/WHERE 里的 CARTNEW 对不上别名定义。</summary>
+            private static void ExpandBoundsToCoverTopLevelFrom(string text, int caret, ref int stmtStart, ref int stmtEnd)
+            {
+                if (string.IsNullOrEmpty(text)) return;
                 int n = text.Length;
-                int probe = Math.Min(Math.Max(0, caret), n);
+                int from = FindTopLevelFrom(text, caret, stmtStart, stmtEnd);
+                if (from < 0)
+                {
+                    int lookBack = caret - StmtLookbackChars;
+                    if (lookBack < 0) lookBack = 0;
+                    int lookAhead = caret + StmtLookAheadChars;
+                    if (lookAhead > n) lookAhead = n;
+                    from = FindTopLevelFrom(text, caret, lookBack, lookAhead);
+                }
+                if (from < 0) return;
+                if (from < stmtStart) stmtStart = LineStartAt(text, from);
+                int regionEnd = ScanTopLevelFromRegionEnd(text, from, n);
+                if (regionEnd > stmtEnd) stmtEnd = regionEnd;
+            }
+
+            private static int FindTopLevelFrom(string text, int caret, int from, int to)
+            {
+                if (to > text.Length) to = text.Length;
+                if (from < 0) from = 0;
+                if (to <= from) return -1;
+                int probe = caret;
+                if (probe < from) probe = from;
+                if (probe > to) probe = to;
+                int depth = 0;
+                for (int i = probe - 1; i >= from; i--)
+                {
+                    char c = text[i];
+                    if (c == ')') { depth++; continue; }
+                    if (c == '(') { if (depth > 0) depth--; continue; }
+                    if (depth != 0) continue;
+                    if (KeywordAt(text, i, text.Length, "FROM"))
+                        return i;
+                }
+                depth = 0;
+                for (int i = probe; i < to; i++)
+                {
+                    char c = text[i];
+                    if (c == '(') { depth++; continue; }
+                    if (c == ')') { if (depth > 0) depth--; continue; }
+                    if (depth != 0) continue;
+                    if (KeywordAt(text, i, text.Length, "FROM"))
+                        return i;
+                }
+                return -1;
+            }
+
+            private static int ScanTopLevelFromRegionEnd(string text, int fromKw, int n)
+            {
+                int depth = 0;
+                int i = fromKw + 4;
+                while (i < n)
+                {
+                    char c = text[i];
+                    if (c == '(') { depth++; i++; continue; }
+                    if (c == ')') { if (depth > 0) depth--; i++; continue; }
+                    if (depth != 0) { i++; continue; }
+                    if (c == ';') return i;
+                    int kwLen;
+                    StmtKw kw = MatchStmtKeyword(text, i, n, out kwLen);
+                    if (kw == StmtKw.Select || kw == StmtKw.Insert || kw == StmtKw.Update
+                        || kw == StmtKw.Delete || kw == StmtKw.Merge || kw == StmtKw.With
+                        || kw == StmtKw.Create || kw == StmtKw.Alter || kw == StmtKw.Drop
+                        || kw == StmtKw.Use || kw == StmtKw.Declare || kw == StmtKw.Truncate)
+                    {
+                        if (i > fromKw + 4 && !IsSetOpBefore(text, i, fromKw, n))
+                            return i;
+                    }
+                    if (KeywordAt(text, i, n, "WHERE") || KeywordAt(text, i, n, "GROUP")
+                        || KeywordAt(text, i, n, "ORDER") || KeywordAt(text, i, n, "HAVING")
+                        || KeywordAt(text, i, n, "UNION") || KeywordAt(text, i, n, "EXCEPT")
+                        || KeywordAt(text, i, n, "INTERSECT"))
+                        return i;
+                    i++;
+                }
+                return n;
+            }
+
+            private static bool IsSetOpBefore(string text, int stmtAt, int rangeStart, int n)
+            {
+                int i = stmtAt - 1;
+                while (i >= rangeStart && char.IsWhiteSpace(text[i])) i--;
+                if (i < rangeStart) return false;
+                while (i >= rangeStart && IsIdentChar(text[i])) i--;
+                i++;
+                int kwLen;
+                StmtKw kw = MatchStmtKeyword(text, i, n, out kwLen);
+                if (kw == StmtKw.Union || kw == StmtKw.Except || kw == StmtKw.Intersect)
+                    return true;
+                if (KeywordAt(text, i, n, "ALL"))
+                {
+                    int k = i - 1;
+                    while (k >= rangeStart && char.IsWhiteSpace(text[k])) k--;
+                    while (k >= rangeStart && IsIdentChar(text[k])) k--;
+                    k++;
+                    return MatchStmtKeyword(text, k, n, out kwLen) == StmtKw.Union;
+                }
+                return false;
+            }
+
+            private static int LineStartAt(string text, int i)
+            {
+                if (i <= 0) return 0;
+                if (i > text.Length) i = text.Length;
+                while (i > 0 && text[i - 1] != '\n') i--;
+                return i;
+            }
+
+            private static int SkipLine(string text, int lineStart, int n)
+            {
+                int i = lineStart;
+                while (i < n && text[i] != '\n') i++;
+                if (i < n) i++;
+                return i;
+            }
+
+            private static bool IsGoBatchLine(string text, int lineStart, int n)
+            {
+                int j = lineStart;
+                while (j < n && (text[j] == ' ' || text[j] == '\t')) j++;
+                if (j + 2 > n) return false;
+                if ((text[j] != 'G' && text[j] != 'g') || (text[j + 1] != 'O' && text[j + 1] != 'o'))
+                    return false;
+                int after = j + 2;
+                if (after < n && IsIdentChar(text[after])) return false;
+                while (after < n && (text[after] == ' ' || text[after] == '\t')) after++;
+                if (after < n && text[after] == ';')
+                {
+                    after++;
+                    while (after < n && (text[after] == ' ' || text[after] == '\t')) after++;
+                }
+                return after >= n || text[after] == '\r' || text[after] == '\n';
+            }
+
+            private static void FindCurrentStatementBounds(string text, int rangeStart, int rangeEnd, int caret, out int stmtStart, out int stmtEnd)
+            {
+                stmtStart = rangeStart;
+                stmtEnd = rangeEnd;
+                if (string.IsNullOrEmpty(text) || rangeEnd <= rangeStart)
+                    return;
+                if (rangeStart < 0) rangeStart = 0;
+                if (rangeEnd > text.Length) rangeEnd = text.Length;
+                int n = rangeEnd;
+                int probe = Math.Min(Math.Max(rangeStart, caret), n);
                 // 就近定位扫描起点：从 probe 往前找最近的顶层分号，语句起点必在其后。
                 // 字符串/注释内的分号会被近似忽略，仅使起点略偏后（补全早被字符串检查拦截），不破坏正确性。
-                int scanFrom = 0;
+                int scanFrom = rangeStart;
                 int depth = 0;
-                for (int k = probe - 1; k >= 0; k--)
+                for (int k = probe - 1; k >= rangeStart; k--)
                 {
                     char ch = text[k];
                     if (ch == ')') { depth++; continue; }
                     if (ch == '(') { if (depth > 0) depth--; continue; }
                     if (ch == ';' && depth == 0) { scanFrom = k + 1; break; }
                 }
+                // 无分号的大窗口不要从 256KB 外正向扫：ScriptDOM 只会吃第一句，WHERE k. 会丢别名。
+                if (probe - scanFrom > StmtLookbackChars)
+                {
+                    int clipped = LineStartAt(text, probe - StmtLookbackChars);
+                    if (clipped > scanFrom) scanFrom = clipped;
+                }
+                int lineStmt = FindLineStartStmtBefore(text, scanFrom, probe, n);
+                if (lineStmt > scanFrom) scanFrom = lineStmt;
                 bool inLineComment = false;
                 bool inBlockComment = false;
                 bool inString = false;
@@ -759,6 +982,11 @@ namespace AxialSqlTools
                     SharedTokens = tokens;
                     SharedScript = null;
                     SharedHasAst = false;
+                    if (slice.Length > LargeSliceAstCacheChars)
+                    {
+                        SharedSlice = null;
+                        SharedTokens = null;
+                    }
                 }
             }
 
@@ -769,7 +997,8 @@ namespace AxialSqlTools
                 if (string.IsNullOrEmpty(slice)) return;
                 lock (ParseGate)
                 {
-                    if (string.Equals(SharedSlice, slice, StringComparison.Ordinal) && SharedTokens != null && SharedHasAst)
+                    if (string.Equals(SharedSlice, slice, StringComparison.Ordinal) && SharedTokens != null
+                        && (SharedHasAst || slice.Length > LargeBatchParseChars))
                     {
                         script = SharedScript;
                         tokens = SharedTokens;
@@ -777,10 +1006,15 @@ namespace AxialSqlTools
                     }
                     try
                     {
-                        using (var reader = new StringReader(slice))
+                        // 大切片只做词法：TSqlScript 对象图随语句数膨胀，1MB 填充句会把内存打满。
+                        bool parseAst = slice.Length <= LargeBatchParseChars;
+                        if (parseAst)
                         {
-                            script = SharedParser.Parse(reader, out var _) as TSqlScript;
-                            tokens = script?.ScriptTokenStream?.ToList() ?? new List<TSqlParserToken>();
+                            using (var reader = new StringReader(slice))
+                            {
+                                script = SharedParser.Parse(reader, out var _) as TSqlScript;
+                                tokens = script?.ScriptTokenStream?.ToList() ?? new List<TSqlParserToken>();
+                            }
                         }
                         if (tokens.Count == 0)
                         {
@@ -798,7 +1032,7 @@ namespace AxialSqlTools
                     }
                     SharedSlice = slice;
                     SharedTokens = tokens;
-                    // 大切片不缓存 AST，控制内存峰值；下次需 AST 时重新 Parse（切片已按语句切小，超大单语句才触发）。
+                    // 大切片不缓存 AST/原文，避免把 64KB+ 的 slice 和 token 列表钉在静态字段上
                     if (slice.Length <= LargeSliceAstCacheChars)
                     {
                         SharedScript = script;
@@ -806,6 +1040,8 @@ namespace AxialSqlTools
                     }
                     else
                     {
+                        SharedSlice = null;
+                        SharedTokens = null;
                         SharedScript = null;
                         SharedHasAst = false;
                     }

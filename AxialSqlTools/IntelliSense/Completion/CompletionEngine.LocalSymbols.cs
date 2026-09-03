@@ -34,34 +34,60 @@ namespace AxialSqlTools
                 return local;
             }
 
-            /// <summary>跨 GO 的 #临时表全文扫描阈值：超过则降级为当前批次，避免超大脚本热路径线性扫描。</summary>
+            /// <summary>跨 GO 的 #临时表全文扫描阈值：超过则只回看 LocalSymbolLookbackChars，避免超大脚本热路径线性扫描。</summary>
             private const int FullTextTempScanLimit = 256 * 1024;
+            private const int LocalSymbolLookbackChars = 64 * 1024;
 
             private void EnrichLocalSymbolsFromBatch(LocalSymbols local, string fullText, int caret)
             {
                 if (local == null || string.IsNullOrEmpty(fullText)) return;
                 int limit = Math.Min(Math.Max(0, caret), fullText.Length);
                 if (limit <= 0) return;
-                bool haveBatch = TryGetBatchAt(fullText, caret, out string batch, out int batchStart);
-                int batchLimit = haveBatch ? Math.Min(caret - batchStart, batch.Length) : 0;
-                // #临时表是会话级对象，跨 GO 批次可见：扫描光标前的全部文本（超大脚本降级为当前批次）
-                if (limit <= FullTextTempScanLimit)
-                    CollectLocalSymbolsFromText(fullText, limit, local, scanTempTables: true, scanVariables: false);
-                else if (haveBatch)
-                    CollectLocalSymbolsFromText(batch, batchLimit, local, scanTempTables: true, scanVariables: false);
-                // DECLARE 变量/表变量是批次级：只扫描当前 GO 批次
-                if (haveBatch)
-                    CollectLocalSymbolsFromText(batch, batchLimit, local, scanTempTables: false, scanVariables: true);
+                int tempStart = 0;
+                if (limit > FullTextTempScanLimit)
+                    tempStart = AlignScanStart(fullText, limit - LocalSymbolLookbackChars);
+                CollectLocalSymbolsFromText(fullText, tempStart, limit, local, scanTempTables: true, scanVariables: false);
+                if (!TryGetBatchRange(fullText, caret, out int batchStart, out int batchEnd))
+                    return;
+                int varEnd = Math.Min(limit, batchEnd);
+                if (varEnd <= batchStart) return;
+                int varStart = batchStart;
+                if (varEnd - varStart > LocalSymbolLookbackChars)
+                {
+                    varStart = AlignScanStart(fullText, varEnd - LocalSymbolLookbackChars);
+                    if (varStart < batchStart) varStart = batchStart;
+                }
+                CollectLocalSymbolsFromText(fullText, varStart, varEnd, local, scanTempTables: false, scanVariables: true);
+            }
+
+            private static int AlignScanStart(string text, int i)
+            {
+                if (string.IsNullOrEmpty(text) || i <= 0) return 0;
+                if (i >= text.Length) return text.Length;
+                while (i < text.Length && text[i] != '\n') i++;
+                if (i < text.Length) i++;
+                return i;
             }
 
             private static void CollectLocalSymbolsFromText(string text, int limit, LocalSymbols local, bool scanTempTables, bool scanVariables)
             {
+                CollectLocalSymbolsFromText(text, 0, limit, local, scanTempTables, scanVariables);
+            }
+
+            private static void CollectLocalSymbolsFromText(string text, int start, int limit, LocalSymbols local, bool scanTempTables, bool scanVariables)
+            {
                 if (string.IsNullOrEmpty(text) || local == null || limit <= 0) return;
                 int n = Math.Min(limit, text.Length);
+                int i = start < 0 ? 0 : start;
+                if (i >= n) return;
+                if (scanTempTables && text.IndexOf('#', i, n - i) < 0)
+                    scanTempTables = false;
+                if (scanVariables && text.IndexOf('@', i, n - i) < 0)
+                    scanVariables = false;
+                if (!scanTempTables && !scanVariables) return;
                 bool inLineComment = false;
                 bool inBlockComment = false;
                 bool inString = false;
-                int i = 0;
                 while (i < n)
                 {
                     char c = text[i];

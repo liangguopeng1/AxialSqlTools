@@ -562,9 +562,11 @@ namespace AxialSqlTools.IntelliSense
                     if (!string.Equals(_lastLoggedWord, word, StringComparison.OrdinalIgnoreCase))
                     {
                         _lastLoggedWord = word;
-                        _logger.Info("QuickInfo no match word={0} db={1} catalogTables={2}",
+                        _logger.Info("QuickInfo no match word={0} connDb={1} useDb={2} catalogDb={3} catalogTables={4}",
                             word,
                             connInfo?.Database ?? "(null)",
+                            useDb ?? "",
+                            catalog?.Database ?? "(null)",
                             catalog?.Tables?.Count ?? -1);
                     }
                     CloseTooltip();
@@ -923,6 +925,8 @@ namespace AxialSqlTools.IntelliSense
 
         private int GetOffsetFromLineColumn(string text, int line, int col)
         {
+            int pos = EditorSelectionHelper.TryGetPositionOfLineIndex(_textView, line, col);
+            if (pos >= 0) return pos;
             return EditorSelectionHelper.LineColToOffset(text, line, col);
         }
 

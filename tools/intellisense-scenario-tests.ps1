@@ -677,6 +677,101 @@ if ($null -ne $qiInfo7) {
 } else { $qi7Why = 'null (large script should still resolve last JOIN table)' }
 if ($qi7Ok) { $pass++ } else { [void]$fail.Add("184 QuickInfo large-script $qi7Why") }
 
+# ~1MB：无 GO、含 GongYingShang（旧 IndexOf GO 假阳性）。二次调用应走指纹缓存，且不得把全文钉在静态字段。
+[void]$pad.Clear()
+[void]$pad.AppendLine('USE rt_storage')
+for ($i = 0; $i -lt 15000; $i++) { [void]$pad.AppendLine('SELECT 1 FROM RtBase.dbo.GongYingShang AS GHS') }
+$mbTail = 'SELECT a.x FROM DB_DiaoBoItem (nolock) a INNER JOIN BK_KuFang (nolock) k ON a.x=k.k_id where k.'
+$mbSql = $pad.ToString() + $mbTail
+$mbCaret = $mbSql.Length
+Write-Host ("258 large-doc sqlLen=$($mbSql.Length)")
+$sMb = [Activator]::CreateInstance($settingsType)
+$sMb.includeKeywords = $true
+$eMb = [Activator]::CreateInstance($engineType)
+$swMb1 = [Diagnostics.Stopwatch]::StartNew()
+$rMb = $get.Invoke($eMb, @($mbSql, $mbCaret, $masterCatalog, $sMb, $masterConn))
+$swMb1.Stop()
+$eMb2 = [Activator]::CreateInstance($engineType)
+$swMb2 = [Diagnostics.Stopwatch]::StartNew()
+$rMb2 = $get.Invoke($eMb2, @($mbSql, $mbCaret, $masterCatalog, $sMb, $masterConn))
+$swMb2.Stop()
+Write-Host ("258 GetCompletion ~1MB first={0:F1}ms second={1:F1}ms" -f $swMb1.Elapsed.TotalMilliseconds, $swMb2.Elapsed.TotalMilliseconds)
+$mbNames = New-Object System.Collections.Generic.List[string]
+if ($rMb2 -ne $null -and $rMb2.Items) { foreach ($it in $rMb2.Items) { [void]$mbNames.Add([string]$it.DisplayText) } }
+$mbHit = $false
+foreach ($disp in $mbNames) {
+    if ($disp -eq 'k_id' -or $disp.EndsWith('.k_id')) { $mbHit = $true; break }
+}
+if (-not $mbHit) { [void]$fail.Add("258 large-doc miss k_id ctx=$($rMb2.Context) prefix=[$($rMb2.Prefix)] top=[$($mbNames | Select-Object -First 8)]") }
+elseif ($swMb2.Elapsed.TotalMilliseconds -gt 50) { [void]$fail.Add("258 large-doc second GetCompletion $($swMb2.Elapsed.TotalMilliseconds.ToString('F1'))ms > 50ms") }
+else { $pass++ }
+$qiMb = [Activator]::CreateInstance($qiType)
+$mbQiHover = $mbSql.LastIndexOf('BK_KuFang') + 3
+$swQiMb1 = [Diagnostics.Stopwatch]::StartNew()
+$qiMb1 = $qiMb.GetQuickInfo($mbSql, $mbQiHover, $masterCatalog, $masterConn)
+$swQiMb1.Stop()
+$swQiMb2 = [Diagnostics.Stopwatch]::StartNew()
+$qiMb2 = $qiMb.GetQuickInfo($mbSql, $mbQiHover, $masterCatalog, $masterConn)
+$swQiMb2.Stop()
+Write-Host ("258 QuickInfo ~1MB first={0:F1}ms second={1:F1}ms" -f $swQiMb1.Elapsed.TotalMilliseconds, $swQiMb2.Elapsed.TotalMilliseconds)
+$mbQiOk = $false
+if ($null -ne $qiMb2 -and $qiMb2.HeaderLines) {
+    $hMb = $qiMb2.HeaderLines -join ' | '
+    if ($hMb -match 'BK_KuFang' -and $hMb -match 'rt_storage') { $mbQiOk = $true }
+}
+if (-not $mbQiOk) { [void]$fail.Add("258 large-doc QuickInfo miss") }
+elseif ($swQiMb2.Elapsed.TotalMilliseconds -gt 40) { [void]$fail.Add("258 large-doc second QuickInfo $($swQiMb2.Elapsed.TotalMilliseconds.ToString('F1'))ms > 40ms") }
+else { $pass++ }
+$mbSql = $null
+$rMb = $null
+$rMb2 = $null
+$qiMb1 = $null
+$qiMb2 = $null
+
+# 大切片不能切到派生表内层 SELECT，否则外层 AS CARTNEW 悬停/补全都会丢
+$innerCart = New-Object System.Text.StringBuilder
+for ($i = 0; $i -lt 5000; $i++) { [void]$innerCart.AppendLine('AND 1=1') }
+$cartSql = @"
+SELECT CARTNEW.x
+FROM (
+SELECT 1 AS x FROM (SELECT 1 AS x) q WHERE 1=1
+$($innerCart.ToString())
+) AS CARTNEW
+WHERE CARTNEW
+"@
+$innerCart = $null
+$cartDot = "$cartSql."
+Write-Host ("259 cartnew sqlLen=$($cartSql.Length)")
+$eCart = [Activator]::CreateInstance($engineType)
+$sCart = [Activator]::CreateInstance($settingsType)
+$sCart.includeKeywords = $true
+$rCart = $get.Invoke($eCart, @($cartDot, [int]$cartDot.Length, $masterCatalog, $sCart, $masterConn))
+$cartHit = $false
+$cartNames = New-Object System.Collections.Generic.List[string]
+if ($rCart -ne $null -and $rCart.Items) {
+    foreach ($it in $rCart.Items) {
+        [void]$cartNames.Add([string]$it.DisplayText)
+        if ($it.DisplayText -eq 'x') { $cartHit = $true }
+    }
+}
+if (-not $cartHit) { [void]$fail.Add("259 CARTNEW. miss x ctx=$($rCart.Context) prefix=[$($rCart.Prefix)] top=[$($cartNames | Select-Object -First 8)]") }
+else { $pass++ }
+$qiCart = [Activator]::CreateInstance($qiType)
+$cartHover = $cartSql.LastIndexOf('CARTNEW') + 3
+$qiCartInfo = $qiCart.GetQuickInfo($cartSql, $cartHover, $masterCatalog, $masterConn)
+$cartQiOk = $false
+$cartQiWhy = 'null'
+if ($null -ne $qiCartInfo) {
+    $hCart = if ($qiCartInfo.HeaderLines) { ($qiCartInfo.HeaderLines -join ' | ') } else { '' }
+    $ddlCart = [string]$qiCartInfo.DdlText
+    if ($hCart -match 'CARTNEW' -or $ddlCart -match 'CARTNEW' -or $ddlCart -match 'SELECT 1 AS x') { $cartQiOk = $true }
+    else { $cartQiWhy = "headers=[$hCart] ddl=$ddlCart" }
+}
+if ($cartQiOk) { $pass++ } else { [void]$fail.Add("259 QuickInfo CARTNEW $cartQiWhy") }
+$cartSql = $null
+$rCart = $null
+$qiCartInfo = $null
+
 $qiSql8 = $derivedSql.Replace('|', '')
 $qiHover8 = $qiSql8.IndexOf('GongYingShang') + 2
 $qi8 = [Activator]::CreateInstance($qiType)
