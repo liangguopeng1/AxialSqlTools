@@ -98,6 +98,8 @@ TriggerCompletion:
 - 内建函数悬停（COUNT / ROUND / SUM / ISNULL / GETDATE 等）：后接 `(` 时优先当函数，避免同名表抢走。无括号兜底只给 `CURRENT_TIMESTAMP` 这类签名不含 `(` 的，避免 `LEFT JOIN` 的 LEFT 被当成函数。文案走 `CompletionEngine.TryGetBuiltInFunction`，不要另建函数表。
 - WHERE 别名补全：`AS SS_PiCi` 与表名相同时仍要提示 `SS_PiCi`（插入 `SS_PiCi.` 再出列）。仅当已有**不同**短别名时才跳过表名本身（`FROM t AS a` 只出 `a`）。
 - JOIN ON / `AND KC`：ON 条件是表达式不是下一张表，上下文用 WhereClause 出别名；`KC.` 仍走 MemberAccess。相关子查询 `Y_GHSID = KC.` 要收外层 FROM 别名；光标落在外层 FROM 的派生表里时不能把 KCZ/后续 JOIN 漏进内层。悬停 `KC` / `KC.h_id`（如 cartshuliang 标量子查询）走 `locals.Aliases`，不能只扫当前 FROM 表段。`ON … and g` 单字母不当 GROUP/JOIN 关键字，要出 `GHS`；`in`/`gr`/`wh` 仍走 FromClause。
+- `CREATE OR ALTER PROC/FUNC/VIEW`：ScriptDOM 常解析不出 AST（script=null），但 token 仍在。`GetCompletion` 不得因 script==null 直接 Unknown；有 token 就继续 `GetContext` / `CollectAliasesFromTokens`。过程体里 `and b1` / `where pr` 与普通 SELECT 一样出别名和列。
+- 悬停四段名 `server.db.schema.table`（如 `[192.168.1.108].jichushuju.dbo.t_products`）：`dbo.t_products` 的 owner 是架构不是别名。`ResolveTable` 必须带 `LinkedServer`，不能当成本地 `dbo.t_products`。`GetQuickInfoByWord` 在 HasOwner 未命中别名时不得 `return null`，要再走 `TryResolveTableByHoverName`。
 
 ## 设置项
 

@@ -235,6 +235,18 @@ where ss|
 Add-Case '201' $piciSql @('SS_PiCi') 'WhereClause'
 Add-Case '202' 'SELECT * FROM dbo.SS_PiCi AS aa where ss|' @() 'WhereClause' @('SS_PiCi')
 Add-Case '203' 'SELECT * FROM rt_fenjian.dbo.SS_PiCi(nolock) as SS_PiCi where SS_PiCi.|' @('PrimaryCode') 'MemberAccess'
+$procCreateSql = @"
+CREATE OR ALTER PROCEDURE dbo.p
+AS
+SELECT isbn FROM t_products b1 WHERE b1.cfstate = 1 and b1|
+"@
+Add-Case '217' $procCreateSql @('b1') 'WhereClause'
+$procWhereSql = @"
+CREATE OR ALTER PROCEDURE dbo.p
+AS
+SELECT * FROM rt_data_processing..kuagongshi where pr|
+"@
+Add-Case '219' $procWhereSql @('primarycode') 'WhereClause'
 
 Write-Host "Cases=$($cases.Count)"
 
@@ -395,6 +407,34 @@ foreach ($cn in @('PrimaryCode','Version')) {
 [void]$fenjianCatalog.Tables.Add($pici)
 $svc.PutCatalog('local', 'rt_fenjian', $fenjianCatalog)
 
+$jichuCatalog = [Activator]::CreateInstance($catalogType)
+$jichuCatalog.Database = 'jichushuju'
+$tProducts = [Activator]::CreateInstance($tableType)
+$tProducts.Schema = 'dbo'
+$tProducts.Name = 't_products'
+foreach ($cn in @('isbn','cfstate','State')) {
+    $col = [Activator]::CreateInstance($colType)
+    $col.Name = $cn
+    $col.DataType = 'nvarchar'
+    [void]$tProducts.Columns.Add($col)
+}
+[void]$jichuCatalog.Tables.Add($tProducts)
+$svc.PutCatalog('192.168.1.108', 'jichushuju', $jichuCatalog)
+
+$rtDataCatalog = [Activator]::CreateInstance($catalogType)
+$rtDataCatalog.Database = 'rt_data_processing'
+$kuagong = [Activator]::CreateInstance($tableType)
+$kuagong.Schema = 'dbo'
+$kuagong.Name = 'kuagongshi'
+foreach ($cn in @('primarycode','price')) {
+    $col = [Activator]::CreateInstance($colType)
+    $col.Name = $cn
+    $col.DataType = 'nvarchar'
+    [void]$kuagong.Columns.Add($col)
+}
+[void]$rtDataCatalog.Tables.Add($kuagong)
+$svc.PutCatalog('local', 'rt_data_processing', $rtDataCatalog)
+
 $masterConn = [Activator]::CreateInstance($connType)
 [void]$connType.GetProperty('ServerName').SetValue($masterConn, 'local')
 [void]$connType.GetProperty('Database').SetValue($masterConn, 'master')
@@ -402,7 +442,7 @@ $masterConn = [Activator]::CreateInstance($connType)
 $fail = New-Object System.Collections.Generic.List[string]
 $pass = 0
 $linkedCases = @('160','161','162')
-$useCases = @('172','173','176','178','181','182','183','203','212','213')
+$useCases = @('172','173','176','178','181','182','183','203','212','213','217','219')
 foreach ($c in $cases) {
     $e = [Activator]::CreateInstance($engineType)
     $s = [Activator]::CreateInstance($settingsType)
@@ -764,6 +804,48 @@ try {
     if ($qiCorrHidOk) { $pass++ } else { [void]$fail.Add("215 QuickInfo corr h_id $qiCorrHidWhy") }
 } catch {
     [void]$fail.Add("205-215 EX=$($_.Exception.Message)")
+}
+
+# 四段名 dbo.t_products：悬停表名须带链接服务器，不能当成本地 dbo.t_products
+try {
+    $qiFourSql = 'SELECT isbn FROM [192.168.1.108].jichushuju.dbo.t_products b1 WHERE b1.cfstate = 1'
+    $qiFour = [Activator]::CreateInstance($qiType)
+    $qiHoverProd = $qiFourSql.IndexOf('t_products') + 2
+    $qiInfoProd = $qiFour.GetQuickInfo($qiFourSql, $qiHoverProd, $masterCatalog, $masterConn)
+    $qiProdOk = $false
+    $qiProdWhy = 'null'
+    if ($null -ne $qiInfoProd) {
+        $hProd = if ($qiInfoProd.HeaderLines) { ($qiInfoProd.HeaderLines -join ' | ') } else { '' }
+        if ($hProd -match 't_products' -and $hProd -match 'jichushuju' -and $hProd -match '192\.168\.1\.108') { $qiProdOk = $true }
+        else { $qiProdWhy = "headers=[$hProd]" }
+    } else { $qiProdWhy = 'null (hover four-part t_products)' }
+    if ($qiProdOk) { $pass++ } else { [void]$fail.Add("221 QuickInfo four-part t_products $qiProdWhy") }
+
+    $qiFourWord = [Activator]::CreateInstance($qiType)
+    $qiInfoProdWord = $qiFourWord.GetQuickInfoByWord($qiFourSql, $qiHoverProd, 't_products', $masterCatalog, $masterConn)
+    $qiProdWordOk = $false
+    $qiProdWordWhy = 'null'
+    if ($null -ne $qiInfoProdWord) {
+        $hProdW = if ($qiInfoProdWord.HeaderLines) { ($qiInfoProdWord.HeaderLines -join ' | ') } else { '' }
+        if ($hProdW -match 't_products' -and $hProdW -match 'jichushuju') { $qiProdWordOk = $true }
+        else { $qiProdWordWhy = "headers=[$hProdW]" }
+    } else { $qiProdWordWhy = 'null (GetQuickInfoByWord t_products)' }
+    if ($qiProdWordOk) { $pass++ } else { [void]$fail.Add("222 QuickInfoByWord four-part t_products $qiProdWordWhy") }
+
+    $qiFourProc = "CREATE OR ALTER PROCEDURE dbo.p`nAS`nSELECT isbn FROM [192.168.1.108].jichushuju.dbo.t_products b1 WHERE b1.isbn != ''"
+    $qiFourP = [Activator]::CreateInstance($qiType)
+    $qiHoverProdP = $qiFourProc.IndexOf('t_products') + 2
+    $qiInfoProdP = $qiFourP.GetQuickInfo($qiFourProc, $qiHoverProdP, $masterCatalog, $masterConn)
+    $qiProdPOk = $false
+    $qiProdPWhy = 'null'
+    if ($null -ne $qiInfoProdP) {
+        $hProdP = if ($qiInfoProdP.HeaderLines) { ($qiInfoProdP.HeaderLines -join ' | ') } else { '' }
+        if ($hProdP -match 't_products' -and $hProdP -match 'jichushuju') { $qiProdPOk = $true }
+        else { $qiProdPWhy = "headers=[$hProdP]" }
+    } else { $qiProdPWhy = 'null (CREATE OR ALTER hover t_products)' }
+    if ($qiProdPOk) { $pass++ } else { [void]$fail.Add("223 QuickInfo CREATE OR ALTER t_products $qiProdPWhy") }
+} catch {
+    [void]$fail.Add("221-223 EX=$($_.Exception.Message)")
 }
 
 Write-Host "PASS=$pass FAIL=$($fail.Count)"

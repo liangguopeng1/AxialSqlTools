@@ -83,26 +83,15 @@ namespace AxialSqlTools.IntelliSense
                 if (procInfo != null)
                     return procInfo;
 
-                // 优先按悬停词命中 FROM/JOIN 中的表（支持 db.schema.table / db..table / JOIN 表）
+                // 优先按悬停词命中 FROM/JOIN 中的表（支持 server.db.schema.table / db..table）
                 var hoverTableRef = QuickInfoSqlContext.TryResolveTableByHoverName(tokens, localOffset, hover.Name);
-                if (hoverTableRef != null && !hover.HasOwner)
+                if (hoverTableRef != null
+                    && (!hover.HasOwner
+                        || string.Equals(hoverTableRef.Name, hover.Name, StringComparison.OrdinalIgnoreCase)))
                 {
                     var ht = ResolveTable(connInfo, catalog, hoverTableRef);
                     if (ht != null)
                         return BuildTableQuickInfo(dataSource, defaultDb, hoverTableRef, ht);
-                }
-                if (hoverTableRef != null && hover.HasOwner
-                    && string.Equals(hoverTableRef.Name, hover.Name, StringComparison.OrdinalIgnoreCase))
-                {
-                    var schemaQualified = new TableRef
-                    {
-                        Database = hoverTableRef.Database,
-                        Schema = string.IsNullOrEmpty(hoverTableRef.Schema) ? hover.Owner : hoverTableRef.Schema,
-                        Name = hover.Name
-                    };
-                    var ht = ResolveTable(connInfo, catalog, schemaQualified);
-                    if (ht != null)
-                        return BuildTableQuickInfo(dataSource, defaultDb, schemaQualified, ht);
                 }
 
                 var fromRef = hoverTableRef ?? QuickInfoSqlContext.TryResolveFromTable(tokens, localOffset);
@@ -122,17 +111,19 @@ namespace AxialSqlTools.IntelliSense
                                 return BuildColumnQuickInfo(dataSource, defaultDb, aliasRef, table, col);
                         }
                     }
-                    // dbo.TableName / schema.TableName
+                    // dbo.TableName / schema.TableName（四段名须带 LinkedServer）
                     var schemaTable = ResolveTable(connInfo, catalog, new TableRef
                     {
                         Schema = hover.Owner,
                         Name = hover.Name,
-                        Database = fromRef?.Database ?? hoverTableRef?.Database
+                        Database = fromRef?.Database ?? hoverTableRef?.Database,
+                        LinkedServer = fromRef?.LinkedServer ?? hoverTableRef?.LinkedServer
                     });
                     if (schemaTable != null)
                         return BuildTableQuickInfo(dataSource, defaultDb,
                             new TableRef
                             {
+                                LinkedServer = fromRef?.LinkedServer ?? hoverTableRef?.LinkedServer,
                                 Database = fromRef?.Database ?? hoverTableRef?.Database,
                                 Schema = schemaTable.Schema,
                                 Name = schemaTable.Name
@@ -149,7 +140,8 @@ namespace AxialSqlTools.IntelliSense
                     {
                         Name = hover.Name,
                         Schema = sameTable ? fromRef.Schema : null,
-                        Database = sameTable ? fromRef.Database : null
+                        Database = sameTable ? fromRef.Database : null,
+                        LinkedServer = sameTable ? fromRef.LinkedServer : null
                     });
                     if (directTable != null && string.Equals(directTable.Name, hover.Name, StringComparison.OrdinalIgnoreCase))
                         return BuildTableQuickInfo(dataSource, defaultDb, ResolveTableRef(fromRef, directTable), directTable);
@@ -257,19 +249,30 @@ namespace AxialSqlTools.IntelliSense
                                                 return BuildColumnQuickInfo(dataSource, defaultDb, aliasRef, table, col);
                                         }
                                     }
+                                    var hoverTable = QuickInfoSqlContext.TryResolveTableByHoverName(
+                                        tokens, localOffset, hover.Name);
+                                    if (hoverTable != null
+                                        && string.Equals(hoverTable.Name, hover.Name, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        var ht = ResolveTable(connInfo, catalog, hoverTable);
+                                        if (ht != null)
+                                            return BuildTableQuickInfo(dataSource, defaultDb, hoverTable, ht);
+                                    }
                                     var schemaTable = ResolveTable(connInfo, catalog, new TableRef
                                     {
                                         Schema = hover.Owner,
-                                        Name = hover.Name
+                                        Name = hover.Name,
+                                        Database = hoverTable?.Database,
+                                        LinkedServer = hoverTable?.LinkedServer
                                     });
                                     if (schemaTable != null)
                                         return BuildTableQuickInfo(dataSource, defaultDb, new TableRef
                                         {
+                                            LinkedServer = hoverTable?.LinkedServer,
                                             Schema = schemaTable.Schema,
                                             Name = schemaTable.Name,
-                                            Database = catalog?.Database
+                                            Database = hoverTable?.Database ?? catalog?.Database
                                         }, schemaTable);
-                                    return null;
                                 }
                                 var derived = FindDerived(locals, cleanWord);
                                 if (derived != null)
@@ -311,7 +314,9 @@ namespace AxialSqlTools.IntelliSense
                     Schema = fromRef != null && string.Equals(fromRef.Name, cleanWord, StringComparison.OrdinalIgnoreCase)
                         ? fromRef.Schema : null,
                     Database = fromRef != null && string.Equals(fromRef.Name, cleanWord, StringComparison.OrdinalIgnoreCase)
-                        ? fromRef.Database : null
+                        ? fromRef.Database : null,
+                    LinkedServer = fromRef != null && string.Equals(fromRef.Name, cleanWord, StringComparison.OrdinalIgnoreCase)
+                        ? fromRef.LinkedServer : null
                 });
                 if (asTable != null && string.Equals(asTable.Name, cleanWord, StringComparison.OrdinalIgnoreCase))
                     return BuildTableQuickInfo(dataSource, defaultDb, ResolveTableRef(fromRef, asTable), asTable);
@@ -496,6 +501,7 @@ namespace AxialSqlTools.IntelliSense
                     return fromRef;
                 return new TableRef
                 {
+                    LinkedServer = fromRef?.LinkedServer,
                     Database = fromRef?.Database,
                     Schema = fromRef?.Schema,
                     Name = tableName

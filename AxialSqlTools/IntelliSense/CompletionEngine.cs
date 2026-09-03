@@ -95,7 +95,8 @@ namespace AxialSqlTools
                     FromObjectNameContext fromNameRaw;
                     bool hasFromRaw = TryParseFromObjectNameRaw(batchText, localOffset, out fromNameRaw);
 
-                    if (script == null || ((_lastTokens == null || _lastTokens.Count == 0) && hasFromRaw))
+                    bool noTokens = _lastTokens == null || _lastTokens.Count == 0;
+                    if (script == null || (noTokens && hasFromRaw))
                     {
                         if (hasFromRaw)
                         {
@@ -109,7 +110,8 @@ namespace AxialSqlTools
                             result.ReplaceEndOffset = caretOffset;
                             return result;
                         }
-                        if (script == null)
+                        // CREATE OR ALTER 等 AST 失败时 token 仍在，继续走 GetContext
+                        if (script == null && noTokens)
                         {
                             if ((afterStmtBreak || atLineStart) && !string.IsNullOrEmpty(rawPrefix))
                             {
