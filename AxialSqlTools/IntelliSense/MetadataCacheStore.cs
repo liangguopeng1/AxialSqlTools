@@ -71,7 +71,9 @@ namespace AxialSqlTools.IntelliSense
             try
             {
                 var catalog = JsonConvert.DeserializeObject<MetadataCatalog>(File.ReadAllText(path));
-                if (catalog == null || catalog.IsEmpty)
+                if (catalog == null)
+                    return null;
+                if (catalog.IsEmpty && !catalog.IsIndexed)
                     return null;
                 if (string.IsNullOrEmpty(catalog.Database))
                     catalog.Database = database;
@@ -116,6 +118,40 @@ namespace AxialSqlTools.IntelliSense
             string dir = GetServerDirectory(serverName);
             Directory.CreateDirectory(dir);
             WriteAtomic(GetMetaPath(serverName), JsonConvert.SerializeObject(meta, Formatting.Indented, JsonSettings));
+        }
+
+        /// <summary>删除单库目录缓存文件（DDL 失效时调用，强制下次重建）。</summary>
+        public static void DeleteCatalog(string serverName, string database)
+        {
+            if (string.IsNullOrWhiteSpace(serverName) || string.IsNullOrWhiteSpace(database))
+                return;
+            try
+            {
+                string path = GetCatalogPath(serverName, database);
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch
+            {
+                // 删除失败不阻塞（下次刷新仍会覆盖）
+            }
+        }
+
+        /// <summary>删除服务器 meta.json（使 ShouldSilentRefresh 判定为过期，触发重建）。</summary>
+        public static void DeleteMeta(string serverName)
+        {
+            if (string.IsNullOrWhiteSpace(serverName))
+                return;
+            try
+            {
+                string path = GetMetaPath(serverName);
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch
+            {
+                // 忽略删除失败
+            }
         }
 
         private static void WriteAtomic(string path, string json)

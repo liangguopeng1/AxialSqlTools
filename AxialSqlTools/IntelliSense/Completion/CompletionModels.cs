@@ -25,6 +25,8 @@ namespace AxialSqlTools
             public List<string> ScalarVariables = new List<string>();
             /// <summary>当前语句 FROM 子句的别名映射：alias(小写) → 限定表名。</summary>
             public Dictionary<string, TableRef> Aliases = new Dictionary<string, TableRef>(StringComparer.OrdinalIgnoreCase);
+            /// <summary>当前语句 GROUP BY 子句的列名（HAVING 只提示这些列 + 聚合函数）。</summary>
+            public List<string> GroupByColumns = new List<string>();
         }
 
         public class CteInfo

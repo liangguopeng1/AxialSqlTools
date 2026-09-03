@@ -36,6 +36,8 @@ namespace AxialSqlTools
             public string Server { get; set; }
             public string Database { get; set; }
             public DateTime BuiltAt { get; set; }
+            /// <summary>是否已成功索引（空库也有此标记，避免被当作「未缓存」反复重建）。</summary>
+            public bool IsIndexed { get; set; }
 
             public List<TableColumnInfo> Tables { get; set; } = new List<TableColumnInfo>();
             public List<TableColumnInfo> Views { get; set; } = new List<TableColumnInfo>();

@@ -51,11 +51,9 @@ namespace AxialSqlTools
                     int localOffset = caretOffset - batchStart;
                     if (localOffset < 0) localOffset = 0;
 
-                    // 用全文判断注释：切片会丢掉前面未闭合的 /*
-                    if (IsInsideStringOrComment(fullText, caretOffset))
+                    // 用全文判断注释：切片会丢掉前面未闭合的 /*（一次扫描同时取 USE 库，避免重复扫全文）
+                    if (ScanPrefixState(fullText, caretOffset, out string useDb))
                         return result;
-
-                    string useDb = GetActiveUseDatabase(fullText, caretOffset);
                     if (!string.IsNullOrEmpty(useDb) &&
                         (catalog == null || !string.Equals(catalog.Database, useDb, StringComparison.OrdinalIgnoreCase)))
                     {
@@ -86,6 +84,11 @@ namespace AxialSqlTools
                         result.Prefix = execPrefix;
                         result.Items = BuildItems(CompletionContext.AfterExec, execPrefix, execNameEarly, localEarly, catalog, settings, connInfo);
                         result.Items = FilterAndSort(result.Items, execPrefix, settings, connInfo, execNameEarly);
+                        if (result.Items.Count == 0 && connInfo != null && (catalog == null || !catalog.RoutinesLoaded))
+                        {
+                            // routine 目录仍在后台加载：给占位提示，避免 EXEC 补全静默为空
+                            result.Items.Add(new CompletionItem("(正在加载存储过程…)", string.Empty, CompletionKind.Keyword, "存储过程目录后台加载中"));
+                        }
                         result.ReplaceStartOffset = ComputeReplaceStartOffset(batchStart, localOffset, execPrefix, execNameEarly, _lastTokens);
                         result.ReplaceEndOffset = caretOffset;
                         return result;
@@ -358,6 +361,9 @@ namespace AxialSqlTools
             /// <summary>超过此长度的 GO 批次只解析光标所在语句，避免整页几千行 ScriptDOM。</summary>
             internal const int LargeBatchParseChars = 24 * 1024;
 
+            /// <summary>切片超过此长度不缓存 AST（TSqlScript 对象图内存高），只缓存扁平 token，控制大单语句的内存峰值。</summary>
+            internal const int LargeSliceAstCacheChars = 64 * 1024;
+
             private static readonly object ParseGate = new object();
             private static readonly TSql170Parser SharedParser = new TSql170Parser(true);
             private static string SharedSlice;
@@ -432,15 +438,26 @@ namespace AxialSqlTools
                     return;
                 int n = text.Length;
                 int probe = Math.Min(Math.Max(0, caret), n);
+                // 就近定位扫描起点：从 probe 往前找最近的顶层分号，语句起点必在其后。
+                // 字符串/注释内的分号会被近似忽略，仅使起点略偏后（补全早被字符串检查拦截），不破坏正确性。
+                int scanFrom = 0;
+                int depth = 0;
+                for (int k = probe - 1; k >= 0; k--)
+                {
+                    char ch = text[k];
+                    if (ch == ')') { depth++; continue; }
+                    if (ch == '(') { if (depth > 0) depth--; continue; }
+                    if (ch == ';' && depth == 0) { scanFrom = k + 1; break; }
+                }
                 bool inLineComment = false;
                 bool inBlockComment = false;
                 bool inString = false;
                 int paren = 0;
-                int lastStmt = 0;
+                int lastStmt = scanFrom;
                 bool afterSetOp = false;
                 bool afterCte = false;
                 bool afterInsert = false;
-                int i = 0;
+                int i = scanFrom;
                 while (i < probe)
                 {
                     char c = text[i];
@@ -780,9 +797,18 @@ namespace AxialSqlTools
                         tokens = new List<TSqlParserToken>();
                     }
                     SharedSlice = slice;
-                    SharedScript = script;
                     SharedTokens = tokens;
-                    SharedHasAst = true;
+                    // 大切片不缓存 AST，控制内存峰值；下次需 AST 时重新 Parse（切片已按语句切小，超大单语句才触发）。
+                    if (slice.Length <= LargeSliceAstCacheChars)
+                    {
+                        SharedScript = script;
+                        SharedHasAst = script != null;
+                    }
+                    else
+                    {
+                        SharedScript = null;
+                        SharedHasAst = false;
+                    }
                 }
             }
 

@@ -466,9 +466,9 @@ namespace AxialSqlTools
                 {
                     if (catalog == null || !string.Equals(catalog.Database, tref.Database, StringComparison.OrdinalIgnoreCase))
                     {
-                        // 跨库：先触发构建再短等，避免 b. 时 jichushuju 尚未入缓存
+                        // 跨库：只读缓存 + 后台构建，不在补全热路径同步连库/等待
                         MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, tref.Database);
-                        target = MetadataCatalogService.Instance.GetCachedCatalogOrWait(connInfo, tref.Database, 2000);
+                        target = MetadataCatalogService.Instance.GetCachedCatalogOrDisk(connInfo, tref.Database);
                     }
                 }
                 if (target != null)
@@ -565,6 +565,10 @@ namespace AxialSqlTools
                     return CompletionContext.MemberAccess;
                 }
 
+                // CAST/CONVERT/PARSE 的类型参数位置：提示数据类型
+                if (TryGetDataTypeContext(tokens, localOffset))
+                    return CompletionContext.DataType;
+
                 // 等号/比较符右侧尚未输入内容：不提示（等值待填字面量）
                 if (string.IsNullOrEmpty(prefix) && IsImmediatelyAfterComparisonOperator(tokens, localOffset))
                     return CompletionContext.Unknown;
@@ -621,8 +625,9 @@ namespace AxialSqlTools
                             return CompletionContext.FromClause;
                         }
                     case "WHERE":
-                    case "HAVING":
                         return CompletionContext.WhereClause;
+                    case "HAVING":
+                        return CompletionContext.HavingClause;
                     case "ON":
                         if (LooksLikeContinuingFromKeyword(prefix))
                             return CompletionContext.FromClause;
@@ -639,10 +644,13 @@ namespace AxialSqlTools
                             }
                             if (major == "FROM" || major == "JOIN")
                                 return CompletionContext.FromClause;
+                            if (major == "HAVING")
+                                return CompletionContext.HavingClause;
                             return CompletionContext.WhereClause;
                         }
                     case "ORDER":
                     case "GROUP":
+                    case "PARTITION":
                         return CompletionContext.OrderByGroupBy;
                     case "EXEC":
                     case "EXECUTE":
@@ -699,72 +707,17 @@ namespace AxialSqlTools
             /// <summary>光标在字符串字面量或注释内（输入值/注释不应出补全）。</summary>
             internal static bool IsInsideStringOrComment(string text, int caret)
             {
-                if (string.IsNullOrEmpty(text) || caret <= 0) return false;
-                int n = Math.Min(caret, text.Length);
-                bool inLineComment = false;
-                bool inBlockComment = false;
-                bool inString = false;
-                for (int i = 0; i < n; i++)
-                {
-                    char c = text[i];
-                    char next = i + 1 < text.Length ? text[i + 1] : '\0';
-                    if (inLineComment)
-                    {
-                        if (c == '\n' || c == '\r') inLineComment = false;
-                        continue;
-                    }
-                    if (inBlockComment)
-                    {
-                        if (c == '*' && next == '/')
-                        {
-                            inBlockComment = false;
-                            i++;
-                        }
-                        continue;
-                    }
-                    if (inString)
-                    {
-                        if (c == '\'')
-                        {
-                            if (next == '\'') i++;
-                            else inString = false;
-                        }
-                        continue;
-                    }
-                    if (c == '-' && next == '-')
-                    {
-                        inLineComment = true;
-                        i++;
-                        continue;
-                    }
-                    if (c == '/' && next == '*')
-                    {
-                        inBlockComment = true;
-                        i++;
-                        continue;
-                    }
-                    if (c == '\'')
-                    {
-                        inString = true;
-                        continue;
-                    }
-                    if ((c == 'N' || c == 'n') && next == '\'')
-                    {
-                        bool identBefore = i > 0 && (char.IsLetterOrDigit(text[i - 1]) || text[i - 1] == '_');
-                        if (!identBefore)
-                        {
-                            inString = true;
-                            i++;
-                        }
-                    }
-                }
-                return inLineComment || inBlockComment || inString;
+                return ScanPrefixState(text, caret, out _);
             }
 
-            /// <summary>光标前最后一条 USE 的库名（含未执行的脚本；跨 GO）。注释/字符串内的 USE 忽略。</summary>
-            internal static string GetActiveUseDatabase(string text, int caret)
+            /// <summary>
+            /// 一次扫描 0→caret：返回光标处是否在字符串/注释内，以及最后一条 USE 库名（跨 GO；注释/字符串内的 USE 忽略）。
+            /// 合并 IsInsideStringOrComment + GetActiveUseDatabase 的两次全文扫描为一次，降低大脚本热路径开销。
+            /// </summary>
+            internal static bool ScanPrefixState(string text, int caret, out string useDatabase)
             {
-                if (string.IsNullOrEmpty(text) || caret <= 0) return null;
+                useDatabase = null;
+                if (string.IsNullOrEmpty(text) || caret <= 0) return false;
                 int n = Math.Min(caret, text.Length);
                 bool inLineComment = false;
                 bool inBlockComment = false;
@@ -855,7 +808,15 @@ namespace AxialSqlTools
                         continue;
                     }
                 }
-                return last;
+                useDatabase = last;
+                return inLineComment || inBlockComment || inString;
+            }
+
+            /// <summary>光标前最后一条 USE 的库名（含未执行的脚本；跨 GO）。注释/字符串内的 USE 忽略。</summary>
+            internal static string GetActiveUseDatabase(string text, int caret)
+            {
+                ScanPrefixState(text, caret, out string useDb);
+                return useDb;
             }
 
             private static bool IsUseKeywordAt(string text, int i, int n)
@@ -1436,6 +1397,68 @@ namespace AxialSqlTools
                     || t.Text == "]";
             }
 
+            private static readonly HashSet<string> DataTypeFunctionNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "CAST", "CONVERT", "PARSE", "TRY_CAST", "TRY_CONVERT", "TRY_PARSE"
+            };
+
+            /// <summary>光标是否在 CAST/CONVERT/PARSE/TRY_* 的类型参数位置（AS 后，或 CONVERT 首参）。</summary>
+            private bool TryGetDataTypeContext(List<TSqlParserToken> tokens, int localOffset)
+            {
+                if (tokens == null || tokens.Count == 0) return false;
+                int caretIdx = FindTokenIndexBefore(tokens, localOffset);
+                if (caretIdx < 0) return false;
+                int depth = 0;
+                for (int i = caretIdx; i >= 0; i--)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.TokenType == TSqlTokenType.RightParenthesis) { depth++; continue; }
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                    {
+                        if (depth > 0) { depth--; continue; }
+                        var prev = PreviousSignificantToken(tokens, i);
+                        if (prev == null) return false;
+                        string fn = UnbracketIdentifier(prev.Text);
+                        if (string.IsNullOrEmpty(fn) || !DataTypeFunctionNames.Contains(fn)) return false;
+                        string fnUp = fn.ToUpperInvariant();
+                        if (fnUp == "CONVERT" || fnUp == "TRY_CONVERT")
+                        {
+                            // 类型是第一个参数：左括号到光标之间不能有「顶层」逗号。
+                            // 类型参数本身可能带精度括号（如 decimal(10,2)），其内部逗号不算越过类型。
+                            int d = 0;
+                            for (int j = i + 1; j <= caretIdx && j < tokens.Count; j++)
+                            {
+                                var tt = tokens[j];
+                                if (tt == null || IsInsignificantToken(tt)) continue;
+                                if (tt.Offset >= localOffset) break;
+                                if (tt.TokenType == TSqlTokenType.LeftParenthesis) { d++; continue; }
+                                if (tt.TokenType == TSqlTokenType.RightParenthesis) { if (d > 0) d--; continue; }
+                                if (d == 0 && tt.TokenType == TSqlTokenType.Comma) return false;
+                            }
+                            return true;
+                        }
+                        // CAST/PARSE：类型在 AS 之后
+                        bool sawAs = false;
+                        for (int j = i + 1; j <= caretIdx && j < tokens.Count; j++)
+                        {
+                            var tt = tokens[j];
+                            if (tt == null || IsInsignificantToken(tt)) continue;
+                            if (tt.Offset >= localOffset) break;
+                            if (string.Equals(tt.Text, "AS", StringComparison.OrdinalIgnoreCase))
+                            {
+                                sawAs = true;
+                                continue;
+                            }
+                        }
+                        return sawAs;
+                    }
+                    string kw = t.Text?.ToUpperInvariant();
+                    if (kw == ";" || kw == "GO") return false;
+                }
+                return false;
+            }
+
             private string ExtractPrefix(List<TSqlParserToken> tokens, int localOffset)
             {
                 int idx = FindTokenIndexForPrefix(tokens, localOffset);
@@ -1554,6 +1577,7 @@ namespace AxialSqlTools
                     case "OR":
                     case "ORDER":
                     case "GROUP":
+                    case "PARTITION":
                     case "EXEC":
                     case "EXECUTE":
                     case "INSERT":

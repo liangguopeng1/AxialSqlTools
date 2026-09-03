@@ -21,14 +21,16 @@ $settingsType = $asm.GetType('AxialSqlTools.IntelliSense.IntelliSenseSettings')
 $get = $engineType.GetMethod('GetCompletion')
 
 $cases = New-Object System.Collections.Generic.List[object]
-function Add-Case([string]$name, [string]$sql, [string[]]$expect, [string]$ctx = '', [string[]]$mustNot = @()) {
+function Add-Case([string]$name, [string]$sql, [string[]]$expect, [string]$ctx = '', [string[]]$mustNot = @(), [string]$Catalog = '') {
     $caret = $sql.Length
     $marker = $sql.IndexOf('|')
     if ($marker -ge 0) {
         $caret = $marker
         $sql = $sql.Remove($marker, 1)
     }
-    [void]$script:cases.Add([pscustomobject]@{ Name = $name; Sql = $sql; Expect = $expect; Ctx = $ctx; MustNot = $mustNot; Caret = $caret })
+    # Catalog: ''=none; 'mock'=mockCatalog; 'linked'=mockCatalog+linked conn; 'use'=masterCatalog+master conn.
+    # Catalog requirement is inline with each case, avoiding drift from scattered lists.
+    [void]$script:cases.Add([pscustomobject]@{ Name = $name; Sql = $sql; Expect = $expect; Ctx = $ctx; MustNot = $mustNot; Caret = $caret; Catalog = $Catalog })
 }
 
 Add-Case '01' 's' @('SELECT') 'BatchStart'; Add-Case '02' 'se' @('SELECT') 'BatchStart'; Add-Case '03' 'in' @('INSERT') 'BatchStart'
@@ -72,9 +74,9 @@ Add-Case '68' 'SELECT a FROM t GROUP BY a ha' @('HAVING'); Add-Case '69' 'SELECT
 Add-Case '70' 'SELECT a FROM t HAVING COUNT(*)>1 or' @('ORDER BY'); Add-Case '71' 'SELECT a FROM t HAVING COUNT(*)>1 an' @('AND')
 Add-Case '72' 'SELECT a FROM t ORDER BY a un' @('UNION'); Add-Case '73' 'SELECT a FROM t GROUP BY a un' @('UNION')
 Add-Case '74' 'SELECT * FROM t JOIN x ON a=b an' @('AND'); Add-Case '75' 'SELECT * FROM t JOIN x ON a=b gr' @('GROUP BY')
-Add-Case '212' 'SELECT * FROM kucun_zong AS KC INNER JOIN BK_JiaWei AS JW ON JW.j_id = KC.j_id AND JW.Type = 1 AND KC|' @('KC') 'WhereClause'
+Add-Case '212' 'SELECT * FROM kucun_zong AS KC INNER JOIN BK_JiaWei AS JW ON JW.j_id = KC.j_id AND JW.Type = 1 AND KC|' @('KC') 'WhereClause' -Catalog 'use'
 Add-Case '216' 'SELECT * FROM t AS KCZ INNER JOIN GongYingShang AS GHS ON GHS.Id = KCZ.ghs_id INNER JOIN db_bookInfo_Base AS BOOK ON BOOK.h_id = KCZ.h_id and g|' @('GHS') 'WhereClause'
-Add-Case '213' 'SELECT * FROM (SELECT isnull((select 1 from rt_storage.dbo.TH_TuiGHS_ShenQing_Item where Y_GHSID = KC.|),0) as c FROM rt_storage.dbo.kucun_zong AS KC) AS KCZ' @('stock','h_id') 'MemberAccess' @('CeShu')
+Add-Case '213' 'SELECT * FROM (SELECT isnull((select 1 from rt_storage.dbo.TH_TuiGHS_ShenQing_Item where Y_GHSID = KC.|),0) as c FROM rt_storage.dbo.kucun_zong AS KC) AS KCZ' @('stock','h_id') 'MemberAccess' @('CeShu') -Catalog 'use'
 Add-Case '76' 'INSERT in' @('INTO') 'InsertTarget'; Add-Case '77' 'INSERT INTO' @('INTO') 'InsertTarget'
 Add-Case '78' 'INSERT INTO t v' @('VALUES'); Add-Case '79' 'INSERT INTO t s' @('SELECT')
 Add-Case '80' 'CREATE t' @('TABLE') 'AfterCreate'; Add-Case '81' 'CREATE p' @('PROCEDURE') 'AfterCreate'
@@ -98,7 +100,7 @@ Add-Case '104' 'SELECT iif' @('IIF') 'SelectElements'
 Add-Case '105' 'SELECT trim' @('TRIM') 'SelectElements'
 Add-Case '106' 'SELECT eom' @('EOMONTH') 'SelectElements'
 Add-Case '107' 'SELECT * FROM t WHERE isn' @('ISNULL') 'WhereClause'
-Add-Case '108' 'SELECT * FROM t HAVING isn' @('ISNULL') 'WhereClause'
+Add-Case '108' 'SELECT * FROM t HAVING isn' @('ISNULL') 'HavingClause'
 Add-Case '109' 'UPDATE t SET x=coa' @('COALESCE') 'UpdateSet'
 Add-Case '110' 'SELECT a FROM t GROUP BY isn' @('ISNULL') 'OrderByGroupBy'
 Add-Case '111' 'SELECT getd' @('GETDATE') 'SelectElements'
@@ -139,33 +141,33 @@ Add-Case '138' ("SELECT a.F_PrimaryCode FROM dbo.CGD_NeiPei_Items a" + [char]10 
 Add-Case '139' ("SELECT * FROM t where x=1;" + [char]10 + "SELECT * fro") @('FROM') 'SelectElements'
 Add-Case '140' 'SELECT * fro' @('FROM') 'SelectElements'
 # 全字段（AllColumns）：需注入元数据目录；| 表示光标
-Add-Case '141' 'SELECT | FROM dbo.DemoT' @() 'SelectElements'
-Add-Case '142' 'INSERT INTO dbo.DemoT (|' @() 'InsertColumnList'
-Add-Case '143' 'INSERT INTO dbo.DemoT (id, |' @() 'InsertColumnList'
-Add-Case '144' 'INSERT INTO dbo.DemoT VALUES (|' @() 'InsertTarget'
+Add-Case '141' 'SELECT | FROM dbo.DemoT' @() 'SelectElements' -Catalog 'mock'
+Add-Case '142' 'INSERT INTO dbo.DemoT (|' @() 'InsertColumnList' -Catalog 'mock'
+Add-Case '143' 'INSERT INTO dbo.DemoT (id, |' @() 'InsertColumnList' -Catalog 'mock'
+Add-Case '144' 'INSERT INTO dbo.DemoT VALUES (|' @() 'InsertTarget' -Catalog 'mock'
 # UPDATE SET：目标表列（无 FROM 时也要提示；跨库三段名；同标签上一句 SELECT 不得抢走别名）
-Add-Case '145' 'UPDATE dbo.kucun SET ope|' @('oper') 'UpdateSet'
-Add-Case '146' 'UPDATE rt_kucun.dbo.kucun SET ope|' @('oper') 'UpdateSet'
-Add-Case '147' 'UPDATE rt_kucun.dbo.kucun SET oper where operid = ''x''|' @('operid') 'WhereClause'
-Add-Case '148' ("SELECT * FROM rt_fenjian.dbo.FJ_Items where DD_Item_ID = 1" + [char]10 + [char]10 + "UPDATE  rt_kucun.dbo.kucun set ope|") @('oper') 'UpdateSet'
-Add-Case '149' ("247965692" + [char]10 + "SELECT * FROM rt_fenjian.dbo.FJ_Items_Status" + [char]10 + [char]10 + "UPDATE  rt_kucun.dbo.kucun set ope| where operid = '202410111844658620279545858'") @('oper') 'UpdateSet'
+Add-Case '145' 'UPDATE dbo.kucun SET ope|' @('oper') 'UpdateSet' -Catalog 'mock'
+Add-Case '146' 'UPDATE rt_kucun.dbo.kucun SET ope|' @('oper') 'UpdateSet' -Catalog 'mock'
+Add-Case '147' 'UPDATE rt_kucun.dbo.kucun SET oper where operid = ''x''|' @('operid') 'WhereClause' -Catalog 'mock'
+Add-Case '148' ("SELECT * FROM rt_fenjian.dbo.FJ_Items where DD_Item_ID = 1" + [char]10 + [char]10 + "UPDATE  rt_kucun.dbo.kucun set ope|") @('oper') 'UpdateSet' -Catalog 'mock'
+Add-Case '149' ("247965692" + [char]10 + "SELECT * FROM rt_fenjian.dbo.FJ_Items_Status" + [char]10 + [char]10 + "UPDATE  rt_kucun.dbo.kucun set ope| where operid = '202410111844658620279545858'") @('oper') 'UpdateSet' -Catalog 'mock'
 # UPDATE 目标：库/表名，勿把 kucun. 当成列访问
-Add-Case '150' 'UPDATE kuc|' @('dbo.kucun') 'UpdateTarget' @('oper')
-Add-Case '151' 'UPDATE |' @('dbo.kucun') 'UpdateTarget' @('oper')
-Add-Case '152' 'UPDATE kucun.|' @() 'UpdateTarget' @('oper')
-Add-Case '153' 'UPDATE dbo.kuc|' @('dbo.kucun') 'UpdateTarget' @('oper')
+Add-Case '150' 'UPDATE kuc|' @('dbo.kucun') 'UpdateTarget' @('oper') -Catalog 'mock'
+Add-Case '151' 'UPDATE |' @('dbo.kucun') 'UpdateTarget' @('oper') -Catalog 'mock'
+Add-Case '152' 'UPDATE kucun.|' @() 'UpdateTarget' @('oper') -Catalog 'mock'
+Add-Case '153' 'UPDATE dbo.kuc|' @('dbo.kucun') 'UpdateTarget' @('oper') -Catalog 'mock'
 # IP 链接服务器：替换整段 192. 而不是叠成 192.192.168...；dbo. 仍只替换点后
 Add-Case '154' 'SELECT * FROM 192.' @() 'FromClause'
 Add-Case '155' 'SELECT * FROM 192.168.' @() 'FromClause'
 Add-Case '156' 'SELECT * FROM dbo.' @() ''
 # db.. 只插入表名，勿变成 newdaku..dbo.table
-Add-Case '157' 'SELECT * FROM RtBase..' @('kucun') 'FromClause' @('dbo.kucun')
-Add-Case '158' 'SELECT * FROM RtBase...' @() 'FromClause' @('kucun','dbo.kucun')
-Add-Case '159' 'SELECT * FROM RtBase....' @() 'FromClause' @('kucun','dbo.kucun')
+Add-Case '157' 'SELECT * FROM RtBase..' @('kucun') 'FromClause' @('dbo.kucun') -Catalog 'mock'
+Add-Case '158' 'SELECT * FROM RtBase...' @() 'FromClause' @('kucun','dbo.kucun') -Catalog 'mock'
+Add-Case '159' 'SELECT * FROM RtBase....' @() 'FromClause' @('kucun','dbo.kucun') -Catalog 'mock'
 # 跨服务器 server.db..table：列补全走链接服务器缓存，勿在当前库找表
-Add-Case '160' 'SELECT * FROM [192.168.1.23].baoxiao..BaoXiao aa where aa.|' @('id') 'MemberAccess'
-Add-Case '161' 'SELECT * FROM [192.168.1.23].baoxiao..BaoXiao  where |' @('id') 'WhereClause'
-Add-Case '162' 'SELECT * FROM [192.168.1.23].baoxiao..BaoXiao  where id|' @('id') 'WhereClause'
+Add-Case '160' 'SELECT * FROM [192.168.1.23].baoxiao..BaoXiao aa where aa.|' @('id') 'MemberAccess' -Catalog 'linked'
+Add-Case '161' 'SELECT * FROM [192.168.1.23].baoxiao..BaoXiao  where |' @('id') 'WhereClause' -Catalog 'linked'
+Add-Case '162' 'SELECT * FROM [192.168.1.23].baoxiao..BaoXiao  where id|' @('id') 'WhereClause' -Catalog 'linked'
 # 上一句无分号时行首 ex → EXEC（勿被 EXCEPT 续写抢走）
 Add-Case '164' ("SELECT * FROM t where x=1" + [char]10 + [char]10 + "ex") @('EXEC') 'BatchStart'
 Add-Case '165' ("SELECT * FROM t" + [char]10 + "ex") @('EXEC') 'BatchStart'
@@ -179,19 +181,19 @@ Add-Case '169' "SELECT * FROM t WHERE x=N'b|" @() '' @('BETWEEN','BY')
 Add-Case '170' "SELECT * FROM t -- b|" @() '' @('BETWEEN','BY')
 Add-Case '171' "SELECT * FROM t /* b|" @() '' @('BETWEEN','BY')
 # USE 未执行：按脚本当前库补全（连接仍是 master）
-Add-Case '172' ("USE  rt_storage" + [char]10 + [char]10 + "SELECT * FROM DB_|") @('DB_DiaoBoItem') 'FromClause'
-Add-Case '173' ("USE [rt_storage]" + [char]10 + [char]10 + "SELECT * FROM DB_|") @('DB_DiaoBoItem') 'FromClause'
+Add-Case '172' ("USE  rt_storage" + [char]10 + [char]10 + "SELECT * FROM DB_|") @('DB_DiaoBoItem') 'FromClause' -Catalog 'use'
+Add-Case '173' ("USE [rt_storage]" + [char]10 + [char]10 + "SELECT * FROM DB_|") @('DB_DiaoBoItem') 'FromClause' -Catalog 'use'
 # 前面还有跨库 SELECT 时，USE 仍作用于后面的裸表名
-Add-Case '176' ("USE  rt_storage" + [char]10 + "SELECT * FROM jichushuju.dbo.t_products" + [char]10 + "SELECT * FROM DB_|") @('DB_DiaoBoItem') 'FromClause'
+Add-Case '176' ("USE  rt_storage" + [char]10 + "SELECT * FROM jichushuju.dbo.t_products" + [char]10 + "SELECT * FROM DB_|") @('DB_DiaoBoItem') 'FromClause' -Catalog 'use'
 # 跨库三段名：前一个 JOIN 已有 ON 时仍要补全后续库.表
-Add-Case '178' 'SELECT * FROM t a INNER JOIN u b ON a.id=b.id LEFT JOIN newdaku.dbo.db_book|' @('db_bookinfo_Base') 'FromClause'
+Add-Case '178' 'SELECT * FROM t a INNER JOIN u b ON a.id=b.id LEFT JOIN newdaku.dbo.db_book|' @('db_bookinfo_Base') 'FromClause' -Catalog 'use'
 # 多个 JOIN 后 WHERE 别名.列：k/c 不能因为前面的 ON 丢别名
-Add-Case '181' ("USE rt_storage" + [char]10 + "SELECT a.x FROM DB_DiaoBoItem (nolock) a INNER JOIN DB_YeWuLiuZhuan (nolock) b ON a.x=b.x INNER JOIN BK_KuFang (nolock) k ON b.x=k.k_id where k.|") @('k_id') 'MemberAccess' @('PrimaryCode')
-Add-Case '182' 'SELECT a.x FROM t a INNER JOIN u b ON a.x=b.x LEFT JOIN newdaku.dbo.db_bookinfo_Base (nolock) c ON a.x=c.H_ID where c.|' @('DingJia') 'MemberAccess'
+Add-Case '181' ("USE rt_storage" + [char]10 + "SELECT a.x FROM DB_DiaoBoItem (nolock) a INNER JOIN DB_YeWuLiuZhuan (nolock) b ON a.x=b.x INNER JOIN BK_KuFang (nolock) k ON b.x=k.k_id where k.|") @('k_id') 'MemberAccess' @('PrimaryCode') -Catalog 'use'
+Add-Case '182' 'SELECT a.x FROM t a INNER JOIN u b ON a.x=b.x LEFT JOIN newdaku.dbo.db_bookinfo_Base (nolock) c ON a.x=c.H_ID where c.|' @('DingJia') 'MemberAccess' -Catalog 'use'
 # 超大脚本（无 GO）只解析当前语句：前面堆几千行后 where k. 仍要出列
 $pad = New-Object System.Text.StringBuilder
 for ($i = 0; $i -lt 2500; $i++) { [void]$pad.AppendLine('SELECT 1') }
-Add-Case '183' ("USE rt_storage`n" + $pad.ToString() + "SELECT a.x FROM DB_DiaoBoItem (nolock) a INNER JOIN BK_KuFang (nolock) k ON a.x=k.k_id where k.|") @('k_id') 'MemberAccess' @('PrimaryCode')
+Add-Case '183' ("USE rt_storage`n" + $pad.ToString() + "SELECT a.x FROM DB_DiaoBoItem (nolock) a INNER JOIN BK_KuFang (nolock) k ON a.x=k.k_id where k.|") @('k_id') 'MemberAccess' @('PrimaryCode') -Catalog 'use'
 # 大脚本切片后仍能从前文捞 #临时表 / 表变量 / 变量
 Add-Case '185' ("CREATE TABLE #tmp (id int, name nvarchar(50))" + [char]10 + $pad.ToString() + "SELECT * FROM #tmp t WHERE t.|") @('id','name') 'MemberAccess'
 Add-Case '186' ("DECLARE @tv TABLE (x int, y int)" + [char]10 + $pad.ToString() + "SELECT * FROM @tv t WHERE t.|") @('x','y') 'MemberAccess'
@@ -234,19 +236,63 @@ where ss|
 "@
 Add-Case '201' $piciSql @('SS_PiCi') 'WhereClause'
 Add-Case '202' 'SELECT * FROM dbo.SS_PiCi AS aa where ss|' @() 'WhereClause' @('SS_PiCi')
-Add-Case '203' 'SELECT * FROM rt_fenjian.dbo.SS_PiCi(nolock) as SS_PiCi where SS_PiCi.|' @('PrimaryCode') 'MemberAccess'
+Add-Case '203' 'SELECT * FROM rt_fenjian.dbo.SS_PiCi(nolock) as SS_PiCi where SS_PiCi.|' @('PrimaryCode') 'MemberAccess' -Catalog 'use'
 $procCreateSql = @"
 CREATE OR ALTER PROCEDURE dbo.p
 AS
 SELECT isbn FROM t_products b1 WHERE b1.cfstate = 1 and b1|
 "@
-Add-Case '217' $procCreateSql @('b1') 'WhereClause'
+Add-Case '217' $procCreateSql @('b1') 'WhereClause' -Catalog 'use'
 $procWhereSql = @"
 CREATE OR ALTER PROCEDURE dbo.p
 AS
 SELECT * FROM rt_data_processing..kuagongshi where pr|
 "@
-Add-Case '219' $procWhereSql @('primarycode') 'WhereClause'
+Add-Case '219' $procWhereSql @('primarycode') 'WhereClause' -Catalog 'use'
+# CTE: derive columns from definition when no explicit column list
+Add-Case '220' 'WITH c1 AS (SELECT a,b FROM t) SELECT * FROM c1 WHERE c1.|' @('a','b') 'MemberAccess'
+Add-Case '221' 'WITH c1 AS (SELECT a AS x, b FROM t) SELECT * FROM c1 WHERE c1.|' @('x','b') 'MemberAccess'
+Add-Case '222' 'WITH c1 AS (SELECT sum(stock) FROM t) SELECT * FROM c1 WHERE c1.|' @('stock') 'MemberAccess'
+# CTE scope: statement after semicolon must not see previous CTE
+Add-Case '223' 'WITH c1 AS (SELECT a FROM t) SELECT * FROM c1; WITH c2 AS (SELECT b FROM u) SELECT * FROM c2 WHERE c|' @('c2') 'WhereClause' @('c1')
+Add-Case '224' 'WITH c1 AS (SELECT a FROM t) SELECT * FROM c1; SELECT * FROM c2 WHERE c|' @('c2') 'WhereClause' @('c1')
+# temp table visible across GO + SELECT INTO #t column derivation
+Add-Case '225' "CREATE TABLE #tmp (id int, name nvarchar(50))`nGO`nSELECT * FROM #tmp t WHERE t.|" @('id','name') 'MemberAccess'
+Add-Case '226' 'SELECT a, b INTO #t FROM src; SELECT * FROM #t t WHERE t.|' @('a','b') 'MemberAccess'
+# data type completion in CAST/CONVERT
+Add-Case '227' 'SELECT CAST(x AS i|' @('int') 'DataType'
+Add-Case '228' 'SELECT CAST(x AS va|' @('varchar','varbinary') 'DataType'
+Add-Case '229' 'SELECT CONVERT(i|' @('int') 'DataType'
+Add-Case '230' 'SELECT CAST(x + y|' @() '' @('int','bigint')
+# window keywords + functions + PARTITION BY column context
+Add-Case '233' 'SELECT nth|' @('NTH_VALUE') 'SelectElements'
+Add-Case '234' 'SELECT approx|' @('APPROX_COUNT_DISTINCT') 'SelectElements'
+Add-Case '235' 'SELECT string_sp|' @('STRING_SPLIT') 'SelectElements'
+Add-Case '236' 'SELECT ov|' @('OVER') 'SelectElements'
+Add-Case '237' 'SELECT ROW_NUMBER() OVER (PARTITION BY i|) FROM dbo.DemoT' @('id') 'OrderByGroupBy' -Catalog 'mock'
+# HAVING only suggests GROUP BY columns + aggregate functions
+Add-Case '239' 'SELECT id, k_id FROM dbo.DemoT GROUP BY id HAVING |' @('id','COUNT') 'HavingClause' @('k_id') -Catalog 'mock'
+Add-Case '240' 'SELECT id, k_id FROM dbo.DemoT GROUP BY id HAVING co|' @('COUNT') 'HavingClause' -Catalog 'mock'
+Add-Case '241' 'SELECT id, k_id FROM dbo.DemoT GROUP BY id HAVING i|' @('id') 'HavingClause' @('k_id') -Catalog 'mock'
+# PIVOT / TABLESAMPLE / GROUP BY ROLLUP keywords + PIVOT IN(...) skip
+Add-Case '242' 'SELECT * FROM t PI|' @('PIVOT') 'FromClause'
+Add-Case '243' 'SELECT * FROM t TA|' @('TABLESAMPLE') 'FromClause'
+Add-Case '244' 'SELECT * FROM t GROUP BY a RO|' @('ROLLUP') 'OrderByGroupBy'
+Add-Case '245' 'SELECT * FROM dbo.DemoT PIVOT (SUM(id) FOR CreateRen IN ([A],[B])) AS p WHERE p.|' @('id') 'MemberAccess' @('A','B') -Catalog 'mock'
+# additional top-level / CREATE / ALTER keywords
+Add-Case '246' 'th|' @('THROW') 'BatchStart'
+Add-Case '247' 'pri|' @('PRINT') 'BatchStart'
+Add-Case '248' 'db|' @('DBCC') 'BatchStart'
+Add-Case '249' 'wa|' @('WAITFOR') 'BatchStart'
+Add-Case '250' 'CREATE se|' @('SEQUENCE') 'AfterCreate'
+Add-Case '251' 'ALTER se|' @('SEQUENCE') 'AfterAlter'
+# HAVING ... AND stays in HavingClause; GROUP BY scope (no cross-statement leak)
+Add-Case '253' 'SELECT id, k_id FROM dbo.DemoT GROUP BY id HAVING COUNT(*) > 1 AND i|' @('id') 'HavingClause' @('k_id') -Catalog 'mock'
+Add-Case '254' 'SELECT id FROM dbo.DemoT GROUP BY id; SELECT k_id FROM dbo.DemoT HAVING |' @() 'HavingClause' @('id') -Catalog 'mock'
+# no-semicolon multi-statement CTE scope (boundary-4): second statement must not see first CTE
+Add-Case '255' "WITH c1 AS (SELECT a FROM t) SELECT * FROM c1`nSELECT * FROM c2 WHERE c|" @('c2') 'WhereClause' @('c1')
+# CONVERT first arg with precision parens (boundary-3): comma inside type parens is not the arg separator
+Add-Case '256' 'SELECT CONVERT(decimal(10,2), x|' @() '' @('int','decimal')
 
 Write-Host "Cases=$($cases.Count)"
 
@@ -441,22 +487,16 @@ $masterConn = [Activator]::CreateInstance($connType)
 
 $fail = New-Object System.Collections.Generic.List[string]
 $pass = 0
-$linkedCases = @('160','161','162')
-$useCases = @('172','173','176','178','181','182','183','203','212','213','217','219')
 foreach ($c in $cases) {
     $e = [Activator]::CreateInstance($engineType)
     $s = [Activator]::CreateInstance($settingsType)
     $s.includeKeywords = $true
-    $useCatalog = $c.Name -in @('141','142','143','144','145','146','147','148','149','150','151','152','153','157','158','159')
-    $cat = if ($useCatalog) { $mockCatalog } else { $null }
+    $cat = $null
     $conn = $null
-    if ($c.Name -in $linkedCases) {
-        $cat = $mockCatalog
-        $conn = $linkedConn
-    }
-    if ($c.Name -in $useCases) {
-        $cat = $masterCatalog
-        $conn = $masterConn
+    switch ($c.Catalog) {
+        'mock'   { $cat = $mockCatalog }
+        'linked' { $cat = $mockCatalog; $conn = $linkedConn }
+        'use'    { $cat = $masterCatalog; $conn = $masterConn }
     }
     try {
         $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -846,6 +886,78 @@ try {
     if ($qiProdPOk) { $pass++ } else { [void]$fail.Add("223 QuickInfo CREATE OR ALTER t_products $qiProdPWhy") }
 } catch {
     [void]$fail.Add("221-223 EX=$($_.Exception.Message)")
+}
+
+# DDL detection + cache invalidation (schema freshness)
+try {
+    $containsDdl = $svcType.GetMethod('ContainsDdl', [Reflection.BindingFlags]'NonPublic,Static')
+    $ddlOk = $true
+    $ddlWhy = ''
+    if ($null -eq $containsDdl) { $ddlOk = $false; $ddlWhy = 'ContainsDdl method not found' }
+    else {
+        foreach ($s in @('CREATE TABLE t (id int)', 'ALTER TABLE t ADD c int', 'DROP TABLE t', 'CREATE OR ALTER TABLE t (id int)', 'TRUNCATE TABLE t', 'CREATE VIEW v AS SELECT 1', 'CREATE PROCEDURE p AS SELECT 1', 'CREATE OR ALTER PROCEDURE p AS SELECT 1', 'DROP VIEW v')) {
+            if (-not [bool]$containsDdl.Invoke($null, @($s))) { $ddlOk = $false; $ddlWhy = "ContainsDdl true expected: $s"; break }
+        }
+        if ($ddlOk) {
+            foreach ($s in @('SELECT * FROM t', 'INSERT INTO t VALUES (1)', 'UPDATE t SET a=1', 'SELECT COUNT(*) FROM sys.objects')) {
+                if ([bool]$containsDdl.Invoke($null, @($s))) { $ddlOk = $false; $ddlWhy = "ContainsDdl false expected: $s"; break }
+            }
+        }
+    }
+    if ($ddlOk) { $pass++ } else { [void]$fail.Add("231 DDL $ddlWhy") }
+
+    $ddlConn = [Activator]::CreateInstance($connType)
+    [void]$connType.GetProperty('ServerName').SetValue($ddlConn, 'ddltest')
+    [void]$connType.GetProperty('Database').SetValue($ddlConn, 'RtBase')
+    $svc.PutCatalog('ddltest', 'RtBase', $mockCatalog)
+    if ($null -eq $svc.GetCachedCatalog($ddlConn)) { throw 'DDL setup failed: catalog not cached' }
+    $svc.InvalidateDdlTargets($ddlConn, 'CREATE TABLE t (id int)')
+    if ($null -ne $svc.GetCachedCatalog($ddlConn)) { $ddlOk = $false; $ddlWhy = 'catalog not invalidated after DDL' }
+    else { $pass++ }
+    if ($ddlWhy) { [void]$fail.Add("232 DDL-invalidate $ddlWhy") }
+} catch {
+    [void]$fail.Add("231-232 DDL EX=$($_.Exception.Message)")
+}
+
+# DDL invalidation must NOT clear query-referenced (non-target) databases
+try {
+    $ddlConn2 = [Activator]::CreateInstance($connType)
+    [void]$connType.GetProperty('ServerName').SetValue($ddlConn2, 'ddlscope')
+    [void]$connType.GetProperty('Database').SetValue($ddlConn2, 'RtBase')
+    $svc.PutCatalog('ddlscope', 'RtBase', $mockCatalog)
+    $svc.PutCatalog('ddlscope', 'rt_data_processing', $rtDataCatalog)
+    $procSql = "CREATE OR ALTER PROCEDURE dbo.p`nAS`nSELECT * FROM rt_data_processing..kuagongshi"
+    $svc.InvalidateDdlTargets($ddlConn2, $procSql)
+    if ($null -eq $svc.GetCachedCatalog($ddlConn2, 'rt_data_processing')) { throw 'query-referenced db was wrongly invalidated' }
+    if ($null -ne $svc.GetCachedCatalog($ddlConn2)) { throw 'current db should be invalidated' }
+    $pass++
+} catch {
+    [void]$fail.Add("257 DDL-scope $($_.Exception.Message)")
+}
+
+# empty-but-indexed catalog is cached (not treated as unindexed)
+try {
+    $emptyCat = [Activator]::CreateInstance($catalogType)
+    $emptyCat.Database = 'empty_db'
+    $emptyCat.IsIndexed = $true
+    $emptyConn = [Activator]::CreateInstance($connType)
+    [void]$connType.GetProperty('ServerName').SetValue($emptyConn, 'emptytest')
+    [void]$connType.GetProperty('Database').SetValue($emptyConn, 'empty_db')
+    $svc.PutCatalog('emptytest', 'empty_db', $emptyCat)
+    if ($null -eq $svc.GetCachedCatalog($emptyConn)) { throw 'indexed empty catalog should be cached' }
+    $pass++
+
+    $emptyCat2 = [Activator]::CreateInstance($catalogType)
+    $emptyCat2.Database = 'empty_db2'
+    $emptyCat2.IsIndexed = $false
+    $emptyConn2 = [Activator]::CreateInstance($connType)
+    [void]$connType.GetProperty('ServerName').SetValue($emptyConn2, 'emptytest2')
+    [void]$connType.GetProperty('Database').SetValue($emptyConn2, 'empty_db2')
+    $svc.PutCatalog('emptytest2', 'empty_db2', $emptyCat2)
+    if ($null -ne $svc.GetCachedCatalog($emptyConn2)) { throw 'unindexed empty catalog should not be cached' }
+    $pass++
+} catch {
+    [void]$fail.Add("252 empty-catalog $($_.Exception.Message)")
 }
 
 Write-Host "PASS=$pass FAIL=$($fail.Count)"

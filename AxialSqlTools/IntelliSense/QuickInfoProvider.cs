@@ -25,9 +25,8 @@ namespace AxialSqlTools.IntelliSense
             _hoverConn = connInfo;
             try
             {
-                if (CompletionEngine.IsInsideStringOrComment(fullText, caretOffset))
+                if (CompletionEngine.ScanPrefixState(fullText, caretOffset, out string useDb))
                     return null;
-                string useDb = CompletionEngine.GetActiveUseDatabase(fullText, caretOffset);
                 if (!string.IsNullOrEmpty(useDb) && connInfo != null &&
                     (catalog == null || !string.Equals(catalog.Database, useDb, StringComparison.OrdinalIgnoreCase)))
                 {
@@ -199,9 +198,8 @@ namespace AxialSqlTools.IntelliSense
             _hoverConn = connInfo;
             try
             {
-                if (CompletionEngine.IsInsideStringOrComment(fullText, caretOffset))
+                if (CompletionEngine.ScanPrefixState(fullText, caretOffset, out string useDb))
                     return null;
-                string useDb = CompletionEngine.GetActiveUseDatabase(fullText, caretOffset);
                 if (!string.IsNullOrEmpty(useDb) && connInfo != null &&
                     (catalog == null || !string.Equals(catalog.Database, useDb, StringComparison.OrdinalIgnoreCase)))
                 {
@@ -542,7 +540,7 @@ namespace AxialSqlTools.IntelliSense
                 if (catalog == null || !string.Equals(catalog.Database, tref.Database, StringComparison.OrdinalIgnoreCase))
                 {
                     MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, tref.Database);
-                    target = MetadataCatalogService.Instance.GetCachedCatalogOrWait(connInfo, tref.Database, 2000);
+                    target = MetadataCatalogService.Instance.GetCachedCatalogOrDisk(connInfo, tref.Database);
                     if (target == null)
                         return null;
                 }

@@ -129,11 +129,13 @@ namespace AxialSqlTools
             UpdateTarget,        // UPDATE 后、SET 前
             DeleteTarget,        // DELETE FROM 后
             WhereClause,         // WHERE / ON / HAVING / AND / OR 后
+            HavingClause,        // HAVING 后（只出 GROUP BY 列 + 聚合函数）
             UpdateSet,           // SET（UPDATE 内）后
             OrderByGroupBy,      // ORDER BY / GROUP BY 后
             AfterUse,            // USE 后
             LocalVariable,       // @ 后
-            LocalMemberAccess    // CTE.#t.@t. 后
+            LocalMemberAccess,   // CTE.#t.@t. 后
+            DataType             // CAST/CONVERT 的类型参数位置
         }
     }
 }

@@ -619,24 +619,6 @@ namespace AxialSqlTools.IntelliSense
                 string useDb = CompletionEngine.GetActiveUseDatabase(text, caret);
                 if (connInfo != null)
                     MetadataCacheRefreshService.Instance.EnsureServerCache(connInfo);
-                MetadataCatalog catalog = null;
-                if (connInfo != null)
-                {
-                    string scanSql = text;
-                    if (CompletionEngine.TryGetParseSlice(text, caret, out string slice, out _))
-                        scanSql = slice;
-                    MetadataCatalogService.Instance.EnsureCatalogsReferencedInSql(connInfo, scanSql);
-                    if (!string.IsNullOrEmpty(useDb))
-                        MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, useDb);
-                    bool likelyExec = LooksLikeExecContext(text, caret);
-                    catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo, useDb);
-                    if (catalog == null || (likelyExec && !catalog.RoutinesLoaded))
-                    {
-                        MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, useDb);
-                        if (force || likelyExec)
-                            catalog = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, useDb, requireRoutines: likelyExec);
-                    }
-                }
 
                 int gen = Interlocked.Increment(ref _completionGen);
                 var dispatcher = System.Windows.Application.Current?.Dispatcher
@@ -647,6 +629,26 @@ namespace AxialSqlTools.IntelliSense
                 {
                     try
                     {
+                        // 目录解析（磁盘 JSON 读取）放后台线程，避免阻塞 UI
+                        MetadataCatalog catalog = null;
+                        if (connInfo != null)
+                        {
+                            string scanSql = text;
+                            if (CompletionEngine.TryGetParseSlice(text, caret, out string slice, out int sliceStart))
+                                scanSql = slice;
+                            MetadataCatalogService.Instance.EnsureCatalogsReferencedInSql(connInfo, scanSql);
+                            if (!string.IsNullOrEmpty(useDb))
+                                MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, useDb);
+                            bool likelyExec = LooksLikeExecContext(text, caret);
+                            catalog = MetadataCatalogService.Instance.GetCachedCatalog(connInfo, useDb);
+                            if (catalog == null || (likelyExec && !catalog.RoutinesLoaded))
+                            {
+                                MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, useDb);
+                                if (force || likelyExec)
+                                    catalog = MetadataCatalogService.Instance.GetOrBuildCatalog(connInfo, useDb, requireRoutines: likelyExec);
+                            }
+                        }
+
                         var sw = Stopwatch.StartNew();
                         var engine = new CompletionEngine();
                         var result = engine.GetCompletion(text, caret, catalog, settings, connInfo);
@@ -886,6 +888,7 @@ namespace AxialSqlTools.IntelliSense
                 {
                     try
                     {
+                        MetadataCatalogService.Instance.InvalidateDdlTargets(snap, sql);
                         MetadataCatalogService.Instance.BuildCatalogsReferencedInSql(snap, sql);
                     }
                     catch (Exception ex)

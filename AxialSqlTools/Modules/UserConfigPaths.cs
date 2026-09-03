@@ -57,7 +57,10 @@ namespace AxialSqlTools
             }
 
             string result = builder.ToString();
-            return string.IsNullOrEmpty(result) ? "_unknown" : result;
+            // 防御路径穿越："." / ".." / "..." 等纯点号段会被 Path.Combine 解析为目录跳转，归一为占位
+            if (string.IsNullOrEmpty(result) || result.Trim('.').Length == 0)
+                return "_unknown";
+            return result;
         }
     }
 }

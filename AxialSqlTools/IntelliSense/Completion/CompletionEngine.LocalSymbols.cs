@@ -34,15 +34,27 @@ namespace AxialSqlTools
                 return local;
             }
 
+            /// <summary>跨 GO 的 #临时表全文扫描阈值：超过则降级为当前批次，避免超大脚本热路径线性扫描。</summary>
+            private const int FullTextTempScanLimit = 256 * 1024;
+
             private void EnrichLocalSymbolsFromBatch(LocalSymbols local, string fullText, int caret)
             {
                 if (local == null || string.IsNullOrEmpty(fullText)) return;
-                if (!TryGetBatchAt(fullText, caret, out string batch, out int batchStart))
-                    return;
-                CollectLocalSymbolsFromText(batch, caret - batchStart, local);
+                int limit = Math.Min(Math.Max(0, caret), fullText.Length);
+                if (limit <= 0) return;
+                bool haveBatch = TryGetBatchAt(fullText, caret, out string batch, out int batchStart);
+                int batchLimit = haveBatch ? Math.Min(caret - batchStart, batch.Length) : 0;
+                // #临时表是会话级对象，跨 GO 批次可见：扫描光标前的全部文本（超大脚本降级为当前批次）
+                if (limit <= FullTextTempScanLimit)
+                    CollectLocalSymbolsFromText(fullText, limit, local, scanTempTables: true, scanVariables: false);
+                else if (haveBatch)
+                    CollectLocalSymbolsFromText(batch, batchLimit, local, scanTempTables: true, scanVariables: false);
+                // DECLARE 变量/表变量是批次级：只扫描当前 GO 批次
+                if (haveBatch)
+                    CollectLocalSymbolsFromText(batch, batchLimit, local, scanTempTables: false, scanVariables: true);
             }
 
-            private static void CollectLocalSymbolsFromText(string text, int limit, LocalSymbols local)
+            private static void CollectLocalSymbolsFromText(string text, int limit, LocalSymbols local, bool scanTempTables, bool scanVariables)
             {
                 if (string.IsNullOrEmpty(text) || local == null || limit <= 0) return;
                 int n = Math.Min(limit, text.Length);
@@ -85,7 +97,7 @@ namespace AxialSqlTools
                         bool identBefore = i > 0 && (char.IsLetterOrDigit(text[i - 1]) || text[i - 1] == '_');
                         if (!identBefore) { inString = true; i += 2; continue; }
                     }
-                    if (KeywordAt(text, i, n, "CREATE"))
+                    if (scanTempTables && KeywordAt(text, i, n, "CREATE"))
                     {
                         int j = SkipWs(text, i + 6, n);
                         if (KeywordAt(text, j, n, "TABLE"))
@@ -104,7 +116,7 @@ namespace AxialSqlTools
                             continue;
                         }
                     }
-                    if (KeywordAt(text, i, n, "INTO"))
+                    if (scanTempTables && KeywordAt(text, i, n, "INTO"))
                     {
                         int j = SkipWs(text, i + 4, n);
                         string name = ReadSqlName(text, ref j, n);
@@ -113,7 +125,7 @@ namespace AxialSqlTools
                         i = Math.Max(i + 1, j);
                         continue;
                     }
-                    if (KeywordAt(text, i, n, "DECLARE"))
+                    if (scanVariables && KeywordAt(text, i, n, "DECLARE"))
                     {
                         i = CollectDeclareList(text, i + 7, n, local);
                         continue;
@@ -333,29 +345,18 @@ namespace AxialSqlTools
                 }
                 else if (stmt is SelectStatement ss)
                 {
-                    // CTE 定义
-                    if (ss.WithCtesAndXmlNamespaces != null)
-                    {
-                        foreach (var cte in ss.WithCtesAndXmlNamespaces.CommonTableExpressions)
-                        {
-                            var info = new CteInfo { Name = cte.ExpressionName?.Value };
-                            if (cte.Columns != null)
-                            {
-                                foreach (var col in cte.Columns)
-                                {
-                                    info.ColumnNames.Add(col.Value);
-                                }
-                            }
-                            if (info.Name != null) local.Ctes.Add(info);
-                        }
-                    }
-                    // SELECT INTO #t
+                    // CTE 收集统一走词法路径 CollectCtesFromTokens（可处理残缺 SQL + 作用域），
+                    // 此处不再从 AST 重复收集，避免跨语句 CTE 污染。
+                    // SELECT INTO #t：从 SELECT 列表推导列
                     if (ss.Into != null)
                     {
                         string intoName = GetLastIdentifier(ss.Into);
                         if (!string.IsNullOrEmpty(intoName) && intoName.StartsWith("#"))
                         {
-                            local.TempTables.Add(new LocalTableInfo { Name = intoName });
+                            var intoCols = new List<string>();
+                            if (ss.QueryExpression != null)
+                                CollectQuerySelectColumns(ss.QueryExpression, intoCols);
+                            MergeLocalTable(local.TempTables, intoName, intoCols);
                         }
                     }
                 }
@@ -1045,10 +1046,241 @@ namespace AxialSqlTools
             /// <summary>从当前语句整个 FROM…WHERE 区间收集所有表/JOIN 别名（含 db..table、table(nolock) alias）。</summary>
             private static void CollectAliasesFromTokens(List<TSqlParserToken> tokens, int localOffset, LocalSymbols local, string text = null)
             {
+                CollectCtesFromTokens(tokens, localOffset, local, text);
+                CollectGroupByColumns(tokens, localOffset, local);
                 int fromIdx = FindFromClauseTokenIndex(tokens, localOffset);
                 if (fromIdx >= 0)
                     CollectAliasesInFromRegion(tokens, fromIdx, local, text);
                 CollectEnclosingFromAliases(tokens, localOffset, local, text, fromIdx);
+            }
+
+            /// <summary>收集当前语句 GROUP BY 的列名（HAVING 只提示这些列 + 聚合函数）。</summary>
+            private static void CollectGroupByColumns(List<TSqlParserToken> tokens, int localOffset, LocalSymbols local)
+            {
+                if (tokens == null || local == null) return;
+                // 只取当前查询（深度 + 分号作用域）的 GROUP BY，避免误取子查询/上一语句的 GROUP BY
+                int selectIdx = FindCurrentQuerySelectIndex(tokens, localOffset, out _, out _);
+                int scanStart = selectIdx >= 0 ? selectIdx + 1 : 0;
+                int groupIdx = -1;
+                int depth = 0;
+                for (int i = scanStart; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset >= localOffset) break;
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis) { depth++; continue; }
+                    if (t.TokenType == TSqlTokenType.RightParenthesis) { if (depth > 0) depth--; continue; }
+                    if (depth > 0) continue;
+                    if (string.Equals(t.Text, "GROUP", StringComparison.OrdinalIgnoreCase)
+                        && NextKeywordIs(tokens, i, "BY"))
+                    {
+                        groupIdx = i;
+                        break;
+                    }
+                }
+                if (groupIdx < 0) return;
+
+                var cols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                string lastIdent = null;
+                for (int i = groupIdx + 1; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset >= localOffset) break;
+                    string kw = t.Text?.ToUpperInvariant();
+                    if (kw == "HAVING" || kw == "ORDER" || kw == "UNION" || kw == "EXCEPT"
+                        || kw == "INTERSECT" || kw == ";" || kw == "GO" || kw == "SELECT")
+                        break;
+                    if (t.TokenType == TSqlTokenType.Comma)
+                    {
+                        if (!string.IsNullOrEmpty(lastIdent)) cols.Add(lastIdent);
+                        lastIdent = null;
+                        continue;
+                    }
+                    if (IsWordLikeToken(t) || IsIdentifierLike(t) || IsPartialObjectNameToken(t))
+                    {
+                        string name = UnbracketIdentifier(t.Text);
+                        if (!string.IsNullOrEmpty(name) && !IsGroupByNoiseKeyword(name))
+                            lastIdent = name;
+                    }
+                    // 点号/括号/运算符不重置 lastIdent（alias.col → col；sum(x) → x）
+                }
+                if (!string.IsNullOrEmpty(lastIdent)) cols.Add(lastIdent);
+
+                foreach (var c in cols)
+                {
+                    if (!string.IsNullOrEmpty(c) && !local.GroupByColumns.Contains(c))
+                        local.GroupByColumns.Add(c);
+                }
+            }
+
+            private static bool IsGroupByNoiseKeyword(string name)
+            {
+                switch (name.ToUpperInvariant())
+                {
+                    case "BY":
+                    case "GROUP":
+                    case "GROUPING":
+                    case "SETS":
+                    case "ROLLUP":
+                    case "CUBE":
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+
+            private static bool NextKeywordIs(List<TSqlParserToken> tokens, int fromIdx, string keyword)
+            {
+                for (int i = fromIdx + 1; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    return string.Equals(t.Text, keyword, StringComparison.OrdinalIgnoreCase);
+                }
+                return false;
+            }
+
+            /// <summary>
+            /// 词法级收集 CTE（WITH cte [(cols)] AS (query)），不依赖 ScriptDOM AST。
+            /// 残缺 SQL（如尾部 alias. 未闭合）时 AST 常为 0 语句，CTE 只能从 token 流取。
+            /// </summary>
+            private static void CollectCtesFromTokens(List<TSqlParserToken> tokens, int localOffset, LocalSymbols local, string text)
+            {
+                if (tokens == null || local == null) return;
+                int i = 0;
+                int depth = 0;
+                while (i < tokens.Count)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) { i++; continue; }
+                    if (t.Offset >= localOffset) break;
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis) { depth++; i++; continue; }
+                    if (t.TokenType == TSqlTokenType.RightParenthesis) { if (depth > 0) depth--; i++; continue; }
+                    if (depth > 0) { i++; continue; }
+                    if (string.Equals(t.Text, "WITH", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // WITH (NOLOCK) 等表提示：下一有效 token 是 '('；否则是 CTE
+                        int nxt = i + 1;
+                        while (nxt < tokens.Count && (tokens[nxt] == null || IsInsignificantToken(tokens[nxt]))) nxt++;
+                        if (nxt < tokens.Count && tokens[nxt] != null && tokens[nxt].TokenType == TSqlTokenType.LeftParenthesis)
+                        {
+                            i++;
+                            continue;
+                        }
+                        // CTE 作用域：只作用于紧随其后的同一条语句；光标已越过该语句则跳过
+                        int stmtEnd = FindStatementEnd(tokens, i);
+                        if (localOffset <= stmtEnd)
+                            i = ParseCteList(tokens, i, local, text, localOffset);
+                        else
+                            i++;
+                        continue;
+                    }
+                    i++;
+                }
+            }
+
+            /// <summary>
+            /// WITH 语句的结束偏移：其后第一个顶层 ;/GO，或下一条顶层 DML 语句的起始关键字。
+            /// 无分号多语句（如两条独立 SELECT）时按第二个顶层 DML 关键字作边界，避免前一语句 CTE 泄漏。
+            /// UNION/EXCEPT/INTERSECT 后的 SELECT 是主查询延续；INSERT 的源 SELECT 不算新语句。
+            /// 对 INSERT...VALUES 后紧跟 SELECT、MERGE 的 WHEN...THEN action 等罕见歧义，保守地继续扫描
+            /// （宁可少量泄漏，也不误伤主查询内的 CTE 引用导致补全缺失）。
+            /// </summary>
+            private static int FindStatementEnd(List<TSqlParserToken> tokens, int fromIdx)
+            {
+                int depth = 0;
+                bool sawMainQuery = false;
+                bool mainIsInsert = false;
+                bool sawInsertSelect = false;
+                bool pendingUnion = false;
+                for (int k = fromIdx + 1; k < tokens.Count; k++)
+                {
+                    var t = tokens[k];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis) { depth++; continue; }
+                    if (t.TokenType == TSqlTokenType.RightParenthesis) { if (depth > 0) depth--; continue; }
+                    if (depth > 0) continue;
+                    string kw = t.Text?.ToUpperInvariant();
+                    if (kw == ";" || kw == "GO") return t.Offset;
+                    if (kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT") { pendingUnion = true; continue; }
+                    bool isDml = kw == "SELECT" || kw == "INSERT" || kw == "UPDATE" || kw == "DELETE" || kw == "MERGE";
+                    if (!isDml) continue;
+                    if (!sawMainQuery)
+                    {
+                        sawMainQuery = true;
+                        mainIsInsert = kw == "INSERT";
+                        pendingUnion = false;
+                        continue;
+                    }
+                    if (pendingUnion) { pendingUnion = false; continue; } // UNION SELECT 是主查询延续
+                    if (mainIsInsert && kw == "SELECT" && !sawInsertSelect)
+                    {
+                        sawInsertSelect = true;
+                        continue; // INSERT INTO t SELECT 的源查询
+                    }
+                    return t.Offset;
+                }
+                return int.MaxValue;
+            }
+
+            /// <summary>解析 WITH 后的 CTE 列表（逗号分隔），返回扫描结束位置。</summary>
+            private static int ParseCteList(List<TSqlParserToken> tokens, int withIdx, LocalSymbols local, string text, int limit)
+            {
+                int i = withIdx + 1;
+                while (true)
+                {
+                    while (i < tokens.Count && (tokens[i] == null || IsInsignificantToken(tokens[i]))) i++;
+                    if (i >= tokens.Count) return i;
+                    var nameTok = tokens[i];
+                    if (nameTok == null || nameTok.Offset >= limit) return i;
+                    if (!(IsWordLikeToken(nameTok) || IsIdentifierLike(nameTok))) return i;
+                    string name = UnbracketIdentifier(nameTok.Text);
+                    i++;
+
+                    // 可选显式列清单 (col1, col2)
+                    var explicitCols = new List<string>();
+                    while (i < tokens.Count && (tokens[i] == null || IsInsignificantToken(tokens[i]))) i++;
+                    if (i < tokens.Count && tokens[i] != null && tokens[i].TokenType == TSqlTokenType.LeftParenthesis)
+                    {
+                        int closeCols = SkipParenthesesForward(tokens, i);
+                        for (int k = i + 1; k < closeCols && k < tokens.Count; k++)
+                        {
+                            var ct = tokens[k];
+                            if (ct == null || IsInsignificantToken(ct)) continue;
+                            if (ct.TokenType == TSqlTokenType.Comma) continue;
+                            if (IsWordLikeToken(ct) || IsIdentifierLike(ct) || IsPartialObjectNameToken(ct))
+                                explicitCols.Add(UnbracketIdentifier(ct.Text));
+                        }
+                        i = closeCols;
+                    }
+
+                    while (i < tokens.Count && (tokens[i] == null || IsInsignificantToken(tokens[i]))) i++;
+                    if (i >= tokens.Count || tokens[i] == null || !string.Equals(tokens[i].Text, "AS", StringComparison.OrdinalIgnoreCase)) return i;
+                    i++;
+
+                    while (i < tokens.Count && (tokens[i] == null || IsInsignificantToken(tokens[i]))) i++;
+                    if (i >= tokens.Count || tokens[i] == null || tokens[i].TokenType != TSqlTokenType.LeftParenthesis) return i;
+                    int open = i;
+                    int close = SkipParenthesesForward(tokens, open);
+
+                    List<SelectListCol> cols;
+                    if (explicitCols.Count > 0)
+                    {
+                        cols = new List<SelectListCol>();
+                        foreach (var c in explicitCols) cols.Add(new SelectListCol { Name = c });
+                    }
+                    else
+                    {
+                        cols = CollectSelectListColumns(tokens, open + 1, close, text);
+                    }
+                    MergeCte(local, name, cols, null);
+
+                    i = close;
+                    while (i < tokens.Count && (tokens[i] == null || IsInsignificantToken(tokens[i]))) i++;
+                    if (i >= tokens.Count || tokens[i] == null || tokens[i].TokenType != TSqlTokenType.Comma) return i;
+                    i++; // 逗号后继续下一个 CTE
+                }
             }
 
             /// <summary>相关子查询可见外层 FROM 别名；光标落在某层 FROM 派生表内则不收该层（避免漏出 KCZ）。</summary>
@@ -1625,6 +1857,9 @@ namespace AxialSqlTools
                     case "WITH":
                     case "NOLOCK":
                     case "READUNCOMMITTED":
+                    case "PIVOT":
+                    case "UNPIVOT":
+                    case "TABLESAMPLE":
                         return true;
                     default:
                         return false;
@@ -1779,12 +2014,7 @@ namespace AxialSqlTools
                             string name = scalar.ColumnName?.Value
                                           ?? scalar.ColumnName?.Identifier?.Value;
                             if (string.IsNullOrEmpty(name))
-                            {
-                                var col = scalar.Expression as ColumnReferenceExpression;
-                                var ids = col?.MultiPartIdentifier?.Identifiers;
-                                if (ids != null && ids.Count > 0)
-                                    name = ids[ids.Count - 1].Value;
-                            }
+                                name = GetScalarExpressionName(scalar.Expression);
                             if (!string.IsNullOrEmpty(name) &&
                                 !cols.Exists(c => string.Equals(c, name, StringComparison.OrdinalIgnoreCase)))
                                 cols.Add(name);
@@ -1796,6 +2026,34 @@ namespace AxialSqlTools
                     CollectQuerySelectColumns(bq.FirstQueryExpression, cols);
                 else if (query is QueryParenthesisExpression pq)
                     CollectQuerySelectColumns(pq.QueryExpression, cols);
+            }
+
+            /// <summary>从标量表达式提取可用作列名的最后一个标识符（sum(stock)→stock、a+b→b、CASE…END→内部列）。</summary>
+            private static string GetScalarExpressionName(ScalarExpression expr)
+            {
+                if (expr == null) return null;
+                if (expr is ColumnReferenceExpression col)
+                {
+                    var ids = col.MultiPartIdentifier?.Identifiers;
+                    if (ids != null && ids.Count > 0)
+                        return ids[ids.Count - 1].Value;
+                    return null;
+                }
+                if (expr is FunctionCall fc)
+                {
+                    if (fc.Parameters != null)
+                    {
+                        for (int i = fc.Parameters.Count - 1; i >= 0; i--)
+                        {
+                            string n = GetScalarExpressionName(fc.Parameters[i]);
+                            if (!string.IsNullOrEmpty(n)) return n;
+                        }
+                    }
+                    return null;
+                }
+                if (expr is ParenthesisExpression pe)
+                    return GetScalarExpressionName(pe.Expression);
+                return null;
             }
 
             #endregion

@@ -1,4 +1,5 @@
 using Microsoft.Data.SqlClient;
+using NLog;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -17,6 +18,8 @@ namespace AxialSqlTools
         {
             private const int QueryTimeoutSeconds = 5;
             private const int ConnectTimeoutSeconds = 5;
+
+            private static readonly ILogger Logger = LogManager.GetCurrentClassLogger();
 
             private static readonly Lazy<MetadataCatalogService> _instance =
                 new Lazy<MetadataCatalogService>(() => new MetadataCatalogService());
@@ -62,7 +65,8 @@ namespace AxialSqlTools
                 if (string.IsNullOrWhiteSpace(database))
                     database = "master";
                 string key = Key(connInfo.ServerName, database);
-                if (_cache.TryGetValue(key, out var cached) && cached != null && !cached.IsEmpty
+                if (_cache.TryGetValue(key, out var cached) && cached != null
+                    && (cached.IsIndexed || !cached.IsEmpty)
                     && string.Equals(cached.Database, database, StringComparison.OrdinalIgnoreCase))
                     return cached;
                 return null;
@@ -119,11 +123,10 @@ namespace AxialSqlTools
                 }
             }
 
-            /// <summary>内存未命中则读磁盘；不再等待 SQL 构建。</summary>
-            public MetadataCatalog GetCachedCatalogOrWait(
+            /// <summary>补全/悬停跨库兜底：内存未命中则读磁盘；不等待 SQL 构建（后台异步完成，下次再取）。</summary>
+            public MetadataCatalog GetCachedCatalogOrDisk(
                 ScriptFactoryAccess.ConnectionInfo connInfo,
-                string dbOverride = null,
-                int maxWaitMs = 2000)
+                string dbOverride = null)
             {
                 var cached = GetCachedCatalog(connInfo, dbOverride);
                 if (cached != null) return cached;
@@ -156,12 +159,45 @@ namespace AxialSqlTools
                 return result;
             }
 
+            /// <summary>
+            /// 提取 DDL 语句（CREATE/ALTER/DROP/TRUNCATE）目标对象所在的库：
+            /// 三段名 db.schema.obj → db；否则 USE 库或当前连接库。
+            /// 区别于 ExtractReferencedDatabaseNames（后者提取所有引用库，含查询引用），
+            /// 失效只应针对 DDL 实际修改的目标库，避免误伤仅被查询引用的库（如 SELECT * FROM otherdb..t）。
+            /// </summary>
+            internal static List<string> ExtractDdlTargetDatabases(string sql, string currentDatabase)
+            {
+                var result = new List<string>();
+                if (string.IsNullOrEmpty(sql)) return result;
+                string useDb = CompletionEngine.GetActiveUseDatabase(sql, sql.Length);
+                string fallback = !string.IsNullOrWhiteSpace(useDb) && IsPlausibleDatabaseName(useDb)
+                    ? useDb
+                    : (string.IsNullOrWhiteSpace(currentDatabase) ? "master" : UnbracketSqlIdent(currentDatabase));
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (Match m in DdlTargetRegex.Matches(sql))
+                {
+                    string seg3 = UnbracketSqlIdent(m.Groups["seg3"].Value);
+                    string db = !string.IsNullOrEmpty(seg3)
+                        ? UnbracketSqlIdent(m.Groups["seg1"].Value) // db.schema.obj
+                        : fallback;                                  // schema.obj / obj
+                    if (IsPlausibleDatabaseName(db) && seen.Add(db))
+                        result.Add(db);
+                }
+                if (result.Count == 0 && IsPlausibleDatabaseName(fallback))
+                    result.Add(fallback);
+                return result;
+            }
+
+            private static readonly Regex DdlTargetRegex = new Regex(
+                @"\b(?:CREATE(?:\s+OR\s+ALTER)?|ALTER|DROP|TRUNCATE)\s+(?:TABLE|VIEW|PROCEDURE|PROC|FUNCTION)\s+\[?(?<seg1>[A-Za-z_@#][\w@#$]*)\]?(?:\s*\.\s*\[?(?<seg2>[A-Za-z_@#][\w@#$]*)\]?)?(?:\s*\.\s*\[?(?<seg3>[A-Za-z_@#][\w@#$]*)\]?)?",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
             private static readonly Regex ThreePartNameRegex = new Regex(
-                @"\[?(?<db>[A-Za-z_@#][\w@#$]*)\]?\s*\.\s*\[?(?<schema>[A-Za-z_@#][\w@#$]*)\]?\s*\.\s*\[?(?<obj>[A-Za-z_@#][\w@#$]*)\]?",
+                @"\[?(?<db>[A-Za-z_@#][\w@#$]*)\]?[ \t]*\.[ \t]*\[?(?<schema>[A-Za-z_@#][\w@#$]*)\]?[ \t]*\.[ \t]*\[?(?<obj>[A-Za-z_@#][\w@#$]*)\]?",
                 RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
             private static readonly Regex DoubleDotNameRegex = new Regex(
-                @"\[?(?<db>[A-Za-z_@#][\w@#$]*)\]?\s*\.\.\s*\[?(?<obj>[A-Za-z_@#][\w@#$]*)\]?",
+                @"\[?(?<db>[A-Za-z_@#][\w@#$]*)\]?[ \t]*\.\.[ \t]*\[?(?<obj>[A-Za-z_@#][\w@#$]*)\]?",
                 RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
             private static string UnbracketSqlIdent(string text)
@@ -643,9 +679,9 @@ ORDER BY c.column_id;";
                     return null;
                 MetadataCacheRefreshService.Instance.EnsureLinkedServerCache(connInfo, linkedServer);
                 string lsKey = LinkedCatalogKey(linkedServer, database);
-                if (_cache.TryGetValue(lsKey, out var cached) && cached != null && !cached.IsEmpty)
+                if (_cache.TryGetValue(lsKey, out var cached) && cached != null && (cached.IsIndexed || !cached.IsEmpty))
                     return cached;
-                if (_cache.TryGetValue(Key(linkedServer, database), out cached) && cached != null && !cached.IsEmpty)
+                if (_cache.TryGetValue(Key(linkedServer, database), out cached) && cached != null && (cached.IsIndexed || !cached.IsEmpty))
                     return cached;
                 var catalog = MetadataCacheStore.TryLoadCatalog(linkedServer, database);
                 if (catalog == null)
@@ -717,7 +753,8 @@ ORDER BY d.name;", prefix);
                         {
                             Server = linkedServer,
                             Database = database,
-                            BuiltAt = DateTime.Now
+                            BuiltAt = DateTime.Now,
+                            IsIndexed = true
                         };
                         LoadTablesAndViews(conn, catalog, prefix, commandTimeoutSeconds);
                         LoadRoutines(conn, catalog, prefix, commandTimeoutSeconds);
@@ -798,7 +835,8 @@ ORDER BY d.name;", prefix);
                         {
                             Server = target.ServerName,
                             Database = database,
-                            BuiltAt = DateTime.Now
+                            BuiltAt = DateTime.Now,
+                            IsIndexed = true
                         };
 
                         LoadTablesAndViews(conn, catalog, null, commandTimeoutSeconds);
@@ -939,9 +977,10 @@ ORDER BY s.name, o.name, c.column_id;";
                         }
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
                     // 表/视图失败不阻塞其余加载
+                    Logger.Warn(ex, "LoadTablesAndViews failed for {0}", catalog.Database);
                 }
 
                 LoadIndexes(conn, catalog, fourPartPrefix, timeoutSeconds);
@@ -1011,8 +1050,9 @@ ORDER BY s.name, o.name, i.index_id, ic.key_ordinal;";
                         }
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    Logger.Warn(ex, "LoadIndexes failed for {0}", catalog.Database);
                 }
             }
 
@@ -1096,9 +1136,10 @@ ORDER BY s.name, o.name, p.parameter_id;";
                     }
                     catalog.RoutinesLoaded = true;
                 }
-                catch
+                catch (Exception ex)
                 {
                     catalog.RoutinesLoaded = false;
+                    Logger.Warn(ex, "LoadRoutines failed for {0}", catalog.Database);
                 }
             }
 
@@ -1134,8 +1175,9 @@ ORDER BY s.name, o.name;";
                         }
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    Logger.Warn(ex, "LoadSynonyms failed for {0}", catalog.Database);
                 }
             }
 
@@ -1213,6 +1255,37 @@ ORDER BY s.name, o.name;";
                 _linkedServerCache.Clear();
                 _tableColumnCache.Clear();
                 _memoryLoadedServers.Clear();
+            }
+
+            private static readonly Regex DdlRegex = new Regex(
+                @"\b(?:CREATE|ALTER|DROP)\s+(?:OR\s+ALTER\s+)?(?:TABLE|VIEW|PROCEDURE|PROC|FUNCTION)\b|\bTRUNCATE\s+TABLE\b",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+            /// <summary>SQL 文本是否含表结构变更（CREATE/ALTER/DROP TABLE）。</summary>
+            internal static bool ContainsDdl(string sql)
+            {
+                return !string.IsNullOrEmpty(sql) && DdlRegex.IsMatch(sql);
+            }
+
+            /// <summary>
+            /// 文档含 DDL 时使当前库缓存失效（内存 + 磁盘），下次补全/悬停触发重建，
+            /// 避免最长 cacheRefreshDays 天内提示陈旧 schema。
+            /// </summary>
+            public void InvalidateDdlTargets(ScriptFactoryAccess.ConnectionInfo connInfo, string sql)
+            {
+                if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
+                    return;
+                if (!ContainsDdl(sql))
+                    return;
+                // 只失效 DDL 实际修改的目标库（三段名目标 + 当前/USE 库），
+                // 不失效仅被查询引用的库，避免 CREATE PROC 体内的 SELECT ... FROM otherdb..t 误伤 otherdb。
+                string current = string.IsNullOrWhiteSpace(connInfo.Database) ? "master" : UnbracketSqlIdent(connInfo.Database);
+                foreach (var db in ExtractDdlTargetDatabases(sql, current))
+                {
+                    Invalidate(connInfo.ServerName, db);
+                    MetadataCacheStore.DeleteCatalog(connInfo.ServerName, db);
+                }
+                MetadataCacheStore.DeleteMeta(connInfo.ServerName);
             }
 
             /// <summary>常用系统对象（includeSystemObjects 开启时追加到候选）。</summary>

@@ -97,6 +97,18 @@ namespace AxialSqlTools
                         }
                         break;
 
+                    case CompletionContext.HavingClause:
+                        AddAliasCompletions(items, local, settings, prefix);
+                        AddGroupByColumns(items, local, settings);
+                        AddBuiltInFunctions(items);
+                        if (settings.includeKeywords && !string.IsNullOrEmpty(prefix))
+                        {
+                            if (!PrefixLooksLikeAlias(prefix, local))
+                                AddKeywords(items, WhereOperatorKeywords);
+                            AddKeywords(items, AfterWhereKeywords);
+                        }
+                        break;
+
                     case CompletionContext.UpdateSet:
                         AddAliasCompletions(items, local, settings, prefix);
                         AddColumnsFromFromAliases(items, catalog, local, settings, connInfo);
@@ -139,6 +151,11 @@ namespace AxialSqlTools
 
                     case CompletionContext.AfterUse:
                         AddDatabases(items, connInfo, settings);
+                        break;
+
+                    case CompletionContext.DataType:
+                        if (settings.includeKeywords)
+                            AddKeywords(items, DataTypeKeywords);
                         break;
                 }
 
@@ -333,7 +350,7 @@ namespace AxialSqlTools
                 if (catalog == null) return;
                 bool tableNameOnly = fromName != null && fromName.InFromClause && fromName.UsesDoubleDot;
                 string filter = GetLastSegment(namePrefix ?? fromName?.Partial);
-                int cap = Math.Max(50, settings.maxCompletionItems * 3);
+                int cap = Math.Max(PreSortCandidateFloor, settings.maxCompletionItems * PreSortCandidateMultiplier);
                 // 插入文本策略只算一次，避免每张表都 IsDatabaseName/连库
                 var insertMode = ResolveTableInsertMode(fromName, connInfo);
                 int added = 0;
@@ -509,7 +526,7 @@ namespace AxialSqlTools
             {
                 if (catalog == null) return;
                 string filter = GetLastSegment(namePrefix ?? fromName?.Partial);
-                int cap = Math.Max(50, settings.maxCompletionItems * 3);
+                int cap = Math.Max(PreSortCandidateFloor, settings.maxCompletionItems * PreSortCandidateMultiplier);
                 var insertMode = ResolveTableInsertMode(fromName, connInfo);
                 int added = 0;
                 foreach (var t in catalog.Tables)
@@ -640,6 +657,16 @@ namespace AxialSqlTools
                     var item = new CompletionItem(fn.Name, fn.InsertText, CompletionKind.ScalarFunction, BuildBuiltInFunctionDescription(fn));
                     item.SnippetCursorOffset = fn.CursorOffset;
                     items.Add(item);
+                }
+            }
+
+            /// <summary>HAVING 提示 GROUP BY 列（不提示未分组列）。</summary>
+            private void AddGroupByColumns(List<CompletionItem> items, LocalSymbols local, IntelliSenseSettings settings)
+            {
+                if (local?.GroupByColumns == null || local.GroupByColumns.Count == 0) return;
+                foreach (var col in local.GroupByColumns)
+                {
+                    items.Add(new CompletionItem(col, FormatColumnInsert(col, settings), CompletionKind.Column, "GROUP BY 列"));
                 }
             }
 
@@ -1141,6 +1168,11 @@ namespace AxialSqlTools
                 }
             }
 
+            /// <summary>候选保留下限：即使 maxCompletionItems 很小，也至少保留这些候选供后续排序截断。</summary>
+            private const int PreSortCandidateFloor = 50;
+            /// <summary>候选保留系数：排序截断前最多保留 maxCompletionItems × 此倍数的候选，避免多表 JOIN 时过早截掉后续表列。</summary>
+            private const int PreSortCandidateMultiplier = 3;
+
             private List<CompletionItem> FilterAndSort(List<CompletionItem> items, string prefix, IntelliSenseSettings settings, ScriptFactoryAccess.ConnectionInfo connInfo, FromObjectNameContext fromName)
             {
                 var filtered = new List<CompletionItem>();
@@ -1179,7 +1211,20 @@ namespace AxialSqlTools
 
                 if (filtered.Count > settings.maxCompletionItems)
                 {
-                    filtered = filtered.Take(settings.maxCompletionItems).ToList();
+                    int keep = settings.maxCompletionItems;
+                    // 有前缀时按分数边界扩展，避免把前缀匹配的列/对象中途切掉（上限 3 倍）
+                    if (!string.IsNullOrEmpty(filterPrefix))
+                    {
+                        int cap = Math.Max(PreSortCandidateFloor, settings.maxCompletionItems * PreSortCandidateMultiplier);
+                        if (keep > 0 && keep < filtered.Count)
+                        {
+                            int boundaryScore = GetMatchScore(filtered[keep - 1], filterPrefix);
+                            while (keep < filtered.Count && keep < cap
+                                && GetMatchScore(filtered[keep], filterPrefix) == boundaryScore)
+                                keep++;
+                        }
+                    }
+                    filtered = filtered.Take(keep).ToList();
                 }
                 return filtered;
             }
@@ -1547,11 +1592,22 @@ namespace AxialSqlTools
             {
                 "DISTINCT", "TOP", "ALL", "PERCENT",
                 "AS", "FROM", "INTO",
-                "CASE", "WHEN", "THEN", "ELSE", "END"
+                "CASE", "WHEN", "THEN", "ELSE", "END",
+                "OVER", "PARTITION BY", "ROWS", "RANGE", "UNBOUNDED", "PRECEDING", "FOLLOWING", "CURRENT ROW"
             };
 
-            /// <summary>GROUP/ORDER 后补 BY。</summary>
-            public static readonly string[] GroupOrderByKeywords = { "BY" };
+            /// <summary>GROUP/ORDER 后补 BY（含 GROUP BY 扩展）。</summary>
+            public static readonly string[] GroupOrderByKeywords = { "BY", "ROLLUP", "CUBE", "GROUPING SETS" };
+
+            /// <summary>CAST/CONVERT/PARSE 的类型参数位置：SQL Server 内置数据类型。</summary>
+            public static readonly string[] DataTypeKeywords =
+            {
+                "bigint", "binary", "bit", "char", "date", "datetime", "datetime2", "datetimeoffset",
+                "decimal", "float", "geography", "geometry", "hierarchyid", "image", "int", "money",
+                "nchar", "ntext", "numeric", "nvarchar", "real", "rowversion", "smalldatetime", "smallint",
+                "smallmoney", "sql_variant", "text", "time", "tinyint", "uniqueidentifier", "varbinary",
+                "varchar", "xml"
+            };
 
             /// <summary>INSERT 后常见关键字。</summary>
             public static readonly string[] InsertKeywords = { "INTO", "SELECT", "VALUES", "DEFAULT" };
@@ -1559,7 +1615,9 @@ namespace AxialSqlTools
             public static readonly string[] TopLevelKeywords =
             {
                 "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP",
-                "EXEC", "USE", "DECLARE", "SET", "IF", "BEGIN", "END", "TRUNCATE", "MERGE", "GO"
+                "EXEC", "EXECUTE", "USE", "DECLARE", "SET", "IF", "BEGIN", "END", "TRUNCATE", "MERGE", "GO",
+                "THROW", "PRINT", "RAISERROR", "WAITFOR", "DBCC", "BACKUP", "RESTORE", "BULK",
+                "GRANT", "REVOKE", "DENY", "WHILE", "RETURN"
             };
 
             /// <summary>FROM 表之后常见子句/连接关键字。</summary>
@@ -1568,6 +1626,7 @@ namespace AxialSqlTools
                 "INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "FULL JOIN", "CROSS JOIN", "JOIN",
                 "LEFT OUTER JOIN", "RIGHT OUTER JOIN", "FULL OUTER JOIN",
                 "CROSS APPLY", "OUTER APPLY",
+                "PIVOT", "UNPIVOT", "TABLESAMPLE",
                 "WHERE", "GROUP BY", "ORDER BY", "HAVING",
                 "UNION", "UNION ALL", "EXCEPT", "INTERSECT"
             };
@@ -1583,18 +1642,20 @@ namespace AxialSqlTools
             /// <summary>GROUP BY / ORDER BY 列表之后可接的子句关键字。</summary>
             public static readonly string[] AfterGroupOrderKeywords =
             {
-                "HAVING", "ORDER BY",
+                "HAVING", "ORDER BY", "OPTION",
                 "UNION", "UNION ALL", "EXCEPT", "INTERSECT"
             };
 
             public static readonly string[] CreateObjectKeywords =
             {
-                "TABLE", "VIEW", "PROCEDURE", "FUNCTION", "INDEX", "SCHEMA", "TYPE", "TRIGGER"
+                "TABLE", "VIEW", "PROCEDURE", "FUNCTION", "INDEX", "SCHEMA", "TYPE", "TRIGGER",
+                "SEQUENCE", "SYNONYM", "DATABASE", "USER", "ROLE", "LOGIN", "DEFAULT", "RULE", "STATISTICS"
             };
 
             public static readonly string[] AlterObjectKeywords =
             {
-                "TABLE", "VIEW", "PROCEDURE", "FUNCTION", "INDEX", "SCHEMA", "TRIGGER"
+                "TABLE", "VIEW", "PROCEDURE", "FUNCTION", "INDEX", "SCHEMA", "TRIGGER",
+                "SEQUENCE", "DATABASE", "USER", "ROLE", "LOGIN"
             };
 
             public static readonly string[] OperatorKeywords =
@@ -1659,6 +1720,7 @@ namespace AxialSqlTools
                     Fn("GROUPING_ID", "GROUPING_ID(column_expression [, ...n])", "GROUPING_ID()", 12,
                         "column_expression"),
                     Fn("CHECKSUM_AGG", "CHECKSUM_AGG(expression)", "CHECKSUM_AGG()", 13, "expression"),
+                    Fn("APPROX_COUNT_DISTINCT", "APPROX_COUNT_DISTINCT(expression)", "APPROX_COUNT_DISTINCT()", 21, "expression"),
 
                     // —— 空值 / 逻辑 ——
                     Fn("ISNULL", "ISNULL(check_expression, replacement_value)", "ISNULL(, )", 7,
@@ -1778,6 +1840,8 @@ namespace AxialSqlTools
                         "inputString", "characters", "translations"),
                     Fn("STRING_ESCAPE", "STRING_ESCAPE(text, type)", "STRING_ESCAPE(, )", 14,
                         "text", "type"),
+                    Fn("STRING_SPLIT", "STRING_SPLIT(string, separator)", "STRING_SPLIT(, )", 13,
+                        "string", "separator"),
 
                     // —— 数值 ——
                     Fn("ABS", "ABS(numeric_expression)", "ABS()", 4, "numeric_expression"),
@@ -1838,6 +1902,14 @@ namespace AxialSqlTools
                         "scalar_expression"),
                     Fn("PERCENT_RANK", "PERCENT_RANK() OVER (ORDER BY ...)", "PERCENT_RANK() OVER (ORDER BY )", 29),
                     Fn("CUME_DIST", "CUME_DIST() OVER (ORDER BY ...)", "CUME_DIST() OVER (ORDER BY )", 26),
+                    Fn("NTH_VALUE", "NTH_VALUE(expression, n) OVER (ORDER BY ...)", "NTH_VALUE(, ) OVER (ORDER BY )", 11,
+                        "expression", "n"),
+                    Fn("PERCENTILE_CONT", "PERCENTILE_CONT(numeric_literal) WITHIN GROUP (ORDER BY expression) OVER (...)",
+                        "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ) OVER ()", 15,
+                        "numeric_literal", "expression"),
+                    Fn("PERCENTILE_DISC", "PERCENTILE_DISC(numeric_literal) WITHIN GROUP (ORDER BY expression) OVER (...)",
+                        "PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY ) OVER ()", 15,
+                        "numeric_literal", "expression"),
 
                     // —— 标识 / 系统信息 ——
                     Fn("NEWID", "NEWID()", "NEWID()", -1),
