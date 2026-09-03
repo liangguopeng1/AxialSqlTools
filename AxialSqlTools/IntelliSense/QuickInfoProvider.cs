@@ -48,6 +48,36 @@ namespace AxialSqlTools.IntelliSense
                 string dataSource = FormatDataSource(connInfo);
                 string defaultDb = !string.IsNullOrEmpty(useDb) ? useDb : (connInfo?.Database ?? catalog?.Database);
 
+                // COUNT( / ISNULL( 等：后接 '(' 时优先当内建函数，避免同名表抢走
+                if (!hover.HasOwner)
+                {
+                    var fnCall = TryBuildBuiltInFunctionQuickInfo(hover.Name, tokens, localOffset, requireParen: true);
+                    if (fnCall != null)
+                        return fnCall;
+                }
+
+                var locals = CompletionEngine.CollectQueryLocalsFromTokens(tokens, localOffset, slice);
+                if (!hover.HasOwner)
+                {
+                    var derived = FindDerived(locals, hover.Name);
+                    if (derived != null)
+                        return BuildDerivedTableQuickInfo(derived);
+                    var aliasTable = TryBuildAliasTableQuickInfo(
+                        locals, hover.Name, catalog, connInfo, dataSource, defaultDb);
+                    if (aliasTable != null)
+                        return aliasTable;
+                }
+                else
+                {
+                    var dcol = TryBuildDerivedColumnQuickInfo(locals, hover.Owner, hover.Name);
+                    if (dcol != null)
+                        return dcol;
+                    var aliasCol = TryBuildAliasColumnQuickInfo(
+                        locals, hover.Owner, hover.Name, catalog, connInfo, dataSource, defaultDb);
+                    if (aliasCol != null)
+                        return aliasCol;
+                }
+
                 // EXEC 存储过程悬停（含跨库 caiwu..proc）
                 var procInfo = TryBuildProcedureQuickInfo(fullText, caretOffset, hover.Name, catalog, connInfo, dataSource, defaultDb);
                 if (procInfo != null)
@@ -80,7 +110,8 @@ namespace AxialSqlTools.IntelliSense
                 if (hover.HasOwner)
                 {
                     var aliasRef = QuickInfoSqlContext.TryResolveAlias(tokens, localOffset, hover.Owner)
-                                   ?? ResolveAliasOwner(hover.Owner, tokens, localOffset, fromRef);
+                                   ?? ResolveAliasOwner(hover.Owner, tokens, localOffset, fromRef)
+                                   ?? TryResolveAliasFromLocals(locals, hover.Owner);
                     if (aliasRef != null)
                     {
                         var table = ResolveTable(connInfo, catalog, aliasRef);
@@ -109,30 +140,27 @@ namespace AxialSqlTools.IntelliSense
                 }
 
                 // alias.col / schema.col：列名不能再当表名去当前库匹配
+                // 未限定表名不得继承其它 FROM 表的库名（避免 BK_KuFang 误用子查询里 kucun_zong 的 rt_storage）
                 if (!hover.HasOwner)
                 {
+                    bool sameTable = fromRef != null
+                        && string.Equals(fromRef.Name, hover.Name, StringComparison.OrdinalIgnoreCase);
                     var directTable = ResolveTable(connInfo, catalog, new TableRef
                     {
                         Name = hover.Name,
-                        Schema = fromRef?.Schema,
-                        Database = fromRef?.Database
+                        Schema = sameTable ? fromRef.Schema : null,
+                        Database = sameTable ? fromRef.Database : null
                     });
                     if (directTable != null && string.Equals(directTable.Name, hover.Name, StringComparison.OrdinalIgnoreCase))
                         return BuildTableQuickInfo(dataSource, defaultDb, ResolveTableRef(fromRef, directTable), directTable);
                 }
 
-                TableColumnInfo contextTable = null;
-                TableRef contextRef = null;
-                if (fromRef != null)
+                if (!hover.HasOwner)
                 {
-                    contextTable = ResolveTable(connInfo, catalog, fromRef);
-                    contextRef = fromRef;
-                }
-                if (contextTable != null && !hover.HasOwner)
-                {
-                    var col = FindColumn(contextTable, hover.Name);
-                    if (col != null)
-                        return BuildColumnQuickInfo(dataSource, defaultDb, contextRef, contextTable, col);
+                    var fromCol = TryBuildUnqualifiedColumnQuickInfo(
+                        locals, fromRef, hover.Name, catalog, connInfo, dataSource, defaultDb);
+                    if (fromCol != null)
+                        return fromCol;
                 }
 
                 if (catalog != null && !hover.HasOwner)
@@ -145,6 +173,14 @@ namespace AxialSqlTools.IntelliSense
                             Schema = tcol.Schema,
                             Name = tcol.Name
                         }, tcol);
+                }
+
+                if (!hover.HasOwner)
+                {
+                    var dcol = TryBuildDerivedColumnQuickInfo(locals, null, hover.Name);
+                    if (dcol != null)
+                        return dcol;
+                    return TryBuildBuiltInFunctionQuickInfo(hover.Name, tokens, localOffset, requireParen: false);
                 }
 
                 return null;
@@ -187,23 +223,30 @@ namespace AxialSqlTools.IntelliSense
                 string defaultDb = !string.IsNullOrEmpty(useDb) ? useDb : (connInfo?.Database ?? catalog?.Database);
 
                 List<TSqlParserToken> tokens = null;
+                LocalSymbols locals = null;
                 TableRef fromRef = null;
                 string slice = fullText;
+                int localOffset = caretOffset;
                 if (!string.IsNullOrEmpty(fullText))
                 {
                     try
                     {
                         if (CompletionEngine.TryGetParseSlice(fullText, caretOffset, out slice, out int sliceStart))
                         {
-                            int localOffset = caretOffset - sliceStart;
+                            localOffset = caretOffset - sliceStart;
                             if (localOffset < 0) localOffset = 0;
                             CompletionEngine.GetTokensForSlice(slice, out tokens);
                             if (tokens != null)
                             {
+                                locals = CompletionEngine.CollectQueryLocalsFromTokens(tokens, localOffset, slice);
                                 var hover = QuickInfoSqlContext.TryGetHoverToken(tokens, localOffset);
                                 if (hover != null && hover.HasOwner)
                                 {
-                                    var aliasRef = QuickInfoSqlContext.TryResolveAlias(tokens, localOffset, hover.Owner);
+                                    var dcol = TryBuildDerivedColumnQuickInfo(locals, hover.Owner, hover.Name);
+                                    if (dcol != null)
+                                        return dcol;
+                                    var aliasRef = QuickInfoSqlContext.TryResolveAlias(tokens, localOffset, hover.Owner)
+                                                   ?? TryResolveAliasFromLocals(locals, hover.Owner);
                                     if (aliasRef != null)
                                     {
                                         var table = ResolveTable(connInfo, catalog, aliasRef);
@@ -228,6 +271,16 @@ namespace AxialSqlTools.IntelliSense
                                         }, schemaTable);
                                     return null;
                                 }
+                                var derived = FindDerived(locals, cleanWord);
+                                if (derived != null)
+                                    return BuildDerivedTableQuickInfo(derived);
+                                var aliasTable = TryBuildAliasTableQuickInfo(
+                                    locals, cleanWord, catalog, connInfo, dataSource, defaultDb);
+                                if (aliasTable != null)
+                                    return aliasTable;
+                                var fnCall = TryBuildBuiltInFunctionQuickInfo(cleanWord, tokens, localOffset, requireParen: true);
+                                if (fnCall != null)
+                                    return fnCall;
                                 fromRef = QuickInfoSqlContext.TryResolveTableByHoverName(tokens, localOffset, cleanWord)
                                           ?? QuickInfoSqlContext.TryResolveFromTable(tokens, localOffset);
                             }
@@ -255,8 +308,10 @@ namespace AxialSqlTools.IntelliSense
                 var asTable = ResolveTable(connInfo, catalog, new TableRef
                 {
                     Name = cleanWord,
-                    Schema = fromRef?.Schema,
-                    Database = fromRef?.Database
+                    Schema = fromRef != null && string.Equals(fromRef.Name, cleanWord, StringComparison.OrdinalIgnoreCase)
+                        ? fromRef.Schema : null,
+                    Database = fromRef != null && string.Equals(fromRef.Name, cleanWord, StringComparison.OrdinalIgnoreCase)
+                        ? fromRef.Database : null
                 });
                 if (asTable != null && string.Equals(asTable.Name, cleanWord, StringComparison.OrdinalIgnoreCase))
                     return BuildTableQuickInfo(dataSource, defaultDb, ResolveTableRef(fromRef, asTable), asTable);
@@ -272,7 +327,14 @@ namespace AxialSqlTools.IntelliSense
                             Name = named.Name
                         }, named);
                 }
-                return null;
+                var fromCol = TryBuildUnqualifiedColumnQuickInfo(
+                    locals, fromRef, cleanWord, catalog, connInfo, dataSource, defaultDb);
+                if (fromCol != null)
+                    return fromCol;
+                var derivedCol = TryBuildDerivedColumnQuickInfo(locals, null, cleanWord);
+                if (derivedCol != null)
+                    return derivedCol;
+                return TryBuildBuiltInFunctionQuickInfo(cleanWord, tokens, localOffset, requireParen: false);
             }
             catch
             {
@@ -487,6 +549,85 @@ namespace AxialSqlTools.IntelliSense
             return null;
         }
 
+        private static TableRef TryResolveAliasFromLocals(LocalSymbols local, string alias)
+        {
+            if (local?.Aliases == null || string.IsNullOrEmpty(alias)) return null;
+            TableRef tref;
+            if (local.Aliases.TryGetValue(alias, out tref)
+                && tref != null && !string.IsNullOrEmpty(tref.Name))
+                return tref;
+            return null;
+        }
+
+        private QuickInfoData TryBuildAliasTableQuickInfo(
+            LocalSymbols local,
+            string alias,
+            MetadataCatalog catalog,
+            ScriptFactoryAccess.ConnectionInfo connInfo,
+            string dataSource,
+            string defaultDb)
+        {
+            var tref = TryResolveAliasFromLocals(local, alias);
+            if (tref == null) return null;
+            var table = ResolveTable(connInfo, catalog, tref);
+            return table == null ? null : BuildTableQuickInfo(dataSource, defaultDb, tref, table);
+        }
+
+        private QuickInfoData TryBuildAliasColumnQuickInfo(
+            LocalSymbols local,
+            string owner,
+            string column,
+            MetadataCatalog catalog,
+            ScriptFactoryAccess.ConnectionInfo connInfo,
+            string dataSource,
+            string defaultDb)
+        {
+            var tref = TryResolveAliasFromLocals(local, owner);
+            if (tref == null) return null;
+            var table = ResolveTable(connInfo, catalog, tref);
+            var col = FindColumn(table, column);
+            return col == null ? null : BuildColumnQuickInfo(dataSource, defaultDb, tref, table, col);
+        }
+
+        private QuickInfoData TryBuildUnqualifiedColumnQuickInfo(
+            LocalSymbols local,
+            TableRef fromRef,
+            string column,
+            MetadataCatalog catalog,
+            ScriptFactoryAccess.ConnectionInfo connInfo,
+            string dataSource,
+            string defaultDb)
+        {
+            if (string.IsNullOrEmpty(column)) return null;
+            if (fromRef != null && !string.IsNullOrEmpty(fromRef.Name))
+            {
+                var table = ResolveTable(connInfo, catalog, fromRef);
+                var col = FindColumn(table, column);
+                if (col != null)
+                    return BuildColumnQuickInfo(dataSource, defaultDb, fromRef, table, col);
+            }
+            if (local?.Aliases == null) return null;
+            TableRef hitRef = null;
+            TableColumnInfo hitTable = null;
+            ColumnInfo hitCol = null;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in local.Aliases)
+            {
+                var tref = kv.Value;
+                if (tref == null || string.IsNullOrEmpty(tref.Name)) continue;
+                string key = (tref.Database ?? "") + "." + (tref.Schema ?? "") + "." + tref.Name;
+                if (!seen.Add(key)) continue;
+                var table = ResolveTable(connInfo, catalog, tref);
+                var col = FindColumn(table, column);
+                if (col == null) continue;
+                if (hitCol != null) return null;
+                hitCol = col;
+                hitTable = table;
+                hitRef = tref;
+            }
+            return hitCol == null ? null : BuildColumnQuickInfo(dataSource, defaultDb, hitRef, hitTable, hitCol);
+        }
+
         private static ColumnInfo FindColumn(TableColumnInfo table, string name)
         {
             if (table?.Columns == null || string.IsNullOrEmpty(name)) return null;
@@ -554,6 +695,125 @@ namespace AxialSqlTools.IntelliSense
             if (!string.IsNullOrEmpty(col?.Description))
                 data.Description = col.Description;
             data.DdlText = QuickInfoDdlBuilder.BuildColumnDdl(table, col);
+            return data.IsEmpty ? null : data;
+        }
+
+        private static CteInfo FindDerived(LocalSymbols local, string name)
+        {
+            if (local?.Ctes == null || string.IsNullOrEmpty(name)) return null;
+            return local.Ctes.Find(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool DerivedHasColumn(CteInfo derived, string column)
+        {
+            if (derived?.ColumnNames == null || string.IsNullOrEmpty(column)) return false;
+            foreach (var c in derived.ColumnNames)
+            {
+                if (string.Equals(c, column, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+
+        private static QuickInfoData TryBuildDerivedColumnQuickInfo(LocalSymbols local, string owner, string column)
+        {
+            if (string.IsNullOrEmpty(column) || local?.Ctes == null) return null;
+            if (!string.IsNullOrEmpty(owner))
+            {
+                var cte = FindDerived(local, owner);
+                if (cte == null || !DerivedHasColumn(cte, column)) return null;
+                return BuildDerivedColumnQuickInfo(cte, column);
+            }
+            CteInfo hit = null;
+            foreach (var cte in local.Ctes)
+            {
+                if (!DerivedHasColumn(cte, column)) continue;
+                if (hit != null) return null;
+                hit = cte;
+            }
+            return hit == null ? null : BuildDerivedColumnQuickInfo(hit, column);
+        }
+
+        private static string GetDerivedColumnSql(CteInfo derived, string column)
+        {
+            if (derived?.ColumnNames == null || derived.ColumnSqls == null || string.IsNullOrEmpty(column))
+                return null;
+            int n = Math.Min(derived.ColumnNames.Count, derived.ColumnSqls.Count);
+            for (int i = 0; i < n; i++)
+            {
+                if (string.Equals(derived.ColumnNames[i], column, StringComparison.OrdinalIgnoreCase))
+                    return derived.ColumnSqls[i];
+            }
+            return null;
+        }
+
+        private static QuickInfoData BuildDerivedTableQuickInfo(CteInfo derived)
+        {
+            if (derived == null || string.IsNullOrEmpty(derived.Name)) return null;
+            var data = new QuickInfoData();
+            AddHeaderLine(data, "类型", "派生表");
+            AddHeaderLine(data, "别名", derived.Name);
+            if (!string.IsNullOrEmpty(derived.DefinitionSql))
+            {
+                data.DdlText = derived.DefinitionSql;
+            }
+            else if (derived.ColumnNames != null && derived.ColumnNames.Count > 0)
+            {
+                var sb = new System.Text.StringBuilder();
+                foreach (var c in derived.ColumnNames)
+                {
+                    if (!string.IsNullOrEmpty(c))
+                        sb.AppendLine(c);
+                }
+                data.DdlText = sb.ToString().TrimEnd();
+            }
+            return data.IsEmpty ? null : data;
+        }
+
+        private static QuickInfoData BuildDerivedColumnQuickInfo(CteInfo derived, string column)
+        {
+            var data = new QuickInfoData();
+            AddHeaderLine(data, "类型", "派生表列");
+            AddHeaderLine(data, "派生表", derived?.Name);
+            AddHeaderLine(data, "列", column);
+            string sql = GetDerivedColumnSql(derived, column);
+            data.DdlText = !string.IsNullOrEmpty(sql) ? sql : null;
+            return data.IsEmpty ? null : data;
+        }
+
+        private static QuickInfoData TryBuildBuiltInFunctionQuickInfo(
+            string name, List<TSqlParserToken> tokens, int localOffset, bool requireParen)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            string displayName;
+            string signature;
+            string[] parameters;
+            if (!CompletionEngine.TryGetBuiltInFunction(name, out displayName, out signature, out parameters))
+                return null;
+            bool followedByParen = tokens != null && QuickInfoSqlContext.NextSignificantIsLeftParen(tokens, localOffset);
+            if (requireParen)
+            {
+                if (!followedByParen) return null;
+            }
+            else if (!followedByParen && signature != null && signature.IndexOf('(') >= 0)
+            {
+                // 无括号兜底只给 CURRENT_TIMESTAMP 等；避免 LEFT JOIN 的 LEFT 被当成函数
+                return null;
+            }
+            var data = new QuickInfoData();
+            AddHeaderLine(data, "类型", "内建函数");
+            AddHeaderLine(data, "函数", displayName);
+            var sb = new System.Text.StringBuilder();
+            if (!string.IsNullOrEmpty(signature))
+                sb.Append(signature);
+            if (parameters != null && parameters.Length > 0)
+            {
+                if (sb.Length > 0) sb.AppendLine().AppendLine();
+                sb.AppendLine("参数:");
+                foreach (var p in parameters)
+                    sb.Append("  ").AppendLine(p);
+            }
+            data.DdlText = sb.ToString().TrimEnd();
             return data.IsEmpty ? null : data;
         }
 

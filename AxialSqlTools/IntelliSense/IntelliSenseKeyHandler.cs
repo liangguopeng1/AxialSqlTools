@@ -812,6 +812,11 @@ namespace AxialSqlTools.IntelliSense
                     // 光标落入 ISNULL(| , ) 等实参位时，短暂抑制自动弹，避免立刻再出 SELECT 列表
                     _suppressAutoTriggerUntil = DateTime.UtcNow.AddMilliseconds(SuppressAutoTriggerAfterCommitMs);
                 }
+                else if (insertText.EndsWith(".", StringComparison.Ordinal))
+                {
+                    // 表别名插入 alias. 后立刻出列
+                    TriggerCompletion(true);
+                }
             }
             catch
             {

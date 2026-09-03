@@ -801,75 +801,154 @@ namespace AxialSqlTools
                 }
             }
 
-            /// <summary>定位当前 SELECT 对应的 FROM（允许 FROM 在光标之后；支持误写分号后继续 AND 条件）。</summary>
+            /// <summary>定位当前查询（括号深度匹配光标）的 FROM；忽略派生表/子查询内的 SELECT FROM。</summary>
             private static int FindFromClauseTokenIndex(List<TSqlParserToken> tokens, int localOffset)
             {
-                int selectIdx = -1;
-                int selectBeforeSemi = -1;
-                int lastSemiIdx = -1;
+                int selectIdx = FindCurrentQuerySelectIndex(tokens, localOffset, out int lastSemiIdx, out int selectBeforeSemi);
+                if (selectIdx < 0 && selectBeforeSemi >= 0 && lastSemiIdx >= 0
+                    && IsClauseContinuationAfter(tokens, lastSemiIdx, localOffset))
+                    selectIdx = selectBeforeSemi;
+                if (selectIdx >= 0)
+                {
+                    int fromIdx = FindFromAfterSelect(tokens, selectIdx);
+                    if (fromIdx >= 0) return fromIdx;
+                    return -1;
+                }
+                return FindLastFromAtCaretDepth(tokens, localOffset);
+            }
+
+            /// <summary>光标所在查询的 SELECT（内层派生表 SELECT 在括号闭合后不再当作当前查询）。</summary>
+            private static int FindCurrentQuerySelectIndex(
+                List<TSqlParserToken> tokens, int localOffset, out int lastSemiIdx, out int selectBeforeSemi)
+            {
+                var selectIdxs = GetEnclosingSelectIndices(tokens, localOffset, out lastSemiIdx, out selectBeforeSemi);
+                return selectIdxs.Count > 0 ? selectIdxs[selectIdxs.Count - 1] : -1;
+            }
+
+            /// <summary>由外到内：尚未闭合的 SELECT（相关子查询可见外层别名）。</summary>
+            private static List<int> GetEnclosingSelectIndices(
+                List<TSqlParserToken> tokens, int localOffset, out int lastSemiIdx, out int selectBeforeSemi)
+            {
+                lastSemiIdx = -1;
+                selectBeforeSemi = -1;
+                var selectIdxs = new List<int>();
+                if (tokens == null) return selectIdxs;
+                int depth = 0;
+                var selectDepths = new List<int>();
                 for (int i = 0; i < tokens.Count; i++)
                 {
                     var t = tokens[i];
                     if (t == null || IsInsignificantToken(t)) continue;
-                    if (t.Offset > localOffset) break;
+                    if (t.Offset >= localOffset) break;
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                    {
+                        depth++;
+                        continue;
+                    }
+                    if (t.TokenType == TSqlTokenType.RightParenthesis)
+                    {
+                        while (selectIdxs.Count > 0 && selectDepths[selectIdxs.Count - 1] >= depth)
+                        {
+                            selectIdxs.RemoveAt(selectIdxs.Count - 1);
+                            selectDepths.RemoveAt(selectDepths.Count - 1);
+                        }
+                        if (depth > 0) depth--;
+                        continue;
+                    }
                     string text = t.Text?.ToUpperInvariant();
                     if (text == ";" || text == "GO")
                     {
-                        selectBeforeSemi = selectIdx;
+                        selectBeforeSemi = selectIdxs.Count > 0 ? selectIdxs[selectIdxs.Count - 1] : -1;
                         lastSemiIdx = i;
-                        selectIdx = -1;
+                        selectIdxs.Clear();
+                        selectDepths.Clear();
+                        depth = 0;
                         continue;
                     }
                     if (text == "SELECT")
-                        selectIdx = i;
-                    else if (IsNewStatementKeyword(text) && text != "SELECT")
-                        selectIdx = -1;
-                }
-                // where ... ; and alias.col → 分号后无新 SELECT，沿用分号前的查询别名
-                if (selectIdx < 0 && selectBeforeSemi >= 0 && lastSemiIdx >= 0
-                    && IsClauseContinuationAfter(tokens, lastSemiIdx, localOffset))
-                {
-                    selectIdx = selectBeforeSemi;
-                }
-                if (selectIdx >= 0)
-                {
-                    for (int i = selectIdx + 1; i < tokens.Count; i++)
                     {
-                        var t = tokens[i];
-                        if (t == null || IsInsignificantToken(t)) continue;
-                        // 允许越过误写的分号去找 FROM（FROM 一定在分号前）— 仅限续写；新 SELECT 不跨句
-                        string kw = t.Text?.ToUpperInvariant();
-                        if (kw == ";" || kw == "GO")
-                            break;
-                        if (kw == "SELECT")
-                            break;
-                        if (string.Equals(t.Text, "FROM", StringComparison.OrdinalIgnoreCase))
-                            return i;
-                        if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
-                            || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT")
-                            break;
+                        while (selectIdxs.Count > 0 && selectDepths[selectIdxs.Count - 1] >= depth)
+                        {
+                            selectIdxs.RemoveAt(selectIdxs.Count - 1);
+                            selectDepths.RemoveAt(selectDepths.Count - 1);
+                        }
+                        selectIdxs.Add(i);
+                        selectDepths.Add(depth);
+                        continue;
                     }
-                    // 当前 SELECT 尚无 FROM（SELECT * fro|）：勿回退到上一句 FROM，否则串列/误成 WhereClause
-                    return -1;
+                    if (IsNewStatementKeyword(text) && text != "SELECT")
+                    {
+                        selectIdxs.Clear();
+                        selectDepths.Clear();
+                    }
                 }
+                return selectIdxs;
+            }
+
+            private static int FindFromAfterSelect(List<TSqlParserToken> tokens, int selectIdx)
+            {
+                int depth = 0;
+                for (int i = selectIdx + 1; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                    {
+                        depth++;
+                        continue;
+                    }
+                    if (t.TokenType == TSqlTokenType.RightParenthesis)
+                    {
+                        if (depth > 0) depth--;
+                        continue;
+                    }
+                    if (depth > 0) continue;
+                    string kw = t.Text?.ToUpperInvariant();
+                    if (kw == ";" || kw == "GO" || kw == "SELECT")
+                        break;
+                    if (kw == "FROM")
+                        return i;
+                    if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
+                        || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT")
+                        break;
+                }
+                return -1;
+            }
+
+            private static int FindLastFromAtCaretDepth(List<TSqlParserToken> tokens, int localOffset)
+            {
                 int lastFrom = -1;
                 int fromBeforeSemi = -1;
+                int lastSemiIdx = -1;
+                int depth = 0;
+                int caretDepth = ComputeParenDepthBefore(tokens, localOffset);
                 for (int i = 0; i < tokens.Count; i++)
                 {
                     var t = tokens[i];
                     if (t == null || IsInsignificantToken(t)) continue;
-                    if (t.Offset > localOffset) break;
+                    if (t.Offset >= localOffset) break;
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                    {
+                        depth++;
+                        continue;
+                    }
+                    if (t.TokenType == TSqlTokenType.RightParenthesis)
+                    {
+                        if (depth > 0) depth--;
+                        continue;
+                    }
                     string text = t.Text?.ToUpperInvariant();
                     if (text == ";" || text == "GO")
                     {
                         fromBeforeSemi = lastFrom;
                         lastSemiIdx = i;
                         lastFrom = -1;
+                        depth = 0;
                         continue;
                     }
                     if (IsNewStatementKeyword(text))
                         lastFrom = -1;
-                    if (text == "FROM")
+                    if (text == "FROM" && depth == caretDepth)
                         lastFrom = i;
                 }
                 if (lastFrom >= 0) return lastFrom;
@@ -877,6 +956,21 @@ namespace AxialSqlTools
                     && IsClauseContinuationAfter(tokens, lastSemiIdx, localOffset))
                     return fromBeforeSemi;
                 return -1;
+            }
+
+            private static int ComputeParenDepthBefore(List<TSqlParserToken> tokens, int localOffset)
+            {
+                int depth = 0;
+                if (tokens == null) return 0;
+                for (int i = 0; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset >= localOffset) break;
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis) depth++;
+                    else if (t.TokenType == TSqlTokenType.RightParenthesis && depth > 0) depth--;
+                }
+                return depth;
             }
 
             /// <summary>分号后是否为 AND/OR/别名.列 等子句续写（而非新的 SELECT 语句）。</summary>
@@ -906,10 +1000,22 @@ namespace AxialSqlTools
 
             private static int FindFromRegionEnd(List<TSqlParserToken> tokens, int fromIdx)
             {
+                int depth = 0;
                 for (int i = fromIdx + 1; i < tokens.Count; i++)
                 {
                     var t = tokens[i];
                     if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                    {
+                        depth++;
+                        continue;
+                    }
+                    if (t.TokenType == TSqlTokenType.RightParenthesis)
+                    {
+                        if (depth > 0) depth--;
+                        continue;
+                    }
+                    if (depth > 0) continue;
                     string kw = t.Text?.ToUpperInvariant();
                     if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
                         || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT"
@@ -927,10 +1033,51 @@ namespace AxialSqlTools
                 return int.MaxValue;
             }
 
+            /// <summary>QuickInfo 复用：当前查询 FROM 别名 / 派生表列（只走词法）。</summary>
+            internal static LocalSymbols CollectQueryLocalsFromTokens(List<TSqlParserToken> tokens, int localOffset, string text = null)
+            {
+                var local = new LocalSymbols();
+                if (tokens != null)
+                    CollectAliasesFromTokens(tokens, localOffset, local, text);
+                return local;
+            }
+
             /// <summary>从当前语句整个 FROM…WHERE 区间收集所有表/JOIN 别名（含 db..table、table(nolock) alias）。</summary>
-            private void CollectAliasesFromTokens(List<TSqlParserToken> tokens, int localOffset, LocalSymbols local)
+            private static void CollectAliasesFromTokens(List<TSqlParserToken> tokens, int localOffset, LocalSymbols local, string text = null)
             {
                 int fromIdx = FindFromClauseTokenIndex(tokens, localOffset);
+                if (fromIdx >= 0)
+                    CollectAliasesInFromRegion(tokens, fromIdx, local, text);
+                CollectEnclosingFromAliases(tokens, localOffset, local, text, fromIdx);
+            }
+
+            /// <summary>相关子查询可见外层 FROM 别名；光标落在某层 FROM 派生表内则不收该层（避免漏出 KCZ）。</summary>
+            private static void CollectEnclosingFromAliases(
+                List<TSqlParserToken> tokens, int localOffset, LocalSymbols local, string text, int currentFromIdx)
+            {
+                var enclosing = GetEnclosingSelectIndices(tokens, localOffset, out _, out _);
+                for (int s = 0; s < enclosing.Count; s++)
+                {
+                    int outerFrom = FindFromAfterSelect(tokens, enclosing[s]);
+                    if (outerFrom < 0 || outerFrom == currentFromIdx) continue;
+                    if (IsCaretInsideFromRegion(tokens, outerFrom, localOffset))
+                        continue;
+                    CollectAliasesInFromRegion(tokens, outerFrom, local, text);
+                }
+            }
+
+            private static bool IsCaretInsideFromRegion(List<TSqlParserToken> tokens, int fromIdx, int localOffset)
+            {
+                if (tokens == null || fromIdx < 0 || fromIdx >= tokens.Count || tokens[fromIdx] == null)
+                    return false;
+                int start = tokens[fromIdx].Offset;
+                int end = FindFromRegionEnd(tokens, fromIdx);
+                return localOffset >= start && localOffset < end;
+            }
+
+            private static void CollectAliasesInFromRegion(
+                List<TSqlParserToken> tokens, int fromIdx, LocalSymbols local, string text)
+            {
                 if (fromIdx < 0) return;
                 int regionEnd = FindFromRegionEnd(tokens, fromIdx);
                 int i = fromIdx + 1;
@@ -969,6 +1116,7 @@ namespace AxialSqlTools
                     string schema = null;
                     string table = null;
                     string alias = null;
+                    bool registeredDerived = false;
                     int dotRun = 0;
                     int partCount = 0;
                     int segmentStartI = i;
@@ -1008,6 +1156,46 @@ namespace AxialSqlTools
                         if (kw == "WITH") { i++; continue; }
                         if (t.TokenType == TSqlTokenType.LeftParenthesis)
                         {
+                            if (string.IsNullOrEmpty(table) && NextIsQueryStart(tokens, i + 1, regionEnd))
+                            {
+                                int close = SkipParenthesesForward(tokens, i);
+                                var cols = CollectSelectListColumns(tokens, i + 1, close, text);
+                                string definitionSql = SliceSource(text, tokens, i, close);
+                                i = close;
+                                string derivedAlias = alias;
+                                int j = i;
+                                while (j < tokens.Count)
+                                {
+                                    var at = tokens[j];
+                                    if (at == null || IsInsignificantToken(at)) { j++; continue; }
+                                    if (at.Offset >= regionEnd) break;
+                                    string akw = at.Text?.ToUpperInvariant();
+                                    if (akw == "AS") { j++; continue; }
+                                    if (akw == "WITH")
+                                    {
+                                        j++;
+                                        continue;
+                                    }
+                                    if (at.TokenType == TSqlTokenType.LeftParenthesis)
+                                    {
+                                        j = SkipParenthesesForward(tokens, j);
+                                        continue;
+                                    }
+                                    if (IsWordLikeToken(at) || IsPartialObjectNameToken(at) || IsIdentifierLike(at))
+                                    {
+                                        string an = UnbracketIdentifier(at.Text);
+                                        if (!string.IsNullOrEmpty(an) && !IsSqlTableKeyword(an))
+                                            derivedAlias = an;
+                                        j++;
+                                    }
+                                    break;
+                                }
+                                i = j;
+                                if (!string.IsNullOrEmpty(derivedAlias))
+                                    MergeDerivedTable(local, derivedAlias, cols, definitionSql);
+                                registeredDerived = true;
+                                break;
+                            }
                             // 跳过 (nolock) 等表提示
                             int depth = 0;
                             int parenStart = i;
@@ -1107,30 +1295,33 @@ namespace AxialSqlTools
                         i++;
                     }
                     // i 未前进时强制步进，避免空表名 continue 导致外层死循环
-                    if (string.IsNullOrEmpty(table) || IsSqlTableKeyword(table))
+                    if (!registeredDerived && (string.IsNullOrEmpty(table) || IsSqlTableKeyword(table)))
                     {
                         if (i <= segmentStartI) i = segmentStartI + 1;
                         continue;
                     }
-                    var tref = new TableRef
+                    if (!registeredDerived)
                     {
-                        LinkedServer = linkedServer,
-                        Database = database,
-                        Schema = schema,
-                        Name = table
-                    };
-                    NormalizeTableRef(tref);
-                    if (!string.IsNullOrEmpty(alias) && !IsSqlTableKeyword(alias))
-                        MergeAlias(local, alias, tref);
-                    MergeAlias(local, tref.Name, tref);
-                    if (!string.IsNullOrEmpty(tref.Schema))
-                        MergeAlias(local, tref.Schema + "." + tref.Name, tref);
-                    if (!string.IsNullOrEmpty(tref.Database))
-                        MergeAlias(local, tref.Database + "." + (tref.Schema ?? "dbo") + "." + tref.Name, tref);
-                    if (!string.IsNullOrEmpty(tref.LinkedServer))
-                        MergeAlias(local, tref.LinkedServer + "." + (tref.Database ?? "") + "." + (tref.Schema ?? "dbo") + "." + tref.Name, tref);
+                        var tref = new TableRef
+                        {
+                            LinkedServer = linkedServer,
+                            Database = database,
+                            Schema = schema,
+                            Name = table
+                        };
+                        NormalizeTableRef(tref);
+                        if (!string.IsNullOrEmpty(alias) && !IsSqlTableKeyword(alias))
+                            MergeAlias(local, alias, tref);
+                        MergeAlias(local, tref.Name, tref);
+                        if (!string.IsNullOrEmpty(tref.Schema))
+                            MergeAlias(local, tref.Schema + "." + tref.Name, tref);
+                        if (!string.IsNullOrEmpty(tref.Database))
+                            MergeAlias(local, tref.Database + "." + (tref.Schema ?? "dbo") + "." + tref.Name, tref);
+                        if (!string.IsNullOrEmpty(tref.LinkedServer))
+                            MergeAlias(local, tref.LinkedServer + "." + (tref.Database ?? "") + "." + (tref.Schema ?? "dbo") + "." + tref.Name, tref);
+                    }
 
-                    // 仅逗号 / JOIN 可接下一表；残留 AS alias 则跳过继续扫
+                    // 仅逗号 / JOIN 可接下一表；残留 AS alias / WITH (NOLOCK) 则跳过继续扫
                     int look = i;
                     while (look < tokens.Count)
                     {
@@ -1154,7 +1345,245 @@ namespace AxialSqlTools
                             }
                             continue;
                         }
+                        if (lkw == "WITH")
+                        {
+                            look++;
+                            while (look < tokens.Count)
+                            {
+                                var wt = tokens[look];
+                                if (wt == null || IsInsignificantToken(wt)) { look++; continue; }
+                                if (wt.TokenType == TSqlTokenType.LeftParenthesis)
+                                {
+                                    look = SkipParenthesesForward(tokens, look);
+                                    continue;
+                                }
+                                break;
+                            }
+                            continue;
+                        }
                         return;
+                    }
+                }
+            }
+
+            private static bool NextIsQueryStart(List<TSqlParserToken> tokens, int fromIdx, int regionEnd)
+            {
+                for (int j = fromIdx; j < tokens.Count; j++)
+                {
+                    var t = tokens[j];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset >= regionEnd) return false;
+                    string kw = t.Text?.ToUpperInvariant();
+                    return kw == "SELECT" || kw == "WITH";
+                }
+                return false;
+            }
+
+            private sealed class SelectListCol
+            {
+                public string Name;
+                public string Sql;
+            }
+
+            private static List<SelectListCol> CollectSelectListColumns(
+                List<TSqlParserToken> tokens, int fromIdx, int closeIdx, string text)
+            {
+                var cols = new List<SelectListCol>();
+                if (tokens == null || fromIdx < 0) return cols;
+                int end = closeIdx < 0 ? tokens.Count : Math.Min(closeIdx, tokens.Count);
+                int depth = 0;
+                bool inSelectList = false;
+                bool afterAs = false;
+                string lastIdent = null;
+                string pending = null;
+                int itemStart = -1;
+                for (int i = fromIdx; i < end; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                    {
+                        if (inSelectList && depth == 0 && itemStart < 0)
+                            itemStart = t.Offset;
+                        depth++;
+                        continue;
+                    }
+                    if (t.TokenType == TSqlTokenType.RightParenthesis)
+                    {
+                        if (depth > 0) depth--;
+                        continue;
+                    }
+                    if (depth > 0)
+                    {
+                        // 无 AS 时用括号内最后一个标识符：sum(stock) → stock
+                        if ((IsWordLikeToken(t) || IsIdentifierLike(t))
+                            && t.TokenType != TSqlTokenType.Integer
+                            && t.TokenType != TSqlTokenType.Real
+                            && t.TokenType != TSqlTokenType.Numeric)
+                        {
+                            string inner = UnbracketIdentifier(t.Text);
+                            if (!string.IsNullOrEmpty(inner) && !IsSqlTableKeyword(inner) && inner != "*")
+                                lastIdent = inner;
+                        }
+                        continue;
+                    }
+                    string kw = t.Text?.ToUpperInvariant();
+                    if (!inSelectList)
+                    {
+                        if (kw == "SELECT") inSelectList = true;
+                        continue;
+                    }
+                    if (kw == "FROM" || kw == "WHERE" || kw == "GROUP" || kw == "HAVING"
+                        || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT")
+                    {
+                        AddSelectListColumn(cols, pending, lastIdent, SliceSource(text, itemStart, t.Offset));
+                        break;
+                    }
+                    if (kw == "DISTINCT" || kw == "ALL" || kw == "TOP" || kw == "PERCENT" || kw == "TIES")
+                        continue;
+                    if (kw == "AS")
+                    {
+                        afterAs = true;
+                        if (itemStart < 0) itemStart = t.Offset;
+                        continue;
+                    }
+                    if (kw == ",")
+                    {
+                        AddSelectListColumn(cols, pending, lastIdent, SliceSource(text, itemStart, t.Offset));
+                        pending = null;
+                        lastIdent = null;
+                        afterAs = false;
+                        itemStart = -1;
+                        continue;
+                    }
+                    if (t.TokenType == TSqlTokenType.Dot)
+                    {
+                        if (itemStart < 0) itemStart = t.Offset;
+                        continue;
+                    }
+                    if (IsWordLikeToken(t) || IsPartialObjectNameToken(t) || IsIdentifierLike(t))
+                    {
+                        string name = UnbracketIdentifier(t.Text);
+                        if (string.IsNullOrEmpty(name) || IsSqlTableKeyword(name) || name == "*")
+                            continue;
+                        if (itemStart < 0) itemStart = t.Offset;
+                        if (afterAs)
+                        {
+                            pending = name;
+                            afterAs = false;
+                            lastIdent = null;
+                            continue;
+                        }
+                        lastIdent = name;
+                    }
+                    else if (itemStart < 0)
+                    {
+                        itemStart = t.Offset;
+                    }
+                }
+                int tailEnd = -1;
+                if (closeIdx > 0 && closeIdx <= tokens.Count)
+                {
+                    var closeTok = tokens[closeIdx - 1];
+                    if (closeTok != null) tailEnd = closeTok.Offset;
+                }
+                AddSelectListColumn(cols, pending, lastIdent, SliceSource(text, itemStart, tailEnd));
+                return cols;
+            }
+
+            private static void AddSelectListColumn(List<SelectListCol> cols, string pending, string lastIdent, string sql)
+            {
+                string name = !string.IsNullOrEmpty(pending) ? pending : lastIdent;
+                if (string.IsNullOrEmpty(name) || cols == null) return;
+                foreach (var c in cols)
+                {
+                    if (string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase)) return;
+                }
+                cols.Add(new SelectListCol { Name = name, Sql = sql });
+            }
+
+            private static string SliceSource(string text, List<TSqlParserToken> tokens, int startIdx, int endExclusive)
+            {
+                if (string.IsNullOrEmpty(text) || tokens == null || startIdx < 0 || startIdx >= tokens.Count)
+                    return null;
+                var startTok = tokens[startIdx];
+                if (startTok == null) return null;
+                int start = startTok.Offset;
+                int last = Math.Min(endExclusive, tokens.Count) - 1;
+                while (last >= startIdx && (tokens[last] == null || IsInsignificantToken(tokens[last])))
+                    last--;
+                if (last < startIdx) return null;
+                var endTok = tokens[last];
+                int end = endTok.Offset + (endTok.Text == null ? 0 : endTok.Text.Length);
+                return SliceSource(text, start, end);
+            }
+
+            private static string SliceSource(string text, int start, int end)
+            {
+                if (string.IsNullOrEmpty(text) || start < 0) return null;
+                if (end < 0 || end > text.Length) end = text.Length;
+                if (end <= start) return null;
+                return text.Substring(start, end - start).Trim();
+            }
+
+            private static void MergeDerivedTable(LocalSymbols local, string alias, List<string> cols)
+            {
+                if (local == null || string.IsNullOrEmpty(alias) || IsSqlTableKeyword(alias)) return;
+                var mapped = new List<SelectListCol>();
+                if (cols != null)
+                {
+                    foreach (var col in cols)
+                    {
+                        if (!string.IsNullOrEmpty(col))
+                            mapped.Add(new SelectListCol { Name = col });
+                    }
+                }
+                MergeDerivedTable(local, alias, mapped, null);
+            }
+
+            private static void MergeDerivedTable(LocalSymbols local, string alias, List<SelectListCol> cols, string definitionSql)
+            {
+                if (local == null || string.IsNullOrEmpty(alias) || IsSqlTableKeyword(alias)) return;
+                MergeAlias(local, alias, new TableRef());
+                MergeCte(local, alias, cols, definitionSql);
+            }
+
+            private static void MergeCte(LocalSymbols local, string name, List<SelectListCol> cols, string definitionSql)
+            {
+                if (local?.Ctes == null || string.IsNullOrEmpty(name)) return;
+                var existing = local.Ctes.Find(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase));
+                if (existing == null)
+                {
+                    var info = new CteInfo { Name = name, DefinitionSql = definitionSql };
+                    if (cols != null)
+                    {
+                        foreach (var col in cols)
+                        {
+                            if (col == null || string.IsNullOrEmpty(col.Name)) continue;
+                            info.ColumnNames.Add(col.Name);
+                            info.ColumnSqls.Add(col.Sql ?? string.Empty);
+                        }
+                    }
+                    local.Ctes.Add(info);
+                    return;
+                }
+                if (string.IsNullOrEmpty(existing.DefinitionSql) && !string.IsNullOrEmpty(definitionSql))
+                    existing.DefinitionSql = definitionSql;
+                if (existing.ColumnNames.Count == 0 && cols != null)
+                {
+                    foreach (var col in cols)
+                    {
+                        if (col == null || string.IsNullOrEmpty(col.Name)) continue;
+                        existing.ColumnNames.Add(col.Name);
+                        existing.ColumnSqls.Add(col.Sql ?? string.Empty);
+                    }
+                }
+                else if (existing.ColumnSqls.Count == 0 && cols != null)
+                {
+                    foreach (var col in cols)
+                    {
+                        if (col == null || string.IsNullOrEmpty(col.Name)) continue;
+                        existing.ColumnSqls.Add(col.Sql ?? string.Empty);
                     }
                 }
             }
@@ -1328,6 +1757,45 @@ namespace AxialSqlTools
                 {
                     CollectFromClause(pj.Join, local);
                 }
+                else if (tableRef is QueryDerivedTable qdt)
+                {
+                    string alias = qdt.Alias?.Value;
+                    if (string.IsNullOrEmpty(alias)) return;
+                    var cols = new List<string>();
+                    CollectQuerySelectColumns(qdt.QueryExpression, cols);
+                    MergeDerivedTable(local, alias, cols);
+                }
+            }
+
+            private static void CollectQuerySelectColumns(QueryExpression query, List<string> cols)
+            {
+                if (query == null || cols == null) return;
+                if (query is QuerySpecification qs)
+                {
+                    foreach (var el in qs.SelectElements ?? Enumerable.Empty<SelectElement>())
+                    {
+                        if (el is SelectScalarExpression scalar)
+                        {
+                            string name = scalar.ColumnName?.Value
+                                          ?? scalar.ColumnName?.Identifier?.Value;
+                            if (string.IsNullOrEmpty(name))
+                            {
+                                var col = scalar.Expression as ColumnReferenceExpression;
+                                var ids = col?.MultiPartIdentifier?.Identifiers;
+                                if (ids != null && ids.Count > 0)
+                                    name = ids[ids.Count - 1].Value;
+                            }
+                            if (!string.IsNullOrEmpty(name) &&
+                                !cols.Exists(c => string.Equals(c, name, StringComparison.OrdinalIgnoreCase)))
+                                cols.Add(name);
+                        }
+                    }
+                    return;
+                }
+                if (query is BinaryQueryExpression bq)
+                    CollectQuerySelectColumns(bq.FirstQueryExpression, cols);
+                else if (query is QueryParenthesisExpression pq)
+                    CollectQuerySelectColumns(pq.QueryExpression, cols);
             }
 
             #endregion

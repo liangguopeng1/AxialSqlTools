@@ -704,7 +704,8 @@ namespace AxialSqlTools
                     string alias = kv.Key;
                     if (string.IsNullOrEmpty(alias) || alias.IndexOf('.') >= 0) continue;
                     var tref = kv.Value;
-                    if (tref != null && string.Equals(alias, tref.Name, StringComparison.OrdinalIgnoreCase))
+                    if (tref != null && string.Equals(alias, tref.Name, StringComparison.OrdinalIgnoreCase)
+                        && HasDistinctAlias(local, tref, alias))
                         continue;
                     if (!seen.Add(alias)) continue;
                     if (!string.IsNullOrEmpty(p)
@@ -733,7 +734,8 @@ namespace AxialSqlTools
                     string alias = kv.Key;
                     if (string.IsNullOrEmpty(alias) || alias.IndexOf('.') >= 0) continue;
                     var tref = kv.Value;
-                    if (tref != null && string.Equals(alias, tref.Name, StringComparison.OrdinalIgnoreCase))
+                    if (tref != null && string.Equals(alias, tref.Name, StringComparison.OrdinalIgnoreCase)
+                        && HasDistinctAlias(local, tref, alias))
                         continue;
                     if (alias.Equals(p, StringComparison.OrdinalIgnoreCase))
                         return true;
@@ -741,6 +743,32 @@ namespace AxialSqlTools
                         return true;
                 }
                 return false;
+            }
+
+            /// <summary>表已有不同短别名时，不再把表名本身当补全项（SQL Server 此时必须用别名）。</summary>
+            private static bool HasDistinctAlias(LocalSymbols local, TableRef tref, string tableName)
+            {
+                if (local?.Aliases == null || tref == null || string.IsNullOrEmpty(tableName)) return false;
+                foreach (var kv in local.Aliases)
+                {
+                    if (string.IsNullOrEmpty(kv.Key) || kv.Key.IndexOf('.') >= 0) continue;
+                    if (string.Equals(kv.Key, tableName, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (SameTableRef(kv.Value, tref)) return true;
+                }
+                return false;
+            }
+
+            private static bool SameTableRef(TableRef a, TableRef b)
+            {
+                if (a == null || b == null) return false;
+                if (!string.Equals(a.Name, b.Name, StringComparison.OrdinalIgnoreCase)) return false;
+                if (!string.Equals(a.LinkedServer ?? string.Empty, b.LinkedServer ?? string.Empty, StringComparison.OrdinalIgnoreCase))
+                    return false;
+                if (!string.Equals(a.Database ?? string.Empty, b.Database ?? string.Empty, StringComparison.OrdinalIgnoreCase))
+                    return false;
+                string sa = string.IsNullOrEmpty(a.Schema) ? "dbo" : a.Schema;
+                string sb = string.IsNullOrEmpty(b.Schema) ? "dbo" : b.Schema;
+                return string.Equals(sa, sb, StringComparison.OrdinalIgnoreCase);
             }
 
             private void AddLocalColumns(List<CompletionItem> items, LocalSymbols local, IntelliSenseSettings settings)
@@ -1868,6 +1896,36 @@ namespace AxialSqlTools
                     CursorOffset = cursorOffset,
                     Parameters = parameters ?? Array.Empty<string>()
                 };
+            }
+
+            private static Dictionary<string, BuiltInFunctionInfo> _builtInByName;
+
+            /// <summary>按名查找内建函数（悬停 QuickInfo 用）。</summary>
+            internal static bool TryGetBuiltInFunction(string name, out string displayName, out string signature, out string[] parameters)
+            {
+                displayName = null;
+                signature = null;
+                parameters = null;
+                if (string.IsNullOrEmpty(name)) return false;
+                string key = name.Trim('[', ']', '"');
+                if (string.IsNullOrEmpty(key)) return false;
+                if (_builtInByName == null)
+                {
+                    var map = new Dictionary<string, BuiltInFunctionInfo>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var fn in BuiltInFunctionInfos)
+                    {
+                        if (fn != null && !string.IsNullOrEmpty(fn.Name))
+                            map[fn.Name] = fn;
+                    }
+                    _builtInByName = map;
+                }
+                BuiltInFunctionInfo info;
+                if (!_builtInByName.TryGetValue(key, out info) || info == null)
+                    return false;
+                displayName = info.Name;
+                signature = info.Signature;
+                parameters = info.Parameters;
+                return true;
             }
 
             #endregion

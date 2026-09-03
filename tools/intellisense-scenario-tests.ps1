@@ -72,6 +72,9 @@ Add-Case '68' 'SELECT a FROM t GROUP BY a ha' @('HAVING'); Add-Case '69' 'SELECT
 Add-Case '70' 'SELECT a FROM t HAVING COUNT(*)>1 or' @('ORDER BY'); Add-Case '71' 'SELECT a FROM t HAVING COUNT(*)>1 an' @('AND')
 Add-Case '72' 'SELECT a FROM t ORDER BY a un' @('UNION'); Add-Case '73' 'SELECT a FROM t GROUP BY a un' @('UNION')
 Add-Case '74' 'SELECT * FROM t JOIN x ON a=b an' @('AND'); Add-Case '75' 'SELECT * FROM t JOIN x ON a=b gr' @('GROUP BY')
+Add-Case '212' 'SELECT * FROM kucun_zong AS KC INNER JOIN BK_JiaWei AS JW ON JW.j_id = KC.j_id AND JW.Type = 1 AND KC|' @('KC') 'WhereClause'
+Add-Case '216' 'SELECT * FROM t AS KCZ INNER JOIN GongYingShang AS GHS ON GHS.Id = KCZ.ghs_id INNER JOIN db_bookInfo_Base AS BOOK ON BOOK.h_id = KCZ.h_id and g|' @('GHS') 'WhereClause'
+Add-Case '213' 'SELECT * FROM (SELECT isnull((select 1 from rt_storage.dbo.TH_TuiGHS_ShenQing_Item where Y_GHSID = KC.|),0) as c FROM rt_storage.dbo.kucun_zong AS KC) AS KCZ' @('stock','h_id') 'MemberAccess' @('CeShu')
 Add-Case '76' 'INSERT in' @('INTO') 'InsertTarget'; Add-Case '77' 'INSERT INTO' @('INTO') 'InsertTarget'
 Add-Case '78' 'INSERT INTO t v' @('VALUES'); Add-Case '79' 'INSERT INTO t s' @('SELECT')
 Add-Case '80' 'CREATE t' @('TABLE') 'AfterCreate'; Add-Case '81' 'CREATE p' @('PROCEDURE') 'AfterCreate'
@@ -196,6 +199,42 @@ Add-Case '187' ("DECLARE @foo int" + [char]10 + $pad.ToString() + "SELECT @|") @
 Add-Case '189' ("CREATE TABLE #tmp (id int)" + [char]10 + $pad.ToString() + "SELECT * FROM #|") @('#tmp') 'FromClause'
 # 前面未闭合 /* 时，不能把注释里的 SQL 当代码补全
 Add-Case '188' ("SELECT 1`n/*`n" + $pad.ToString() + "SELECT * FROM t WHERE an|") @() '' @('AND')
+# 派生表：外层 WHERE 提示 KCZ 不提示内层 KC；跨库 JOIN 表可悬停
+$derivedSql = @"
+USE master
+SELECT COUNT(*) AS total
+FROM (SELECT KC.h_id, KC.z_id, round(KC.cost0, 4, 1) AS cost0, sum(stock) AS stock
+      FROM rt_storage.dbo.kucun_zong AS KC WITH (NOLOCK)
+           INNER JOIN rt_storage.dbo.BK_JiaWei AS JW WITH (NOLOCK) ON JW.j_id = KC.j_id
+      WHERE KC.status = 1
+      GROUP BY KC.h_id, KC.z_id, round(KC.cost0, 4, 1)) AS KCZ
+     INNER JOIN rt_storage.dbo.BK_ZhanDian AS ZD WITH (NOLOCK) ON ZD.z_id = KCZ.z_id
+     INNER JOIN BK_KuFang AS KF WITH (NOLOCK) ON KF.k_id = KCZ.k_id
+     INNER JOIN RtBase.dbo.GongYingShang AS GHS WITH (NOLOCK) ON GHS.Id = KCZ.ghs_id
+     INNER JOIN newdaku.dbo.db_bookInfo_Base AS BOOK WITH (NOLOCK) ON BOOK.h_id = KCZ.h_id
+WHERE |
+"@
+$derivedSqlQi = $derivedSql
+Add-Case '190' ($derivedSql.Replace('WHERE |', 'WHERE KC|')) @('KCZ') 'WhereClause' @('KC','JW','kucun_zong')
+Add-Case '190b' ($derivedSql.Replace('WHERE |', 'WHERE BO|')) @('BOOK') 'WhereClause' @('KC','kucun_zong')
+Add-Case '190c' ($derivedSql.Replace('WHERE |', 'WHERE GHS|')) @('GHS') 'WhereClause' @('KC')
+Add-Case '190d' ($derivedSql.Replace('WHERE |', 'WHERE ZD|')) @('ZD') 'WhereClause' @('KC')
+Add-Case '190e' ($derivedSql.Replace('WHERE |', 'WHERE KF|')) @('KF') 'WhereClause' @('KC')
+Add-Case '191' ($derivedSql.Replace('WHERE |', 'WHERE KCZ.|')) @('h_id','z_id','cost0','stock') 'MemberAccess' @('status','j_id')
+Add-Case '191b' 'SELECT * FROM (SELECT sum(stock) FROM t) AS KCZ WHERE KCZ.|' @('stock') 'MemberAccess'
+Add-Case '191c' 'SELECT * FROM (SELECT sum(stock) stock FROM t) AS KCZ WHERE KCZ.|' @('stock') 'MemberAccess'
+Add-Case '192' 'SELECT * FROM (SELECT aa.x FROM t aa WHERE aa|) AS KCZ' @('aa') 'WhereClause' @('KCZ')
+Add-Case '193' 'SELECT * FROM (SELECT a.x FROM t a) AS KCZ WHERE KC|' @('KCZ') 'WhereClause' @('a')
+# 别名与表名相同：WHERE ss 仍提示 SS_PiCi，选中插入 SS_PiCi.
+$piciSql = @"
+select SS_PiCi.PrimaryCode
+from rt_fenjian.dbo.SS_PiCi(nolock) as SS_PiCi
+left outer join rt_fenjian.dbo.SS_PiCi_Second(nolock) as SS_PiCi_Second on SS_PiCi.PrimaryCode = SS_PiCi_Second.F_PrimaryCode
+where ss|
+"@
+Add-Case '201' $piciSql @('SS_PiCi') 'WhereClause'
+Add-Case '202' 'SELECT * FROM dbo.SS_PiCi AS aa where ss|' @() 'WhereClause' @('SS_PiCi')
+Add-Case '203' 'SELECT * FROM rt_fenjian.dbo.SS_PiCi(nolock) as SS_PiCi where SS_PiCi.|' @('PrimaryCode') 'MemberAccess'
 
 Write-Host "Cases=$($cases.Count)"
 
@@ -268,6 +307,26 @@ foreach ($cn in @('k_id')) {
     [void]$kufang.Columns.Add($col)
 }
 [void]$storageCatalog.Tables.Add($kufang)
+$kucunZong = [Activator]::CreateInstance($tableType)
+$kucunZong.Schema = 'dbo'
+$kucunZong.Name = 'kucun_zong'
+foreach ($cn in @('h_id','z_id','k_id','ghs_id','cost0','stock','j_id','status','price')) {
+    $col = [Activator]::CreateInstance($colType)
+    $col.Name = $cn
+    $col.DataType = 'int'
+    [void]$kucunZong.Columns.Add($col)
+}
+[void]$storageCatalog.Tables.Add($kucunZong)
+$tuiGhs = [Activator]::CreateInstance($tableType)
+$tuiGhs.Schema = 'dbo'
+$tuiGhs.Name = 'TH_TuiGHS_ShenQing_Item'
+foreach ($cn in @('j_id','status','H_ID','K_ID','CeShu','Y_GHSID','Y_Cost0','isqt')) {
+    $col = [Activator]::CreateInstance($colType)
+    $col.Name = $cn
+    $col.DataType = 'int'
+    [void]$tuiGhs.Columns.Add($col)
+}
+[void]$storageCatalog.Tables.Add($tuiGhs)
 $svc.PutCatalog('local', 'rt_storage', $storageCatalog)
 
 $masterCatalog = [Activator]::CreateInstance($catalogType)
@@ -296,6 +355,16 @@ foreach ($cn in @('id','单位名称','单位代码')) {
     [void]$userInfo.Columns.Add($col)
 }
 [void]$rtbaseCatalog.Tables.Add($userInfo)
+$ghs = [Activator]::CreateInstance($tableType)
+$ghs.Schema = 'dbo'
+$ghs.Name = 'GongYingShang'
+foreach ($cn in @('Id','SupplierName')) {
+    $col = [Activator]::CreateInstance($colType)
+    $col.Name = $cn
+    $col.DataType = 'nvarchar'
+    [void]$ghs.Columns.Add($col)
+}
+[void]$rtbaseCatalog.Tables.Add($ghs)
 $svc.PutCatalog('local', 'rtbase', $rtbaseCatalog)
 
 $newdakuCatalog = [Activator]::CreateInstance($catalogType)
@@ -312,6 +381,20 @@ foreach ($cn in @('H_ID','DingJia')) {
 [void]$newdakuCatalog.Tables.Add($book)
 $svc.PutCatalog('local', 'newdaku', $newdakuCatalog)
 
+$fenjianCatalog = [Activator]::CreateInstance($catalogType)
+$fenjianCatalog.Database = 'rt_fenjian'
+$pici = [Activator]::CreateInstance($tableType)
+$pici.Schema = 'dbo'
+$pici.Name = 'SS_PiCi'
+foreach ($cn in @('PrimaryCode','Version')) {
+    $col = [Activator]::CreateInstance($colType)
+    $col.Name = $cn
+    $col.DataType = 'nvarchar'
+    [void]$pici.Columns.Add($col)
+}
+[void]$fenjianCatalog.Tables.Add($pici)
+$svc.PutCatalog('local', 'rt_fenjian', $fenjianCatalog)
+
 $masterConn = [Activator]::CreateInstance($connType)
 [void]$connType.GetProperty('ServerName').SetValue($masterConn, 'local')
 [void]$connType.GetProperty('Database').SetValue($masterConn, 'master')
@@ -319,7 +402,7 @@ $masterConn = [Activator]::CreateInstance($connType)
 $fail = New-Object System.Collections.Generic.List[string]
 $pass = 0
 $linkedCases = @('160','161','162')
-$useCases = @('172','173','176','178','181','182','183')
+$useCases = @('172','173','176','178','181','182','183','203','212','213')
 foreach ($c in $cases) {
     $e = [Activator]::CreateInstance($engineType)
     $s = [Activator]::CreateInstance($settingsType)
@@ -348,6 +431,7 @@ foreach ($c in $cases) {
     $kinds = New-Object System.Collections.Generic.List[string]
     $allInsert = $null
     $kucunInsert = $null
+    $ssPiciInsert = $null
     if ($r.Items) {
         foreach ($it in $r.Items) {
             [void]$n.Add([string]$it.DisplayText)
@@ -356,6 +440,7 @@ foreach ($c in $cases) {
             if ([string]$it.DisplayText -eq 'kucun' -or [string]$it.DisplayText -eq 'dbo.kucun') {
                 $kucunInsert = [string]$it.InsertText
             }
+            if ([string]$it.DisplayText -eq 'SS_PiCi') { $ssPiciInsert = [string]$it.InsertText }
         }
     }
     $ok = $true
@@ -405,6 +490,12 @@ foreach ($c in $cases) {
         if ($r.ReplaceStartOffset -ne $expectStart) {
             $ok = $false
             $why = "replace=$($r.ReplaceStartOffset) want=$expectStart (dbo. should keep prefix)"
+        }
+    }
+    if ($c.Name -eq '201') {
+        if ($ssPiciInsert -notmatch 'SS_PiCi' -or $ssPiciInsert -notlike '*.') {
+            $ok = $false
+            $why = "SS_PiCi insert=[$ssPiciInsert] want alias."
         }
     }
     if ($ok) { $pass++ } else { [void]$fail.Add("$($c.Name) $why prefix=[$($r.Prefix)]") }
@@ -505,6 +596,175 @@ if ($null -ne $qiInfo7) {
     else { $qi7Why = "headers=[$headers7]" }
 } else { $qi7Why = 'null (large script should still resolve last JOIN table)' }
 if ($qi7Ok) { $pass++ } else { [void]$fail.Add("184 QuickInfo large-script $qi7Why") }
+
+$qiSql8 = $derivedSql.Replace('|', '')
+$qiHover8 = $qiSql8.IndexOf('GongYingShang') + 2
+$qi8 = [Activator]::CreateInstance($qiType)
+$qiInfo8 = $qi8.GetQuickInfo($qiSql8, $qiHover8, $masterCatalog, $masterConn)
+$qi8Ok = $false
+$qi8Why = 'null'
+if ($null -ne $qiInfo8) {
+    $headers8 = if ($qiInfo8.HeaderLines) { ($qiInfo8.HeaderLines -join ' | ') } else { '' }
+    if ($headers8 -match 'GongYingShang' -and $headers8 -match 'RtBase') { $qi8Ok = $true }
+    else { $qi8Why = "headers=[$headers8]" }
+} else { $qi8Why = 'null (derived-table JOIN GongYingShang should resolve RtBase)' }
+if ($qi8Ok) { $pass++ } else { [void]$fail.Add("194 QuickInfo GongYingShang $qi8Why") }
+
+$qiHover9 = $qiSql8.IndexOf('db_bookInfo_Base') + 3
+$qi9 = [Activator]::CreateInstance($qiType)
+$qiInfo9 = $qi9.GetQuickInfo($qiSql8, $qiHover9, $masterCatalog, $masterConn)
+$qi9Ok = $false
+$qi9Why = 'null'
+if ($null -ne $qiInfo9) {
+    $headers9 = if ($qiInfo9.HeaderLines) { ($qiInfo9.HeaderLines -join ' | ') } else { '' }
+    if ($headers9 -match 'db_bookInfo_Base' -and $headers9 -match 'newdaku') { $qi9Ok = $true }
+    else { $qi9Why = "headers=[$headers9]" }
+} else { $qi9Why = 'null (derived-table JOIN book should resolve newdaku)' }
+if ($qi9Ok) { $pass++ } else { [void]$fail.Add("195 QuickInfo book $qi9Why") }
+
+$qiHover10 = $qiSql8.LastIndexOf('BK_KuFang') + 3
+$qi10 = [Activator]::CreateInstance($qiType)
+$qiInfo10 = $qi10.GetQuickInfo($qiSql8, $qiHover10, $masterCatalog, $masterConn)
+$qi10Ok = $true
+$qi10Why = ''
+if ($null -ne $qiInfo10) {
+    $headers10 = if ($qiInfo10.HeaderLines) { ($qiInfo10.HeaderLines -join ' | ') } else { '' }
+    if ($headers10 -match 'rt_storage') {
+        $qi10Ok = $false
+        $qi10Why = "unqualified BK_KuFang under USE master should not use rt_storage headers=[$headers10]"
+    }
+}
+if ($qi10Ok) { $pass++ } else { [void]$fail.Add("196 QuickInfo BK_KuFang $qi10Why") }
+
+# 内建函数悬停：COUNT / ROUND / SUM / ISNULL
+$fnHoverCases = @(
+    @{ Id = '197'; Sql = 'SELECT COUNT(*) FROM t'; Word = 'COUNT'; WantFn = 'COUNT'; WantSig = 'COUNT(' },
+    @{ Id = '198'; Sql = 'SELECT round(1.23, 2)'; Word = 'round'; WantFn = 'ROUND'; WantSig = 'ROUND(' },
+    @{ Id = '199'; Sql = 'SELECT ISNULL(a, 0) FROM t'; Word = 'ISNULL'; WantFn = 'ISNULL'; WantSig = 'ISNULL(' },
+    @{ Id = '200'; Sql = 'SELECT SUM(x) FROM t'; Word = 'SUM'; WantFn = 'SUM'; WantSig = 'SUM(' }
+)
+foreach ($fc in $fnHoverCases) {
+    $fnSql = $fc.Sql
+    $fnHover = $fnSql.IndexOf($fc.Word, [StringComparison]::OrdinalIgnoreCase) + 1
+    $fnQi = [Activator]::CreateInstance($qiType)
+    $fnInfo = $fnQi.GetQuickInfo($fnSql, $fnHover, $masterCatalog, $masterConn)
+    $fnOk = $false
+    $fnWhy = 'null'
+    if ($null -ne $fnInfo) {
+        $fnHeaders = if ($fnInfo.HeaderLines) { ($fnInfo.HeaderLines -join ' | ') } else { '' }
+        $fnDdl = [string]$fnInfo.DdlText
+        if ($fnHeaders -match [regex]::Escape($fc.WantFn) -and $fnDdl -match [regex]::Escape($fc.WantSig)) {
+            $fnOk = $true
+        }
+        else { $fnWhy = "headers=[$fnHeaders] ddl=$fnDdl" }
+    }
+    else { $fnWhy = "null (hover $($fc.Word) should be built-in $($fc.WantFn))" }
+    if ($fnOk) { $pass++ } else { [void]$fail.Add("$($fc.Id) QuickInfo $($fc.Word) $fnWhy") }
+}
+
+# 派生表悬停：KCZ / KCZ.stock / 标量子查询 AS cartshuliangnew
+try {
+    $qiDerivedSql = $derivedSqlQi.Replace('WHERE |', 'WHERE KCZ.stock > 0')
+    $qiDer = [Activator]::CreateInstance($qiType)
+    $qiHoverKcz = $qiDerivedSql.LastIndexOf('KCZ') + 1
+    $qiInfoKcz = $qiDer.GetQuickInfo($qiDerivedSql, $qiHoverKcz, $masterCatalog, $masterConn)
+    $qiKczOk = $false
+    $qiKczWhy = 'null'
+    if ($null -ne $qiInfoKcz) {
+        $hKcz = if ($qiInfoKcz.HeaderLines) { ($qiInfoKcz.HeaderLines -join ' | ') } else { '' }
+        $dKcz = [string]$qiInfoKcz.DdlText
+        if ($hKcz -match 'KCZ' -and $dKcz -match 'SELECT' -and $dKcz -match 'kucun_zong') { $qiKczOk = $true }
+        else { $qiKczWhy = "headers=[$hKcz] ddl=$dKcz" }
+    } else { $qiKczWhy = 'null (hover KCZ should be derived table)' }
+    if ($qiKczOk) { $pass++ } else { [void]$fail.Add("205 QuickInfo derived KCZ $qiKczWhy") }
+
+    $qiDer2 = [Activator]::CreateInstance($qiType)
+    $qiHoverCol = $qiDerivedSql.LastIndexOf('stock') + 1
+    $qiInfoCol = $qiDer2.GetQuickInfo($qiDerivedSql, $qiHoverCol, $masterCatalog, $masterConn)
+    $qiColOk = $false
+    $qiColWhy = 'null'
+    if ($null -ne $qiInfoCol) {
+        $hCol = if ($qiInfoCol.HeaderLines) { ($qiInfoCol.HeaderLines -join ' | ') } else { '' }
+        $dCol = [string]$qiInfoCol.DdlText
+        if ($hCol -match 'stock' -and $hCol -match 'KCZ' -and $dCol -match 'sum\(stock\)') { $qiColOk = $true }
+        else { $qiColWhy = "headers=[$hCol] ddl=$dCol" }
+    } else { $qiColWhy = 'null (hover KCZ.stock should be derived column)' }
+    if ($qiColOk) { $pass++ } else { [void]$fail.Add("206 QuickInfo derived col $qiColWhy") }
+
+    $qiNestedSql = 'SELECT * FROM (SELECT isnull((select 1),0) as cartshuliangnew) AS KCZ WHERE KCZ.cartshuliangnew > 0'
+    $qiDer3 = [Activator]::CreateInstance($qiType)
+    $qiHoverNested = $qiNestedSql.LastIndexOf('cartshuliangnew') + 2
+    $qiInfoNested = $qiDer3.GetQuickInfo($qiNestedSql, $qiHoverNested, $masterCatalog, $masterConn)
+    $qiNestedOk = $false
+    $qiNestedWhy = 'null'
+    if ($null -ne $qiInfoNested) {
+        $hNested = if ($qiInfoNested.HeaderLines) { ($qiInfoNested.HeaderLines -join ' | ') } else { '' }
+        $dNested = [string]$qiInfoNested.DdlText
+        if ($hNested -match 'cartshuliangnew' -and $hNested -match 'KCZ' -and $dNested -match 'isnull') { $qiNestedOk = $true }
+        else { $qiNestedWhy = "headers=[$hNested] ddl=$dNested" }
+    } else { $qiNestedWhy = 'null (nested subquery AS cartshuliangnew)' }
+    if ($qiNestedOk) { $pass++ } else { [void]$fail.Add("207 QuickInfo nested derived col $qiNestedWhy") }
+
+    $qiBareStock = 'SELECT COUNT(*) FROM (SELECT sum(stock) FROM rt_storage.dbo.kucun_zong AS KC) AS KCZ'
+    $qiDer4 = [Activator]::CreateInstance($qiType)
+    $qiHoverBare = $qiBareStock.IndexOf('stock') + 1
+    $qiInfoBare = $qiDer4.GetQuickInfo($qiBareStock, $qiHoverBare, $masterCatalog, $masterConn)
+    $qiBareOk = $false
+    $qiBareWhy = 'null'
+    if ($null -ne $qiInfoBare) {
+        $hBare = if ($qiInfoBare.HeaderLines) { ($qiInfoBare.HeaderLines -join ' | ') } else { '' }
+        $dBare = [string]$qiInfoBare.DdlText
+        if ($hBare -match 'stock' -and ($hBare -match 'kucun_zong' -or $dBare -match 'sum\(stock\)')) { $qiBareOk = $true }
+        else { $qiBareWhy = "headers=[$hBare] ddl=$dBare" }
+    } else { $qiBareWhy = 'null (sum(stock) without alias should still resolve stock)' }
+    if ($qiBareOk) { $pass++ } else { [void]$fail.Add("208 QuickInfo bare stock $qiBareWhy") }
+
+    $qiSubWhere = 'SELECT * FROM (SELECT isnull((select sum(x) from rt_storage.dbo.TH_TuiGHS_ShenQing_Item where j_id = 0 and status in (1,2,5) and H_ID = 1),0) as c) AS KCZ'
+    foreach ($qw in @(
+        @{ Id = '209'; Word = 'j_id'; Want = 'TH_TuiGHS_ShenQing_Item' },
+        @{ Id = '210'; Word = 'status'; Want = 'TH_TuiGHS_ShenQing_Item' },
+        @{ Id = '211'; Word = 'H_ID'; Want = 'TH_TuiGHS_ShenQing_Item' }
+    )) {
+        $qiSub = [Activator]::CreateInstance($qiType)
+        $qiHoverSub = $qiSubWhere.IndexOf($qw.Word) + 1
+        $qiInfoSub = $qiSub.GetQuickInfo($qiSubWhere, $qiHoverSub, $masterCatalog, $masterConn)
+        $qiSubOk = $false
+        $qiSubWhy = 'null'
+        if ($null -ne $qiInfoSub) {
+            $hSub = if ($qiInfoSub.HeaderLines) { ($qiInfoSub.HeaderLines -join ' | ') } else { '' }
+            if ($hSub -match [regex]::Escape($qw.Word) -and $hSub -match [regex]::Escape($qw.Want)) { $qiSubOk = $true }
+            else { $qiSubWhy = "headers=[$hSub]" }
+        } else { $qiSubWhy = "null (hover $($qw.Word) in subquery WHERE)" }
+        if ($qiSubOk) { $pass++ } else { [void]$fail.Add("$($qw.Id) QuickInfo subquery $($qw.Word) $qiSubWhy") }
+    }
+
+    $qiCorr = 'SELECT * FROM (SELECT isnull((select 1 from rt_storage.dbo.TH_TuiGHS_ShenQing_Item where H_ID = KC.h_id),0) as cartshuliang FROM rt_storage.dbo.kucun_zong AS KC) AS KCZ'
+    $qiCorrKc = [Activator]::CreateInstance($qiType)
+    $qiHoverCorrKc = $qiCorr.LastIndexOf('KC.h_id') + 1
+    $qiInfoCorrKc = $qiCorrKc.GetQuickInfo($qiCorr, $qiHoverCorrKc, $masterCatalog, $masterConn)
+    $qiCorrKcOk = $false
+    $qiCorrKcWhy = 'null'
+    if ($null -ne $qiInfoCorrKc) {
+        $hCorrKc = if ($qiInfoCorrKc.HeaderLines) { ($qiInfoCorrKc.HeaderLines -join ' | ') } else { '' }
+        if ($hCorrKc -match 'kucun_zong') { $qiCorrKcOk = $true }
+        else { $qiCorrKcWhy = "headers=[$hCorrKc]" }
+    } else { $qiCorrKcWhy = 'null (hover KC in cartshuliang subquery)' }
+    if ($qiCorrKcOk) { $pass++ } else { [void]$fail.Add("214 QuickInfo corr KC $qiCorrKcWhy") }
+
+    $qiCorrHid = [Activator]::CreateInstance($qiType)
+    $qiHoverCorrHid = $qiCorr.LastIndexOf('h_id') + 1
+    $qiInfoCorrHid = $qiCorrHid.GetQuickInfo($qiCorr, $qiHoverCorrHid, $masterCatalog, $masterConn)
+    $qiCorrHidOk = $false
+    $qiCorrHidWhy = 'null'
+    if ($null -ne $qiInfoCorrHid) {
+        $hCorrHid = if ($qiInfoCorrHid.HeaderLines) { ($qiInfoCorrHid.HeaderLines -join ' | ') } else { '' }
+        if ($hCorrHid -match 'h_id' -and $hCorrHid -match 'kucun_zong') { $qiCorrHidOk = $true }
+        else { $qiCorrHidWhy = "headers=[$hCorrHid]" }
+    } else { $qiCorrHidWhy = 'null (hover KC.h_id in cartshuliang subquery)' }
+    if ($qiCorrHidOk) { $pass++ } else { [void]$fail.Add("215 QuickInfo corr h_id $qiCorrHidWhy") }
+} catch {
+    [void]$fail.Add("205-215 EX=$($_.Exception.Message)")
+}
 
 Write-Host "PASS=$pass FAIL=$($fail.Count)"
 $fail | ForEach-Object { Write-Host "  $_" }

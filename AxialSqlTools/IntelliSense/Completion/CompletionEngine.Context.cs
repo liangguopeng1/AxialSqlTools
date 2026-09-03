@@ -543,7 +543,15 @@ namespace AxialSqlTools
                         prefix = fromName.Partial ?? string.Empty;
                         return CompletionContext.InsertTarget;
                     }
-                    if (majorKw != "WHERE" && majorKw != "HAVING" && majorKw != "GROUP" && majorKw != "ORDER"
+                    if (majorKw == "ON")
+                    {
+                        if (LooksLikeContinuingFromKeyword(fromName.Partial ?? prefix))
+                        {
+                            prefix = fromName.Partial ?? string.Empty;
+                            return CompletionContext.FromClause;
+                        }
+                    }
+                    else if (majorKw != "WHERE" && majorKw != "HAVING" && majorKw != "GROUP" && majorKw != "ORDER"
                         && majorKw != "UNION" && majorKw != "EXCEPT" && majorKw != "INTERSECT")
                     {
                         prefix = fromName.Partial ?? string.Empty;
@@ -616,13 +624,20 @@ namespace AxialSqlTools
                     case "HAVING":
                         return CompletionContext.WhereClause;
                     case "ON":
-                        // JOIN ON 后仍可续写 AND 或下一 INNER JOIN / WHERE
-                        return CompletionContext.FromClause;
+                        if (LooksLikeContinuingFromKeyword(prefix))
+                            return CompletionContext.FromClause;
+                        return CompletionContext.WhereClause;
                     case "AND":
                     case "OR":
                         {
                             string major = FindNearestMajorClauseKeyword(tokens, caretTokenIndex, localOffset);
-                            if (major == "ON" || major == "FROM" || major == "JOIN")
+                            if (major == "ON")
+                            {
+                                if (LooksLikeContinuingFromKeyword(prefix))
+                                    return CompletionContext.FromClause;
+                                return CompletionContext.WhereClause;
+                            }
+                            if (major == "FROM" || major == "JOIN")
                                 return CompletionContext.FromClause;
                             return CompletionContext.WhereClause;
                         }
@@ -1616,6 +1631,43 @@ namespace AxialSqlTools
                         break;
                 }
                 return null;
+            }
+
+            /// <summary>ON 之后继续写 INNER/LEFT/WHERE 等时仍走 FromClause。</summary>
+            private static bool LooksLikeContinuingFromKeyword(string prefix)
+            {
+                if (string.IsNullOrEmpty(prefix)) return false;
+                string p = prefix.TrimStart('[', ' ').ToUpperInvariant();
+                // 单字母优先当别名（and g → GHS），in/gr/wh 仍走 JOIN/GROUP/WHERE
+                if (p.Length < 2) return false;
+                switch (p[0])
+                {
+                    case 'I':
+                        return "INNER".StartsWith(p, StringComparison.Ordinal)
+                            || "INTERSECT".StartsWith(p, StringComparison.Ordinal);
+                    case 'L':
+                        return "LEFT".StartsWith(p, StringComparison.Ordinal);
+                    case 'R':
+                        return "RIGHT".StartsWith(p, StringComparison.Ordinal);
+                    case 'F':
+                        return "FULL".StartsWith(p, StringComparison.Ordinal);
+                    case 'C':
+                        return "CROSS".StartsWith(p, StringComparison.Ordinal);
+                    case 'J':
+                        return "JOIN".StartsWith(p, StringComparison.Ordinal);
+                    case 'O':
+                        return "OUTER".StartsWith(p, StringComparison.Ordinal);
+                    case 'W':
+                        return "WHERE".StartsWith(p, StringComparison.Ordinal);
+                    case 'G':
+                        return "GROUP".StartsWith(p, StringComparison.Ordinal);
+                    case 'U':
+                        return "UNION".StartsWith(p, StringComparison.Ordinal);
+                    case 'E':
+                        return "EXCEPT".StartsWith(p, StringComparison.Ordinal);
+                    default:
+                        return false;
+                }
             }
 
             private static bool IsNumericOrIpPrefix(string prefix)

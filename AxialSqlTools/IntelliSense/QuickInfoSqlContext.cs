@@ -62,6 +62,23 @@ namespace AxialSqlTools.IntelliSense
             return result;
         }
 
+        /// <summary>悬停词后一个有效 token 是否为 '('（函数调用）。光标落在 '(' 上也算。</summary>
+        public static bool NextSignificantIsLeftParen(List<TSqlParserToken> tokens, int offset)
+        {
+            if (tokens == null || tokens.Count == 0) return false;
+            int idx = FindTokenIndexAt(tokens, offset);
+            if (idx < 0) return false;
+            if (tokens[idx].TokenType == TSqlTokenType.LeftParenthesis)
+                return true;
+            for (int i = idx + 1; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (t == null || IsInsignificant(t)) continue;
+                return t.TokenType == TSqlTokenType.LeftParenthesis;
+            }
+            return false;
+        }
+
         /// <summary>
         /// 原文解析 EXEC/EXECUTE 目标（支持 caiwu..proc / caiwu.dbo.proc）。
         /// hoverName 须为过程名最后一段（如 000_pro_...）。
@@ -203,18 +220,18 @@ namespace AxialSqlTools.IntelliSense
             return char.IsLetterOrDigit(c) || c == '_' || c == '@' || c == '#';
         }
 
-        /// <summary>解析光标所在（或最近）FROM/JOIN 表引用；优先命中悬停位置所在表段。</summary>
-        public static TableRef TryResolveFromTable(List<TSqlParserToken> tokens, int offset)
-        {
-            var segments = CollectTableSegments(tokens, offset);
-            if (segments == null || segments.Count == 0) return null;
-            foreach (var seg in segments)
+            /// <summary>解析光标所在（或最近）FROM/JOIN 表引用；优先命中悬停位置所在表段，否则用当前查询第一张表。</summary>
+            public static TableRef TryResolveFromTable(List<TSqlParserToken> tokens, int offset)
             {
-                if (offset >= seg.StartOffset && offset <= seg.EndOffset)
-                    return seg.Ref;
+                var segments = CollectTableSegments(tokens, offset);
+                if (segments == null || segments.Count == 0) return null;
+                foreach (var seg in segments)
+                {
+                    if (offset >= seg.StartOffset && offset <= seg.EndOffset)
+                        return seg.Ref;
+                }
+                return segments[0].Ref;
             }
-            return segments[0].Ref;
-        }
 
         /// <summary>按悬停词在 FROM/JOIN 中定位表（支持 db.schema.table / db..table / JOIN 表）。</summary>
         public static TableRef TryResolveTableByHoverName(List<TSqlParserToken> tokens, int offset, string hoverName)
@@ -396,7 +413,7 @@ namespace AxialSqlTools.IntelliSense
                     });
                 }
 
-                // 仅逗号 / JOIN 可接下一表；AS alias 已在上段消费，若残留则跳过
+                // 仅逗号 / JOIN 可接下一表；AS alias / WITH (NOLOCK) 已在上段消费，若残留则跳过
                 int look = i;
                 while (look < tokens.Count)
                 {
@@ -414,6 +431,22 @@ namespace AxialSqlTools.IntelliSense
                             var at = tokens[look];
                             if (at == null || IsInsignificant(at)) { look++; continue; }
                             if (IsWordLike(at) || IsPartialObjectName(at)) look++;
+                            break;
+                        }
+                        continue;
+                    }
+                    if (lkw == "WITH")
+                    {
+                        look++;
+                        while (look < tokens.Count)
+                        {
+                            var wt = tokens[look];
+                            if (wt == null || IsInsignificant(wt)) { look++; continue; }
+                            if (wt.TokenType == TSqlTokenType.LeftParenthesis)
+                            {
+                                look = SkipParenthesisGroup(tokens, look);
+                                continue;
+                            }
                             break;
                         }
                         continue;
@@ -596,60 +629,154 @@ namespace AxialSqlTools.IntelliSense
 
         private static int FindFromClauseTokenIndex(List<TSqlParserToken> tokens, int offset)
         {
-            int selectIdx = -1;
-            for (int i = 0; i < tokens.Count; i++)
-            {
-                var t = tokens[i];
-                if (t == null || IsInsignificant(t)) continue;
-                if (t.Offset > offset) break;
-                string text = t.Text?.ToUpperInvariant();
-                if (text == ";" || text == "GO")
-                {
-                    selectIdx = -1;
-                    continue;
-                }
-                if (text == "SELECT")
-                    selectIdx = i;
-            }
+            int selectIdx = FindCurrentQuerySelectIndex(tokens, offset);
             if (selectIdx >= 0)
             {
-                for (int i = selectIdx + 1; i < tokens.Count; i++)
-                {
-                    var t = tokens[i];
-                    if (t == null || IsInsignificant(t)) continue;
-                    string kw = t.Text?.ToUpperInvariant();
-                    if (kw == ";" || kw == "GO") break;
-                    if (kw == "WHERE" || kw == "GROUP" || kw == "ORDER" || kw == "HAVING"
-                        || kw == "UNION" || kw == "EXCEPT" || kw == "INTERSECT")
-                        return -1;
-                    if (kw == "FROM")
-                        return i;
-                }
+                int fromIdx = FindFromAfterSelect(tokens, selectIdx);
+                if (fromIdx >= 0) return fromIdx;
+                return -1;
             }
             int lastFrom = -1;
+            int depth = 0;
+            int caretDepth = ComputeParenDepthBefore(tokens, offset);
             for (int i = 0; i < tokens.Count; i++)
             {
                 var t = tokens[i];
                 if (t == null || IsInsignificant(t)) continue;
-                if (t.Offset > offset) break;
+                if (t.Offset >= offset) break;
+                if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                {
+                    depth++;
+                    continue;
+                }
+                if (t.TokenType == TSqlTokenType.RightParenthesis)
+                {
+                    if (depth > 0) depth--;
+                    continue;
+                }
                 string text = t.Text?.ToUpperInvariant();
                 if (text == ";" || text == "GO")
                 {
                     lastFrom = -1;
+                    depth = 0;
                     continue;
                 }
-                if (text == "FROM")
+                if (text == "FROM" && depth == caretDepth)
                     lastFrom = i;
             }
             return lastFrom;
         }
 
+        private static int FindCurrentQuerySelectIndex(List<TSqlParserToken> tokens, int offset)
+        {
+            if (tokens == null) return -1;
+            int depth = 0;
+            var selectIdxs = new List<int>();
+            var selectDepths = new List<int>();
+            for (int i = 0; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (t == null || IsInsignificant(t)) continue;
+                if (t.Offset >= offset) break;
+                if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                {
+                    depth++;
+                    continue;
+                }
+                if (t.TokenType == TSqlTokenType.RightParenthesis)
+                {
+                    while (selectIdxs.Count > 0 && selectDepths[selectIdxs.Count - 1] >= depth)
+                    {
+                        selectIdxs.RemoveAt(selectIdxs.Count - 1);
+                        selectDepths.RemoveAt(selectDepths.Count - 1);
+                    }
+                    if (depth > 0) depth--;
+                    continue;
+                }
+                string text = t.Text?.ToUpperInvariant();
+                if (text == ";" || text == "GO")
+                {
+                    selectIdxs.Clear();
+                    selectDepths.Clear();
+                    depth = 0;
+                    continue;
+                }
+                if (text == "SELECT")
+                {
+                    while (selectIdxs.Count > 0 && selectDepths[selectIdxs.Count - 1] >= depth)
+                    {
+                        selectIdxs.RemoveAt(selectIdxs.Count - 1);
+                        selectDepths.RemoveAt(selectDepths.Count - 1);
+                    }
+                    selectIdxs.Add(i);
+                    selectDepths.Add(depth);
+                }
+            }
+            return selectIdxs.Count > 0 ? selectIdxs[selectIdxs.Count - 1] : -1;
+        }
+
+        private static int FindFromAfterSelect(List<TSqlParserToken> tokens, int selectIdx)
+        {
+            int depth = 0;
+            for (int i = selectIdx + 1; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (t == null || IsInsignificant(t)) continue;
+                if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                {
+                    depth++;
+                    continue;
+                }
+                if (t.TokenType == TSqlTokenType.RightParenthesis)
+                {
+                    if (depth > 0) depth--;
+                    continue;
+                }
+                if (depth > 0) continue;
+                string kw = t.Text?.ToUpperInvariant();
+                if (kw == ";" || kw == "GO" || kw == "SELECT")
+                    break;
+                if (kw == "FROM")
+                    return i;
+                if (IsFromRegionStopKeyword(kw) && kw != "SELECT")
+                    return -1;
+            }
+            return -1;
+        }
+
+        private static int ComputeParenDepthBefore(List<TSqlParserToken> tokens, int offset)
+        {
+            int depth = 0;
+            if (tokens == null) return 0;
+            for (int i = 0; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (t == null || IsInsignificant(t)) continue;
+                if (t.Offset >= offset) break;
+                if (t.TokenType == TSqlTokenType.LeftParenthesis) depth++;
+                else if (t.TokenType == TSqlTokenType.RightParenthesis && depth > 0) depth--;
+            }
+            return depth;
+        }
+
         private static int FindFromRegionEnd(List<TSqlParserToken> tokens, int fromIdx)
         {
+            int depth = 0;
             for (int i = fromIdx + 1; i < tokens.Count; i++)
             {
                 var t = tokens[i];
                 if (t == null || IsInsignificant(t)) continue;
+                if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                {
+                    depth++;
+                    continue;
+                }
+                if (t.TokenType == TSqlTokenType.RightParenthesis)
+                {
+                    if (depth > 0) depth--;
+                    continue;
+                }
+                if (depth > 0) continue;
                 string kw = t.Text?.ToUpperInvariant();
                 if (IsFromRegionStopKeyword(kw))
                     return t.Offset;

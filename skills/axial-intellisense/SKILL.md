@@ -91,9 +91,13 @@ TriggerCompletion:
 - `autoTriggerDelayMs`（设置名「补全列表弹出延迟」）在每次防抖启动时读取，保存后当前标签立即生效。
 - 脚本 `USE db`（即使未执行）覆盖连接当前库：补全/QuickInfo/缓存预热走该库。`GetActiveUseDatabase` 跨 GO，忽略注释和字符串。`AddTablesAndViews` 不得因 `connInfo.Database != catalog.Database` 丢掉 USE 库的表。
 - 悬停 `alias.col` 禁止在当前库扫所有表的同名列；找不到别名所属表就不出提示，避免 master 里随便一张带 `id` 的表。`GetQuickInfoByWord` 点号后同样按别名解析，不得把列名当表名。
-- FROM 多个 JOIN：扫表段时第一个 `ON` 不能结束整段 FROM，否则后面的 `db.schema.table` 悬停不到。`CollectAliasesFromTokens` 同样不能在 `ON` 处 return，否则 `where k.` 只剩前两张表。跨库补全 `GetCatalogNonBlocking` 在 `EnsureCatalogBuilding` 读完磁盘后要再取一次缓存。
+- FROM 多个 JOIN：扫表段时第一个 `ON` 不能结束整段 FROM，否则后面的 `db.schema.table` 悬停不到。`CollectAliasesFromTokens` 同样不能在 `ON` 处 return，否则 `where k.` 只剩前两张表。`AS alias WITH (NOLOCK)` 后 look-ahead 必须跳过 WITH 提示，否则后续 JOIN 丢光。跨库补全 `GetCatalogNonBlocking` 在 `EnsureCatalogBuilding` 读完磁盘后要再取一次缓存。
+- 派生表 `(SELECT ...) AS KCZ`：按括号深度选当前查询的 FROM，外层 WHERE 只能提示 KCZ/外层 JOIN 别名，不能漏出子查询里的 KC。`(SELECT…)` 不能当 (nolock) 丢掉后把 KCZ 登记成物理表名。未限定表名不得继承其它 FROM 表的库名（`USE master` 时 `BK_KuFang` 不得显示成 rt_storage）。悬停 KCZ 显示子查询原文；悬停 `stock` / `cartshuliang` 显示 SELECT 列表原文（`sum(stock)` / `sum(stock) AS stock`）。`sum(stock)` 无 AS 仍要把列名收成 `stock`。标量子查询 WHERE 里未限定的 `j_id` / `status` / `H_ID` 按该子查询 FROM 表解析，不能因为光标不在表名上就丢 FROM。走 `CollectQueryLocalsFromTokens`（传入 slice），不要去目录里找物理表 KCZ。
 - 大脚本：`TryGetParseSlice` 先 GO 再按语句切（24KB 以上）；QuickInfo 与补全共用 `ParseSlice` 缓存，禁止每次悬停 Parse 全文。热路径读缓冲用一次 `GetLineText(0,0,last)`，不要按行拼。切片后用 `CollectLocalSymbolsFromText` 扫本批次光标前的 `CREATE TABLE #` / `INTO #` / `DECLARE @`（含表变量列）。`IsInsideStringOrComment` 必须用全文，否则前面未闭合 `/*` 会把注释当代码。`t.` 别名要跟到 `#tmp`/`@tv` 本地列，不能只按别名本身当对象名。
 - 悬停热路径：`GetCurrentConnectionInfo` 反射扫连接对象很贵，必须短 TTL 缓存。悬停不要每次 `EnsureCatalogsReferencedInSql`；QuickInfo 只需 `GetTokensForSlice`（词法），不要为悬停 `Parse` 整句 AST。
+- 内建函数悬停（COUNT / ROUND / SUM / ISNULL / GETDATE 等）：后接 `(` 时优先当函数，避免同名表抢走。无括号兜底只给 `CURRENT_TIMESTAMP` 这类签名不含 `(` 的，避免 `LEFT JOIN` 的 LEFT 被当成函数。文案走 `CompletionEngine.TryGetBuiltInFunction`，不要另建函数表。
+- WHERE 别名补全：`AS SS_PiCi` 与表名相同时仍要提示 `SS_PiCi`（插入 `SS_PiCi.` 再出列）。仅当已有**不同**短别名时才跳过表名本身（`FROM t AS a` 只出 `a`）。
+- JOIN ON / `AND KC`：ON 条件是表达式不是下一张表，上下文用 WhereClause 出别名；`KC.` 仍走 MemberAccess。相关子查询 `Y_GHSID = KC.` 要收外层 FROM 别名；光标落在外层 FROM 的派生表里时不能把 KCZ/后续 JOIN 漏进内层。悬停 `KC` / `KC.h_id`（如 cartshuliang 标量子查询）走 `locals.Aliases`，不能只扫当前 FROM 表段。`ON … and g` 单字母不当 GROUP/JOIN 关键字，要出 `GHS`；`in`/`gr`/`wh` 仍走 FromClause。
 
 ## 设置项
 

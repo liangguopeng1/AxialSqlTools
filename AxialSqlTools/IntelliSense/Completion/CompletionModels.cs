@@ -31,6 +31,10 @@ namespace AxialSqlTools
         {
             public string Name;
             public List<string> ColumnNames = new List<string>();
+            /// <summary>与 ColumnNames 对齐的 SELECT 列表原文（如 sum(stock) / sum(stock) AS stock）。</summary>
+            public List<string> ColumnSqls = new List<string>();
+            /// <summary>派生表 / CTE 定义原文（子查询）。</summary>
+            public string DefinitionSql;
         }
 
         public class LocalTableInfo
