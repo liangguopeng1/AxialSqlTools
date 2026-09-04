@@ -100,13 +100,14 @@ namespace AxialSqlTools.IntelliSense
         private static readonly uint SsmsProcessId = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
         private static bool _appHooksRegistered;
 
-        /// <summary>SSMS 是否仍是前台进程；切到其他应用时应关掉弹框。</summary>
+        /// <summary>SSMS 是否仍是前台进程；切到其他应用时应关掉弹框。
+        /// 右键菜单弹出瞬间 GetForegroundWindow 可能短暂为 0，当作仍在前台以免误关。</summary>
         public static bool IsSsmsForeground()
         {
             try
             {
                 IntPtr fg = GetForegroundWindow();
-                if (fg == IntPtr.Zero) return false;
+                if (fg == IntPtr.Zero) return true;
                 GetWindowThreadProcessId(fg, out uint pid);
                 return pid == SsmsProcessId;
             }
@@ -134,9 +135,8 @@ namespace AxialSqlTools.IntelliSense
                 if (app == null) return;
                 app.Deactivated += (s, e) =>
                 {
-                    if (_contextMenuOpen || DateTime.UtcNow < _suppressDeactivateCloseUntil)
-                        return;
-                    try { Close(); } catch { }
+                    // WPF ContextMenu / 右键会让 Application 失活，但 SSMS 仍在前台；仅切走应用时关。
+                    try { CloseIfAppDeactivated(); } catch { }
                 };
                 app.Exit += (s, e) =>
                 {
@@ -168,7 +168,7 @@ namespace AxialSqlTools.IntelliSense
             if (!_isOpen) return;
             bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
             _wasMouseLeftDown = down;
-            if (_contextMenuOpen || _isResizing) return;
+            if (_contextMenuOpen || _isResizing || IsSecondaryMouseButtonDown()) return;
             if (!IsSsmsForeground())
             {
                 Close();
@@ -179,11 +179,13 @@ namespace AxialSqlTools.IntelliSense
             CloseFromOutsideClick();
         }
 
-        /// <summary>右键菜单 / 鼠标仍在弹框上：焦点闪一下不要关。点编辑器不走这里。</summary>
+        /// <summary>右键菜单 / 鼠标仍在弹框上 / 右中键按下：焦点闪一下不要关。点编辑器不走这里。</summary>
         public static bool ShouldIgnoreOutsideClose()
         {
             if (!_isOpen) return false;
             if (_contextMenuOpen || _isResizing) return true;
+            if (DateTime.UtcNow < _suppressDeactivateCloseUntil) return true;
+            if (IsSecondaryMouseButtonDown()) return true;
             if (IsMouseOverPopup()) return true;
             return false;
         }
@@ -201,6 +203,14 @@ namespace AxialSqlTools.IntelliSense
         private static extern short GetAsyncKeyState(int vKey);
 
         private const int VK_LBUTTON = 0x01;
+        private const int VK_RBUTTON = 0x02;
+        private const int VK_MBUTTON = 0x04;
+
+        private static bool IsSecondaryMouseButtonDown()
+        {
+            return (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0
+                || (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+        }
 
         [StructLayout(LayoutKind.Sequential)]
         private struct POINT
@@ -345,6 +355,11 @@ namespace AxialSqlTools.IntelliSense
             _window.PreviewMouseDown += (s, e) =>
             {
                 Pin();
+                if (e.ChangedButton == MouseButton.Right || e.ChangedButton == MouseButton.Middle)
+                {
+                    NoteInsideSecondaryClick();
+                    return;
+                }
                 try { _window.Activate(); } catch { }
             };
             _window.Deactivated += OnWindowDeactivated;
@@ -367,6 +382,12 @@ namespace AxialSqlTools.IntelliSense
         {
             if (box == null) return;
             box.ContextMenu = CreateCopyContextMenu(box);
+            box.ContextMenuOpening += (s, e) =>
+            {
+                _contextMenuOpen = true;
+                _suppressDeactivateCloseUntil = DateTime.UtcNow.AddSeconds(30);
+                Pin();
+            };
         }
 
         private static ContextMenu CreateCopyContextMenu(TextBox box)
@@ -411,24 +432,31 @@ namespace AxialSqlTools.IntelliSense
             _suppressDeactivateCloseUntil = DateTime.UtcNow.AddMilliseconds(400);
         }
 
+        /// <summary>弹框内右键/中键：在 ContextMenu.Opened 之前就会 Deactivated，先压住关闭。</summary>
+        private static void NoteInsideSecondaryClick()
+        {
+            Pin();
+            _suppressDeactivateCloseUntil = DateTime.UtcNow.AddSeconds(2);
+        }
+
         private static void OnWindowDeactivated(object sender, EventArgs e)
         {
             if (!_isOpen || _isResizing) return;
-            if (_contextMenuOpen) return;
-            _window.Dispatcher.BeginInvoke(new Action(() =>
+            if (ShouldIgnoreOutsideClose()) return;
+            var window = _window;
+            if (window == null) return;
+            window.Dispatcher.BeginInvoke(new Action(() =>
             {
                 if (!_isOpen || _isResizing) return;
-                if (_contextMenuOpen) return;
+                if (ShouldIgnoreOutsideClose()) return;
                 if (!IsSsmsForeground())
                 {
                     Close();
                     return;
                 }
-                if (IsMouseOverPopup()) return;
                 if (_window != null && _window.IsActive) return;
-                // 刚弹出未钉住：忽略 Show 引起的闪失活。钉住后鼠标已离开 = 点了编辑器，第一下就关。
-                if (!_isPinned && DateTime.UtcNow < _suppressDeactivateCloseUntil)
-                    return;
+                // 右键菜单 HWND 不在弹框子树里，IsMouseOverPopup 会是 false；抑制窗口覆盖这段竞态。
+                // 钉住后点编辑器仍由 PollOutsideClick 左键检测关闭。
                 CloseFromOutsideClick();
             }), DispatcherPriority.Input);
         }
@@ -451,7 +479,16 @@ namespace AxialSqlTools.IntelliSense
             const int WM_ENTERSIZEMOVE = 0x0231;
             const int WM_EXITSIZEMOVE = 0x0232;
             const int WM_NCLBUTTONDOWN = 0x00A1;
-            if (msg == WM_ENTERSIZEMOVE || msg == WM_NCLBUTTONDOWN)
+            const int WM_RBUTTONDOWN = 0x0204;
+            const int WM_NCRBUTTONDOWN = 0x00A4;
+            const int WM_MBUTTONDOWN = 0x0207;
+            const int WM_NCMBUTTONDOWN = 0x00A7;
+            if (msg == WM_RBUTTONDOWN || msg == WM_NCRBUTTONDOWN
+                || msg == WM_MBUTTONDOWN || msg == WM_NCMBUTTONDOWN)
+            {
+                NoteInsideSecondaryClick();
+            }
+            else if (msg == WM_ENTERSIZEMOVE || msg == WM_NCLBUTTONDOWN)
             {
                 _isResizing = true;
                 Pin();
