@@ -194,6 +194,17 @@
         </Strings>
       </Button>
 
+      <Button guid="guidAxialSqlToolsPackageCmdSet" id="AxialRefreshIntelliSenseCacheCommand" priority="0x0015" type="Button">
+        <Parent guid="guidAxialSqlToolsPackageCmdSet" id="AxialToolsSubMenuGroup_Script2" />
+        <Icon guid="guidRefresh" id="bmpRefresh" />
+        <CommandFlag>IconAndText</CommandFlag>
+        <Strings>
+          <ButtonText>Refresh Cache</ButtonText>
+          <LocCanonicalName>AxialSqlTools.RefreshIntelliSenseCache</LocCanonicalName>
+          <ToolTipText>重新从服务器拉取当前查询标签页所连接服务器的 IntelliSense 缓存</ToolTipText>
+        </Strings>
+      </Button>
+
       <Button guid="guidAxialSqlToolsPackageCmdSet" id="AxialSelectCurrentStatementCommand" priority="0x0020" type="Button">
         <Parent guid="guidAxialSqlToolsPackageCmdSet" id="AxialToolsSubMenuGroup_Script" />
         <Icon guid="guidSelect" id="bmpSelect" />
@@ -420,6 +431,7 @@
       <IDSymbol name="AxialToggleBlockCommentCommand" value="4155" />
 
       <IDSymbol name="AxialSnippetManagerCommand" value="4153" />
+      <IDSymbol name="AxialRefreshIntelliSenseCacheCommand" value="4157" />
 
     </GuidSymbol>
 

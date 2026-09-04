@@ -63,15 +63,22 @@ namespace AxialSqlTools.IntelliSense
                 {
                     bool loaded = MetadataCatalogService.Instance.IsServerLoadedInMemory(server);
                     bool needPull = ShouldSilentRefresh(server);
-                    Logger.Info("EnsureServerCache {0} loaded={1} needPull={2}", server, loaded, needPull);
+                    Logger.Info("EnsureServerCache {0} loaded={1} needPull={2} source={3}",
+                        server, loaded, needPull, needPull ? "server" : "disk");
                     if (loaded && !needPull)
                         return;
                     await RunWithProgressWindowAsync(server, async progress =>
                     {
                         if (!MetadataCatalogService.Instance.IsServerLoadedInMemory(server))
+                        {
+                            Logger.Info("IntelliSense cache load from disk {0}", server);
                             MetadataCatalogService.Instance.LoadServerFromDisk(server, progress);
+                        }
                         if (ShouldSilentRefresh(server))
+                        {
+                            Logger.Info("IntelliSense cache load from server {0}", server);
                             await StartOrAttach(captured, progress).ConfigureAwait(false);
+                        }
                     }).ConfigureAwait(false);
                 }
                 catch (Exception ex)
@@ -104,14 +111,22 @@ namespace AxialSqlTools.IntelliSense
                 {
                     bool loaded = MetadataCatalogService.Instance.IsServerLoadedInMemory(name);
                     bool needPull = ShouldSilentRefresh(name);
+                    Logger.Info("EnsureLinkedServerCache {0} loaded={1} needPull={2} source={3}",
+                        name, loaded, needPull, needPull ? "server" : "disk");
                     if (loaded && !needPull)
                         return;
                     await RunWithProgressWindowAsync(name, async progress =>
                     {
                         if (!MetadataCatalogService.Instance.IsServerLoadedInMemory(name))
+                        {
+                            Logger.Info("IntelliSense cache load from disk {0}", name);
                             MetadataCatalogService.Instance.LoadServerFromDisk(name, progress);
+                        }
                         if (ShouldSilentRefresh(name))
+                        {
+                            Logger.Info("IntelliSense cache load from server {0}", name);
                             await StartLinkedOrAttach(captured, name, progress).ConfigureAwait(false);
+                        }
                     }).ConfigureAwait(false);
                 }
                 catch (Exception ex)
@@ -162,6 +177,7 @@ namespace AxialSqlTools.IntelliSense
         {
             if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName))
                 throw new ArgumentException("未连接到服务器。");
+            Logger.Info("IntelliSense cache load from server {0} (manual refresh)", connInfo.ServerName);
             await RunWithProgressWindowAsync(connInfo.ServerName, progress => RefreshServerAsync(connInfo, progress)).ConfigureAwait(false);
         }
 
@@ -199,41 +215,23 @@ namespace AxialSqlTools.IntelliSense
             }
         }
 
-        /// <summary>
-        /// 7 天整机刷新看 meta.IndexedAtUtc（与各库 BuiltAt 在整机拉取结束时一起写）。
-        /// meta 缺失时回退看各库 BuiltAt，避免误当过期整机重拉。
-        /// </summary>
+        /// <summary>7 天整机刷新只看该服务器 intellisense-cache/meta.json 的 IndexedAtUtc。</summary>
         private static bool ShouldSilentRefresh(string serverName)
         {
             int days = UiSettingsStore.GetIntelliSenseSettings().cacheRefreshDays;
             if (days <= 0)
                 return false;
-            DateTime stamp;
-            if (TryGetMetaIndexedAtUtc(serverName, out stamp)
-                || MetadataCacheStore.TryGetOldestCatalogBuiltAtUtc(serverName, out stamp))
-                return (DateTime.UtcNow - stamp) > TimeSpan.FromDays(days);
-            return true;
-        }
-
-        private static bool TryGetMetaIndexedAtUtc(string serverName, out DateTime indexedUtc)
-        {
-            indexedUtc = DateTime.MinValue;
             IntelliSenseCacheMeta meta;
             if (!MetadataCacheStore.TryGetMeta(serverName, out meta) || meta == null)
-                return false;
-            DateTime indexed = meta.IndexedAtUtc;
-            if (indexed == DateTime.MinValue)
-                return false;
-            if (indexed.Kind == DateTimeKind.Local)
-                indexed = indexed.ToUniversalTime();
-            else if (indexed.Kind == DateTimeKind.Unspecified)
-                indexed = DateTime.SpecifyKind(indexed, DateTimeKind.Utc);
-            indexedUtc = indexed;
-            return true;
+                return true;
+            DateTimeOffset indexed = meta.IndexedAtUtc;
+            if (indexed == DateTimeOffset.MinValue)
+                return true;
+            return (DateTimeOffset.UtcNow - indexed) > TimeSpan.FromDays(days);
         }
 
         /// <summary>
-        /// 只重建指定库（执行 DDL 后）。只更新这些库的 BuiltAt，不改 meta.IndexedAtUtc。
+        /// 只重建指定库（执行 DDL 后）。不改 meta.IndexedAtUtc，不影响 7 天整机刷新。
         /// </summary>
         public void RefreshDatabases(ScriptFactoryAccess.ConnectionInfo connInfo, IList<string> databases)
         {
@@ -367,13 +365,14 @@ namespace AxialSqlTools.IntelliSense
                 MetadataCatalogService.Instance.PutLinkedServers(server, linkedServers);
                 int total = databases.Count;
                 int completed = 0;
+                Logger.Info("IntelliSense cache load from server {0} databases={1}", server, total);
                 job.Report(new IndexBuildProgress
                 {
                     ServerName = server,
-                    Title = "正在拉取 IntelliSense 缓存",
+                    Title = "从服务器加载 IntelliSense 缓存",
                     Completed = 0,
                     Total = total,
-                    Message = total == 0 ? "没有可访问的用户库" : "开始索引 " + total + " 个库（并行 " + MaxParallelDatabases + "）"
+                    Message = total == 0 ? "没有可访问的用户库" : "服务器  0/" + total + "  开始索引（并行 " + MaxParallelDatabases + "）"
                 });
 
                 var options = new ParallelOptions
@@ -391,7 +390,7 @@ namespace AxialSqlTools.IntelliSense
                         CurrentItem = database,
                         Completed = started,
                         Total = total,
-                        Message = started + "/" + total + "  " + database
+                        Message = "服务器  " + started + "/" + total + "  " + database
                     });
                     try
                     {
@@ -418,14 +417,14 @@ namespace AxialSqlTools.IntelliSense
                         CurrentItem = database,
                         Completed = done,
                         Total = total,
-                        Message = done + "/" + total + "  " + database
+                        Message = "服务器  " + done + "/" + total + "  " + database
                     });
                 });
 
                 MetadataCacheStore.SaveMeta(server, new IntelliSenseCacheMeta
                 {
                     ServerName = server,
-                    IndexedAtUtc = DateTime.UtcNow,
+                    IndexedAtUtc = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(8)),
                     Databases = databases,
                     LinkedServers = linkedServers,
                     ConnectionFingerprint = ScriptFactoryAccess.BuildConnectionFingerprint(connInfo)
@@ -436,7 +435,7 @@ namespace AxialSqlTools.IntelliSense
                     ServerName = server,
                     Completed = total,
                     Total = total,
-                    Message = "完成（" + total + " 个库）"
+                    Message = "服务器  完成（" + total + " 个库）"
                 });
             }
             catch (OperationCanceledException)
@@ -501,10 +500,10 @@ namespace AxialSqlTools.IntelliSense
                 job.Report(new IndexBuildProgress
                 {
                     ServerName = linkedServer,
-                    Title = "正在拉取链接服务器缓存",
+                    Title = "从服务器加载链接服务器缓存",
                     Completed = 0,
                     Total = total,
-                    Message = total == 0 ? "链接服务器没有可访问的库" : "开始索引链接服务器 " + total + " 个库"
+                    Message = total == 0 ? "链接服务器没有可访问的库" : "服务器  0/" + total + "  开始索引"
                 });
                 var options = new ParallelOptions
                 {
@@ -539,13 +538,13 @@ namespace AxialSqlTools.IntelliSense
                         CurrentItem = database,
                         Completed = done,
                         Total = total,
-                        Message = done + "/" + total + "  " + database
+                        Message = "服务器  " + done + "/" + total + "  " + database
                     });
                 });
                 MetadataCacheStore.SaveMeta(linkedServer, new IntelliSenseCacheMeta
                 {
                     ServerName = linkedServer,
-                    IndexedAtUtc = DateTime.UtcNow,
+                    IndexedAtUtc = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(8)),
                     Databases = databases,
                     ConnectionFingerprint = "linked:" + (viaConn?.ServerName ?? string.Empty)
                 });

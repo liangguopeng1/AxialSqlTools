@@ -1,7 +1,6 @@
 using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Text;
 
@@ -10,7 +9,8 @@ namespace AxialSqlTools.IntelliSense
     internal sealed class IntelliSenseCacheMeta
     {
         public string ServerName { get; set; }
-        public DateTime IndexedAtUtc { get; set; }
+        /// <summary>整机索引完成时间，磁盘按 GMT+8（+08:00）写入。</summary>
+        public DateTimeOffset IndexedAtUtc { get; set; }
         public List<string> Databases { get; set; } = new List<string>();
         public string ConnectionFingerprint { get; set; }
         /// <summary>本机 sys.servers 中 is_linked=1 的名称，供 FROM 补全。远程库目录另按链接服务器名分目录缓存。</summary>
@@ -102,70 +102,6 @@ namespace AxialSqlTools.IntelliSense
             }
         }
 
-        /// <summary>
-        /// 各库 {database}.json 里最早的 BuiltAt（UTC）。没有可读的库缓存时返回 false。
-        /// meta.json 缺失时，7 天静默刷新回退看这个。
-        /// </summary>
-        public static bool TryGetOldestCatalogBuiltAtUtc(string serverName, out DateTime oldestUtc)
-        {
-            oldestUtc = DateTime.MinValue;
-            DateTime? oldest = null;
-            foreach (string path in ListCatalogFiles(serverName))
-            {
-                DateTime built;
-                if (!TryPeekCatalogBuiltAtUtc(path, out built))
-                    continue;
-                if (oldest == null || built < oldest.Value)
-                    oldest = built;
-            }
-            if (oldest == null)
-                return false;
-            oldestUtc = oldest.Value;
-            return true;
-        }
-
-        /// <summary>只读文件头里的 BuiltAt，不反序列化整份目录（库 json 可能很大）。</summary>
-        public static bool TryPeekCatalogBuiltAtUtc(string path, out DateTime builtAtUtc)
-        {
-            builtAtUtc = DateTime.MinValue;
-            if (string.IsNullOrEmpty(path) || !File.Exists(path))
-                return false;
-            try
-            {
-                string head;
-                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                {
-                    byte[] buf = new byte[1024];
-                    int n = fs.Read(buf, 0, buf.Length);
-                    if (n <= 0)
-                        return false;
-                    head = Encoding.UTF8.GetString(buf, 0, n);
-                }
-                int idx = head.IndexOf("\"BuiltAt\"", StringComparison.OrdinalIgnoreCase);
-                if (idx < 0)
-                    return false;
-                int colon = head.IndexOf(':', idx);
-                if (colon < 0)
-                    return false;
-                int q1 = head.IndexOf('"', colon);
-                if (q1 < 0)
-                    return false;
-                int q2 = head.IndexOf('"', q1 + 1);
-                if (q2 < 0)
-                    return false;
-                string raw = head.Substring(q1 + 1, q2 - q1 - 1);
-                DateTimeOffset dto;
-                if (!DateTimeOffset.TryParse(raw, null, DateTimeStyles.RoundtripKind, out dto))
-                    return false;
-                builtAtUtc = dto.UtcDateTime;
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
         public static void SaveCatalog(string serverName, string database, MetadataCatalog catalog)
         {
             if (string.IsNullOrWhiteSpace(serverName) || string.IsNullOrWhiteSpace(database) || catalog == null)
@@ -202,7 +138,7 @@ namespace AxialSqlTools.IntelliSense
             }
         }
 
-        /// <summary>删除服务器 meta.json（库列表/链接服务器名；过期判断会回退看各库 BuiltAt）。</summary>
+        /// <summary>删除服务器 meta.json（库列表/链接服务器名；7 天过期看 IndexedAtUtc）。</summary>
         public static void DeleteMeta(string serverName)
         {
             if (string.IsNullOrWhiteSpace(serverName))

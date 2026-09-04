@@ -32,7 +32,7 @@
             <TextBlock x:Name="TitleText"
                        Grid.Row="0"
                        FontWeight="SemiBold"
-                       Text="正在构建 IntelliSense 缓存"
+                       Text="加载 IntelliSense 缓存"
                        TextWrapping="Wrap"/>
             <ProgressBar x:Name="Bar"
                          Grid.Row="1"

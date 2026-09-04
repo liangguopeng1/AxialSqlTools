@@ -344,6 +344,7 @@ namespace AxialSqlTools
                 if (databases != null)
                 {
                     int total = databases.Count;
+                    Logger.Info("IntelliSense cache load from disk {0} databases={1}", serverName, total);
                     int done = 0;
                     foreach (string db in databases)
                     {
@@ -354,11 +355,11 @@ namespace AxialSqlTools
                         progress?.Report(new IndexBuildProgress
                         {
                             ServerName = serverName,
-                            Title = "正在加载缓存到内存",
+                            Title = "从磁盘加载 IntelliSense 缓存",
                             CurrentItem = db,
                             Completed = done,
                             Total = total,
-                            Message = done + "/" + total + "  " + db
+                            Message = "磁盘  " + done + "/" + total + "  " + db
                         });
                     }
                     _memoryLoadedServers[serverName] = 0;
@@ -367,6 +368,7 @@ namespace AxialSqlTools
                 int fileTotal = 0;
                 foreach (string path in MetadataCacheStore.ListCatalogFiles(serverName))
                     fileTotal++;
+                Logger.Info("IntelliSense cache load from disk {0} files={1}", serverName, fileTotal);
                 int fileDone = 0;
                 foreach (string path in MetadataCacheStore.ListCatalogFiles(serverName))
                 {
@@ -378,11 +380,11 @@ namespace AxialSqlTools
                     progress?.Report(new IndexBuildProgress
                     {
                         ServerName = serverName,
-                        Title = "正在加载缓存到内存",
+                        Title = "从磁盘加载 IntelliSense 缓存",
                         CurrentItem = db,
                         Completed = fileDone,
                         Total = fileTotal,
-                        Message = fileDone + "/" + fileTotal + "  " + db
+                        Message = "磁盘  " + fileDone + "/" + fileTotal + "  " + db
                     });
                 }
                 _memoryLoadedServers[serverName] = 0;

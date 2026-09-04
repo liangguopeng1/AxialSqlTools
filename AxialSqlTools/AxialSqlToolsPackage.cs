@@ -396,6 +396,7 @@ namespace AxialSqlTools
                 await SnippetManagerWindowCommand.InitializeAsync(this);
                 await SelectCurrentStatementCommand.InitializeAsync(this);
                 await ToggleBlockCommentCommand.InitializeAsync(this);
+                await RefreshIntelliSenseCacheCommand.InitializeAsync(this);
 
                 UpdateChecker.ScheduleCheck(this, SettingsManager.GetEnableUpdateChecks());
 
@@ -434,6 +435,7 @@ namespace AxialSqlTools
                 ImageList icons = new ImageList();
                 icons.Images.Add(Resources.script);
                 icons.Images.Add(Resources.open_folder);
+                icons.Images.Add(Resources.refresh);
 
                 m_plugin = new Plugin(application, profferCommands3, icons, oleMenuCommandService, "AxialSqlTools", "Aurora.Connect");
 
@@ -453,6 +455,7 @@ namespace AxialSqlTools
 
                 // Tab History：SSMS 22 经常合并不了新增 vsct 按钮，显式挂到「工具」子菜单（与查询历史同级）
                 EnsureTabHistoryInToolsMenu(commandBar);
+                EnsureRefreshCacheInToolsMenu(commandBar);
 
             }
             catch (Exception ex)
@@ -1540,6 +1543,40 @@ namespace AxialSqlTools
             catch (Exception ex)
             {
                 _logger?.Warn(ex, "Failed to place Tab History into Tools menu.");
+            }
+        }
+
+        private void EnsureRefreshCacheInToolsMenu(CommandBar toolbar)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            try
+            {
+                RemoveCommandBarControlByNames(toolbar,
+                    "AxialSqlTools.RefreshIntelliSenseCache", "Refresh Cache", "刷新缓存");
+                CommandBar toolsMenu = FindToolsSubMenu(toolbar);
+                if (toolsMenu == null)
+                {
+                    _logger?.Warn("Tools submenu not found; Refresh Cache menu item was not registered.");
+                    return;
+                }
+                RemoveCommandBarControlByNames(toolsMenu,
+                    "AxialSqlTools.RefreshIntelliSenseCache", "Refresh Cache", "刷新缓存");
+                var snippet = FindCommandBarControl(toolsMenu, "Snippet Manager", "片段管理器");
+                uint insertPos = snippet != null
+                    ? (uint)(snippet.Index + 1)
+                    : (uint)(toolsMenu.Controls.Count + 1);
+                m_commandRegistry.RegisterCommand(
+                    doBindings: false,
+                    handler: new RefreshIntelliSenseCacheCommandProcessor(m_plugin, this, toolsMenu, insertPos),
+                    onlyToolbar: true,
+                    menuParent: toolsMenu);
+                PlaceControlAfter(toolsMenu,
+                    new[] { "AxialSqlTools.RefreshIntelliSenseCache", "Refresh Cache", "刷新缓存" },
+                    new[] { "Snippet Manager", "片段管理器" });
+            }
+            catch (Exception ex)
+            {
+                _logger?.Warn(ex, "Failed to place Refresh Cache into Tools menu.");
             }
         }
 

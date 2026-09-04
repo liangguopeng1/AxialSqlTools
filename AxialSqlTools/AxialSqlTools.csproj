@@ -110,6 +110,8 @@
     <Compile Include="Commands\RefreshTemplatesCommand.cs" />
     <Compile Include="Commands\ResultGridCommands.cs" />
     <Compile Include="Commands\ScriptSelectedObject.cs" />
+    <Compile Include="Commands\RefreshIntelliSenseCacheCommand.cs" />
+    <Compile Include="Commands\RefreshIntelliSenseCacheCommandProcessor.cs" />
     <Compile Include="Commands\SelectCurrentStatementCommand.cs" />
     <Compile Include="Commands\ToggleBlockCommentCommand.cs" />
     <Compile Include="SnippetManager\SnippetExpansionHelper.cs" />

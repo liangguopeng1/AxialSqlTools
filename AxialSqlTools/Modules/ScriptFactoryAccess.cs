@@ -110,11 +110,21 @@ namespace AxialSqlTools
 
         private static INodeInformation GetSelectedNode(IObjectExplorerService _objectExplorerService)
         {
-            INodeInformation[] nodes;
-            int nodeCount;
-            _objectExplorerService.GetSelectedNodes(out nodeCount, out nodes);
-
-            return (nodeCount > 0 ? nodes[0] : null);
+            if (_objectExplorerService == null)
+                return null;
+            INodeInformation[] nodes = null;
+            int nodeCount = 0;
+            try
+            {
+                _objectExplorerService.GetSelectedNodes(out nodeCount, out nodes);
+            }
+            catch
+            {
+                return null;
+            }
+            if (nodeCount <= 0 || nodes == null || nodes.Length == 0)
+                return null;
+            return nodes[0];
         }
 
         public static List<ConnectionInfo> GetConnectedObjectExplorerSessions()
@@ -124,7 +134,10 @@ namespace AxialSqlTools
 
             try
             {
-                var oeService = (IObjectExplorerService)ServiceCache.ServiceProvider.GetService(typeof(IObjectExplorerService));
+                var provider = ServiceCache.ServiceProvider;
+                if (provider == null)
+                    return results;
+                var oeService = (IObjectExplorerService)provider.GetService(typeof(IObjectExplorerService));
                 if (oeService == null)
                 {
                     return results;
@@ -155,10 +168,14 @@ namespace AxialSqlTools
             }
             catch (Exception)
             {
-                ConnectionInfo selected = GetCurrentConnectionInfoFromObjectExplorer(inMaster: true);
-                if (selected != null && !string.IsNullOrWhiteSpace(selected.ServerName))
+                try
                 {
-                    results.Add(selected);
+                    ConnectionInfo selected = GetCurrentConnectionInfoFromObjectExplorer(inMaster: true);
+                    if (selected != null && !string.IsNullOrWhiteSpace(selected.ServerName))
+                        results.Add(selected);
+                }
+                catch
+                {
                 }
             }
 
@@ -168,7 +185,7 @@ namespace AxialSqlTools
         private static IEnumerable<INodeInformation> EnumerateConnectedRootNodes(IObjectExplorerService oeService)
         {
             TreeView treeView = TryGetObjectExplorerTreeView(oeService);
-            if (treeView != null)
+            if (treeView?.Nodes != null)
             {
                 foreach (TreeNode root in treeView.Nodes)
                 {
@@ -358,15 +375,23 @@ ORDER BY [name];";
 
         public static ConnectionInfo GetCurrentConnectionInfoFromObjectExplorer(bool inMaster = false)
         {
-            var oeService = (IObjectExplorerService)ServiceCache.ServiceProvider.GetService(typeof(IObjectExplorerService));
-            if (oeService == null)
+            try
+            {
+                var provider = ServiceCache.ServiceProvider;
+                if (provider == null)
+                    return null;
+                var oeService = (IObjectExplorerService)provider.GetService(typeof(IObjectExplorerService));
+                if (oeService == null)
+                    return null;
+                var selectedNode = GetSelectedNode(oeService);
+                if (selectedNode == null)
+                    return null;
+                return BuildConnectionInfoFromNode(selectedNode, inMaster);
+            }
+            catch
+            {
                 return null;
-
-            var selectedNode = GetSelectedNode(oeService);
-            if (selectedNode == null)
-                return null;
-
-            return BuildConnectionInfoFromNode(selectedNode, inMaster);
+            }
         }
 
         private static ConnectionInfo BuildConnectionInfoFromNode(INodeInformation selectedNode, bool inMaster)

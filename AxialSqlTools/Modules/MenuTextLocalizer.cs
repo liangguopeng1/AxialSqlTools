@@ -27,6 +27,7 @@ namespace AxialSqlTools
             ("Script Definition to New Window", "Menu_ScriptDefinition"),
             ("Quick Search", "Menu_QuickSearch"),
             ("Snippet Manager", "Menu_SnippetManager"),
+            ("Refresh Cache", "Menu_RefreshIntelliSenseCache"),
             ("Select Current Statement", "Menu_SelectCurrentStatement"),
             ("Toggle Block Comment", "Menu_ToggleBlockComment"),
             ("Query History", "Menu_QueryHistory"),

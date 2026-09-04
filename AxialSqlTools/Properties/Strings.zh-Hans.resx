@@ -62,6 +62,7 @@
   <data name="Menu_ScriptDefinition" xml:space="preserve"><value>脚本定义到新窗口</value></data>
   <data name="Menu_QuickSearch" xml:space="preserve"><value>快速搜索</value></data>
   <data name="Menu_SnippetManager" xml:space="preserve"><value>片段管理器</value></data>
+  <data name="Menu_RefreshIntelliSenseCache" xml:space="preserve"><value>刷新缓存</value></data>
   <data name="Menu_SelectCurrentStatement" xml:space="preserve"><value>选择当前语句</value></data>
   <data name="Menu_SelectCurrentStatement_Tooltip" xml:space="preserve"><value>选中光标处的 SQL 语句（Shift+F5）</value></data>
   <data name="Menu_ToggleBlockComment" xml:space="preserve"><value>切换块注释</value></data>
