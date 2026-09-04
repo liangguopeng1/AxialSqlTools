@@ -78,7 +78,7 @@ namespace AxialSqlTools
                         if (string.IsNullOrEmpty(execPrefix)) execPrefix = rawPrefix;
                         var localEarly = BuildLocalSymbols(script, fullText, caretOffset);
                         if (script != null)
-                            CollectAliases(script, localOffset, localEarly, _lastTokens);
+                            CollectAliases(script, localOffset, localEarly, _lastTokens, fullText, caretOffset);
                         result.Context = CompletionContext.AfterExec;
                         result.Prefix = execPrefix;
                         result.Items = BuildItems(CompletionContext.AfterExec, execPrefix, execNameEarly, localEarly, catalog, settings, connInfo);
@@ -130,7 +130,7 @@ namespace AxialSqlTools
 
                     var tokens = _lastTokens ?? new List<TSqlParserToken>();
                     var local = BuildLocalSymbols(script, fullText, caretOffset);
-                    CollectAliases(script, localOffset, local, tokens);
+                    CollectAliases(script, localOffset, local, tokens, fullText, caretOffset);
 
                     string prefix;
 
@@ -388,21 +388,22 @@ namespace AxialSqlTools
                 if (stmtStart < batchStart) stmtStart = batchStart;
                 if (stmtEnd > batchEnd) stmtEnd = batchEnd;
                 if (stmtEnd < stmtStart) stmtEnd = stmtStart;
-                ExpandBoundsToCoverTopLevelFrom(fullText, caretOffset, ref stmtStart, ref stmtEnd);
+                ExpandBoundsToCoverTopLevelFrom(fullText, caretOffset, batchStart, ref stmtStart, ref stmtEnd);
                 if (stmtStart < batchStart) stmtStart = batchStart;
                 if (stmtEnd > batchEnd) stmtEnd = batchEnd;
                 if (stmtEnd < stmtStart) stmtEnd = stmtStart;
-                // 切完仍过大：再从光标收一刀，防止无分号填充句把 32KB+ 送进解析器。
-                // 只认括号深度 0 的语句起点，避免切到派生表里的 SELECT 而丢掉外层别名。
-                if (stmtEnd - stmtStart > LargeBatchParseChars)
+                // 切完仍过大：只在括号深度 0 再收一刀。光标在相关子查询里时切到内层 SELECT
+                // 会丢掉后面的 FROM … AS KC；没找到顶层语句关键字则保持现状。
+                if (stmtEnd - stmtStart > LargeBatchParseChars
+                    && CountParenDepth(fullText, batchStart, caretOffset) == 0)
                 {
                     int lookFrom = caretOffset - StmtLookbackChars;
                     if (lookFrom < stmtStart) lookFrom = stmtStart;
                     lookFrom = LineStartAt(fullText, lookFrom);
                     int tighter = FindLineStartStmtBefore(fullText, lookFrom, caretOffset, fullText.Length);
-                    if (tighter > stmtStart && tighter <= caretOffset)
+                    if (tighter >= 0 && tighter > stmtStart && tighter <= caretOffset)
                         stmtStart = tighter;
-                    ExpandBoundsToCoverTopLevelFrom(fullText, caretOffset, ref stmtStart, ref stmtEnd);
+                    ExpandBoundsToCoverTopLevelFrom(fullText, caretOffset, batchStart, ref stmtStart, ref stmtEnd);
                     if (stmtStart < batchStart) stmtStart = batchStart;
                     if (stmtEnd > batchEnd) stmtEnd = batchEnd;
                 }
@@ -474,12 +475,13 @@ namespace AxialSqlTools
 
             /// <summary>
             /// 回看行首语句关键字。括号内的 SELECT（派生表/子查询）不算当前句，
-            /// 否则大脚本会切到内层 SELECT，外层 AS CARTNEW 进不了切片。
+            /// 否则大脚本会切到内层 SELECT，外层 AS CARTNEW / KC 进不了切片。
+            /// 找不到则返回 -1，调用方不得把 rangeStart 当成语句起点前移。
             /// </summary>
             private static int FindLineStartStmtBefore(string text, int rangeStart, int probe, int n)
             {
-                if (string.IsNullOrEmpty(text) || probe <= rangeStart) return rangeStart;
-                int depth = 0;
+                if (string.IsNullOrEmpty(text) || probe <= rangeStart) return -1;
+                int depth = CountParenDepth(text, rangeStart, probe);
                 for (int i = probe - 1; i >= rangeStart; i--)
                 {
                     char c = text[i];
@@ -502,58 +504,198 @@ namespace AxialSqlTools
                             return j;
                     }
                 }
-                return rangeStart;
+                return -1;
             }
 
-            /// <summary>切片必须盖住当前查询顶层 FROM，否则 SELECT 列表/WHERE 里的 CARTNEW 对不上别名定义。</summary>
-            private static void ExpandBoundsToCoverTopLevelFrom(string text, int caret, ref int stmtStart, ref int stmtEnd)
+            /// <summary>切片必须盖住当前查询及外层 FROM，否则 SELECT 列表/WHERE 里的 KC、CARTNEW 对不上别名定义。</summary>
+            private static void ExpandBoundsToCoverTopLevelFrom(string text, int caret, int topLevelOrigin, ref int stmtStart, ref int stmtEnd)
             {
                 if (string.IsNullOrEmpty(text)) return;
                 int n = text.Length;
-                int from = FindTopLevelFrom(text, caret, stmtStart, stmtEnd);
-                if (from < 0)
+                if (topLevelOrigin < 0) topLevelOrigin = 0;
+                int searchFrom = topLevelOrigin;
+                if (caret - searchFrom > LargeBatchLookbackChars)
                 {
-                    int lookBack = caret - StmtLookbackChars;
-                    if (lookBack < 0) lookBack = 0;
-                    int lookAhead = caret + StmtLookAheadChars;
-                    if (lookAhead > n) lookAhead = n;
-                    from = FindTopLevelFrom(text, caret, lookBack, lookAhead);
+                    int clipped = LineStartAt(text, caret - LargeBatchLookbackChars);
+                    if (clipped > searchFrom && CountParenDepth(text, topLevelOrigin, clipped) == 0)
+                        searchFrom = clipped;
                 }
-                if (from < 0) return;
-                if (from < stmtStart) stmtStart = LineStartAt(text, from);
-                int regionEnd = ScanTopLevelFromRegionEnd(text, from, n);
-                if (regionEnd > stmtEnd) stmtEnd = regionEnd;
+                int searchTo = caret + StmtLookAheadChars;
+                if (stmtEnd > searchTo) searchTo = stmtEnd;
+                if (searchTo > n) searchTo = n;
+                int from = FindTopLevelFrom(text, caret, searchFrom, searchTo);
+                if (from >= 0 && from <= caret && from < stmtStart)
+                    stmtStart = LineStartAt(text, from);
+                if (from >= 0)
+                {
+                    int regionEnd = ScanTopLevelFromRegionEnd(text, from, n);
+                    if (regionEnd > stmtEnd) stmtEnd = regionEnd;
+                }
+                int pos = caret;
+                for (int level = 0; level < 6; level++)
+                {
+                    int open = FindUnmatchedOpenParen(text, searchFrom, pos);
+                    if (open < 0) break;
+                    int sel = FindSelectBefore(text, open, searchFrom);
+                    int parentFrom = sel >= 0 ? FindFromAfterSelectInText(text, sel, n) : -1;
+                    if (parentFrom < 0)
+                        parentFrom = FindTopLevelFrom(text, open, searchFrom, searchTo);
+                    if (parentFrom >= 0)
+                    {
+                        if (parentFrom <= caret && parentFrom < stmtStart)
+                            stmtStart = LineStartAt(text, parentFrom);
+                        int pend = ScanTopLevelFromRegionEnd(text, parentFrom, n);
+                        if (pend > stmtEnd) stmtEnd = pend;
+                    }
+                    pos = open;
+                }
             }
 
             private static int FindTopLevelFrom(string text, int caret, int from, int to)
             {
+                if (string.IsNullOrEmpty(text)) return -1;
                 if (to > text.Length) to = text.Length;
                 if (from < 0) from = 0;
                 if (to <= from) return -1;
                 int probe = caret;
                 if (probe < from) probe = from;
                 if (probe > to) probe = to;
-                int depth = 0;
+                int targetDepth = CountParenDepth(text, from, probe);
+                int backDepth = targetDepth;
                 for (int i = probe - 1; i >= from; i--)
+                {
+                    char c = text[i];
+                    if (c == ')') { backDepth++; continue; }
+                    if (c == '(') { if (backDepth > 0) backDepth--; continue; }
+                    if (backDepth != targetDepth) continue;
+                    if (KeywordAt(text, i, text.Length, "FROM"))
+                        return i;
+                }
+                int fwdDepth = targetDepth;
+                for (int i = probe; i < to; i++)
+                {
+                    char c = text[i];
+                    if (c == '(') { fwdDepth++; continue; }
+                    if (c == ')') { if (fwdDepth > 0) fwdDepth--; continue; }
+                    if (fwdDepth != targetDepth) continue;
+                    if (KeywordAt(text, i, text.Length, "FROM"))
+                        return i;
+                }
+                return -1;
+            }
+
+            private static int FindUnmatchedOpenParen(string text, int rangeStart, int pos)
+            {
+                if (string.IsNullOrEmpty(text) || pos <= rangeStart) return -1;
+                int depth = 0;
+                for (int i = pos - 1; i >= rangeStart; i--)
+                {
+                    char c = text[i];
+                    if (c == ')') { depth++; continue; }
+                    if (c == '(')
+                    {
+                        if (depth > 0) depth--;
+                        else return i;
+                    }
+                }
+                return -1;
+            }
+
+            private static int FindSelectBefore(string text, int pos, int rangeStart)
+            {
+                if (string.IsNullOrEmpty(text) || pos <= rangeStart) return -1;
+                int depth = 0;
+                for (int i = pos - 1; i >= rangeStart; i--)
                 {
                     char c = text[i];
                     if (c == ')') { depth++; continue; }
                     if (c == '(') { if (depth > 0) depth--; continue; }
                     if (depth != 0) continue;
-                    if (KeywordAt(text, i, text.Length, "FROM"))
-                        return i;
-                }
-                depth = 0;
-                for (int i = probe; i < to; i++)
-                {
-                    char c = text[i];
-                    if (c == '(') { depth++; continue; }
-                    if (c == ')') { if (depth > 0) depth--; continue; }
-                    if (depth != 0) continue;
-                    if (KeywordAt(text, i, text.Length, "FROM"))
+                    if (KeywordAt(text, i, text.Length, "SELECT"))
                         return i;
                 }
                 return -1;
+            }
+
+            private static int FindFromAfterSelectInText(string text, int selectAt, int n)
+            {
+                if (string.IsNullOrEmpty(text) || selectAt < 0) return -1;
+                if (n > text.Length) n = text.Length;
+                int depth = 0;
+                int i = selectAt;
+                while (i < n)
+                {
+                    char c = text[i];
+                    if (c == '(') { depth++; i++; continue; }
+                    if (c == ')') { if (depth > 0) depth--; i++; continue; }
+                    if (depth == 0 && KeywordAt(text, i, n, "FROM"))
+                        return i;
+                    if (depth == 0 && (KeywordAt(text, i, n, "WHERE") || KeywordAt(text, i, n, "GROUP")
+                        || KeywordAt(text, i, n, "ORDER") || KeywordAt(text, i, n, "HAVING")
+                        || KeywordAt(text, i, n, "UNION")))
+                        return -1;
+                    i++;
+                }
+                return -1;
+            }
+
+            /// <summary>from 到 to（不含）之间未闭合的 '(' 数量；跳过字符串/注释。</summary>
+            private static int CountParenDepth(string text, int from, int to)
+            {
+                if (string.IsNullOrEmpty(text) || to <= from) return 0;
+                int n = text.Length;
+                if (from < 0) from = 0;
+                if (to > n) to = n;
+                int depth = 0;
+                bool inLine = false, inBlock = false, inStr = false;
+                int i = from;
+                while (i < to)
+                {
+                    char c = text[i];
+                    char next = i + 1 < n ? text[i + 1] : '\0';
+                    if (inLine)
+                    {
+                        if (c == '\n' || c == '\r') inLine = false;
+                        i++;
+                        continue;
+                    }
+                    if (inBlock)
+                    {
+                        if (c == '*' && next == '/') { inBlock = false; i += 2; continue; }
+                        i++;
+                        continue;
+                    }
+                    if (inStr)
+                    {
+                        if (c == '\'')
+                        {
+                            if (next == '\'') i += 2;
+                            else { inStr = false; i++; }
+                            continue;
+                        }
+                        i++;
+                        continue;
+                    }
+                    if (c == '-' && next == '-') { inLine = true; i += 2; continue; }
+                    if (c == '/' && next == '*') { inBlock = true; i += 2; continue; }
+                    if (c == '\'') { inStr = true; i++; continue; }
+                    if ((c == 'N' || c == 'n') && next == '\'')
+                    {
+                        bool identBefore = i > 0 && (char.IsLetterOrDigit(text[i - 1]) || text[i - 1] == '_');
+                        if (!identBefore) { inStr = true; i += 2; continue; }
+                    }
+                    if (c == '[')
+                    {
+                        i++;
+                        while (i < to && text[i] != ']') i++;
+                        if (i < to) i++;
+                        continue;
+                    }
+                    if (c == '(') depth++;
+                    else if (c == ')' && depth > 0) depth--;
+                    i++;
+                }
+                return depth;
             }
 
             private static int ScanTopLevelFromRegionEnd(string text, int fromKw, int n)
@@ -665,10 +807,12 @@ namespace AxialSqlTools
                     if (ch == ';' && depth == 0) { scanFrom = k + 1; break; }
                 }
                 // 无分号的大窗口不要从 256KB 外正向扫：ScriptDOM 只会吃第一句，WHERE k. 会丢别名。
+                // 裁剪点落在括号内时不要前移，否则会把 FROM … AS KC 裁掉。
                 if (probe - scanFrom > StmtLookbackChars)
                 {
                     int clipped = LineStartAt(text, probe - StmtLookbackChars);
-                    if (clipped > scanFrom) scanFrom = clipped;
+                    if (clipped > scanFrom && CountParenDepth(text, scanFrom, clipped) == 0)
+                        scanFrom = clipped;
                 }
                 int lineStmt = FindLineStartStmtBefore(text, scanFrom, probe, n);
                 if (lineStmt > scanFrom) scanFrom = lineStmt;
@@ -953,6 +1097,27 @@ namespace AxialSqlTools
                 int j = afterWith;
                 while (j < n && char.IsWhiteSpace(text[j])) j++;
                 return j < n && text[j] == '(';
+            }
+
+            private static void TokenizeNoCache(string slice, out List<TSqlParserToken> tokens)
+            {
+                tokens = new List<TSqlParserToken>();
+                if (string.IsNullOrEmpty(slice)) return;
+                lock (ParseGate)
+                {
+                    try
+                    {
+                        using (var reader = new StringReader(slice))
+                        {
+                            var ts = SharedParser.GetTokenStream(reader, out var _);
+                            tokens = ts?.ToList() ?? new List<TSqlParserToken>();
+                        }
+                    }
+                    catch
+                    {
+                        tokens = new List<TSqlParserToken>();
+                    }
+                }
             }
 
             internal static void GetTokensForSlice(string slice, out List<TSqlParserToken> tokens)

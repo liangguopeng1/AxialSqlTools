@@ -728,18 +728,18 @@ $rMb2 = $null
 $qiMb1 = $null
 $qiMb2 = $null
 
-# 大切片不能切到派生表内层 SELECT，否则外层 AS CARTNEW 悬停/补全都会丢
-$innerCart = New-Object System.Text.StringBuilder
-for ($i = 0; $i -lt 5000; $i++) { [void]$innerCart.AppendLine('AND 1=1') }
+[void]$pad.Clear()
+$pad.Length = 0
+for ($i = 0; $i -lt 5000; $i++) { [void]$pad.AppendLine('AND 1=1') }
 $cartSql = @"
 SELECT CARTNEW.x
 FROM (
 SELECT 1 AS x FROM (SELECT 1 AS x) q WHERE 1=1
-$($innerCart.ToString())
+$($pad.ToString())
 ) AS CARTNEW
 WHERE CARTNEW
 "@
-$innerCart = $null
+[void]$pad.Clear()
 $cartDot = "$cartSql."
 Write-Host ("259 cartnew sqlLen=$($cartSql.Length)")
 $eCart = [Activator]::CreateInstance($engineType)
@@ -754,7 +754,7 @@ if ($rCart -ne $null -and $rCart.Items) {
         if ($it.DisplayText -eq 'x') { $cartHit = $true }
     }
 }
-if (-not $cartHit) { [void]$fail.Add("259 CARTNEW. miss x ctx=$($rCart.Context) prefix=[$($rCart.Prefix)] top=[$($cartNames | Select-Object -First 8)]") }
+if (-not $cartHit) { [void]$fail.Add("259 CARTNEW. miss x ctx=$(if ($rCart) { $rCart.Context } else { 'null' }) prefix=[$(if ($rCart) { $rCart.Prefix } else { '' })] top=[$($cartNames | Select-Object -First 8)]") }
 else { $pass++ }
 $qiCart = [Activator]::CreateInstance($qiType)
 $cartHover = $cartSql.LastIndexOf('CARTNEW') + 3
@@ -771,6 +771,66 @@ if ($cartQiOk) { $pass++ } else { [void]$fail.Add("259 QuickInfo CARTNEW $cartQi
 $cartSql = $null
 $rCart = $null
 $qiCartInfo = $null
+
+# 大切片不能切掉 FROM … AS KC。悬停 JOIN/相关子查询里的 KC 都要能解析到 kucun_zong
+[void]$pad.Clear()
+$pad.Length = 0
+for ($i = 0; $i -lt 4000; $i++) { [void]$pad.AppendLine('AND 1=1') }
+$kcSql = @"
+SELECT COUNT(*) AS total
+FROM (SELECT KC.h_id,
+             isnull((select sum(CeShu) from rt_storage.dbo.TH_TuiGHS_ShenQing_Item where j_id = 0 and GHS_PRE.Id = KC.ghs_id),0) as cartshuliang
+      FROM rt_storage.dbo.kucun_zong AS KC WITH (NOLOCK)
+           INNER JOIN RtBase.dbo.GongYingShang AS GHS_PRE WITH (NOLOCK)
+                      ON GHS_PRE.Id = KC.ghs_id
+      WHERE KC.status = 1
+      $($pad.ToString())
+      GROUP BY KC.h_id) AS KCZ
+WHERE KCZ.stock > 0
+"@
+[void]$pad.Clear()
+Write-Host ("260 kc sqlLen=$($kcSql.Length)")
+$kcJoinHover = $kcSql.LastIndexOf('KC.ghs_id') + 1
+$kcSubHover = $kcSql.IndexOf('KC.ghs_id') + 1
+$qiKcJoin = [Activator]::CreateInstance($qiType)
+$qiKcJoinInfo = $qiKcJoin.GetQuickInfo($kcSql, $kcJoinHover, $masterCatalog, $masterConn)
+$kcJoinOk = $false
+$kcJoinWhy = 'null'
+if ($null -ne $qiKcJoinInfo) {
+    $hKcJoin = if ($qiKcJoinInfo.HeaderLines) { ($qiKcJoinInfo.HeaderLines -join ' | ') } else { '' }
+    if ($hKcJoin -match 'kucun_zong') { $kcJoinOk = $true }
+    else { $kcJoinWhy = "headers=[$hKcJoin]" }
+} else { $kcJoinWhy = 'null (JOIN ON GHS_PRE.Id = KC.ghs_id)' }
+if ($kcJoinOk) { $pass++ } else { [void]$fail.Add("260 QuickInfo JOIN KC $kcJoinWhy") }
+$qiKcSub = [Activator]::CreateInstance($qiType)
+$qiKcSubInfo = $qiKcSub.GetQuickInfo($kcSql, $kcSubHover, $masterCatalog, $masterConn)
+$kcSubOk = $false
+$kcSubWhy = 'null'
+if ($null -ne $qiKcSubInfo) {
+    $hKcSub = if ($qiKcSubInfo.HeaderLines) { ($qiKcSubInfo.HeaderLines -join ' | ') } else { '' }
+    if ($hKcSub -match 'kucun_zong') { $kcSubOk = $true }
+    else { $kcSubWhy = "headers=[$hKcSub]" }
+} else { $kcSubWhy = 'null (subquery GHS_PRE.Id = KC.ghs_id)' }
+if ($kcSubOk) { $pass++ } else { [void]$fail.Add("260 QuickInfo subquery KC $kcSubWhy") }
+$kcMember = $kcSql.Substring(0, $kcSql.LastIndexOf('KC.ghs_id') + 3)
+$eKc = [Activator]::CreateInstance($engineType)
+$sKc = [Activator]::CreateInstance($settingsType)
+$sKc.includeKeywords = $true
+$rKc = $get.Invoke($eKc, @($kcMember, [int]$kcMember.Length, $masterCatalog, $sKc, $masterConn))
+$kcHit = $false
+$kcNames = New-Object System.Collections.Generic.List[string]
+if ($rKc -ne $null -and $rKc.Items) {
+    foreach ($it in $rKc.Items) {
+        [void]$kcNames.Add([string]$it.DisplayText)
+        if ($it.DisplayText -eq 'h_id' -or $it.DisplayText -eq 'ghs_id') { $kcHit = $true }
+    }
+}
+if (-not $kcHit) { [void]$fail.Add("260 KC. miss col ctx=$(if ($rKc) { $rKc.Context } else { 'null' }) prefix=[$(if ($rKc) { $rKc.Prefix } else { '' })] top=[$($kcNames | Select-Object -First 8)]") }
+else { $pass++ }
+$kcSql = $null
+$rKc = $null
+$qiKcJoinInfo = $null
+$qiKcSubInfo = $null
 
 $qiSql8 = $derivedSql.Replace('|', '')
 $qiHover8 = $qiSql8.IndexOf('GongYingShang') + 2

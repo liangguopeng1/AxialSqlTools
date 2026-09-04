@@ -55,7 +55,7 @@ namespace AxialSqlTools.IntelliSense
                         return fnCall;
                 }
 
-                var locals = CompletionEngine.CollectQueryLocalsFromTokens(tokens, localOffset, slice);
+                var locals = CompletionEngine.CollectQueryLocalsFromTokens(tokens, localOffset, slice, fullText, caretOffset);
                 if (!hover.HasOwner)
                 {
                     var derived = FindDerived(locals, hover.Name);
@@ -228,7 +228,7 @@ namespace AxialSqlTools.IntelliSense
                             CompletionEngine.GetTokensForSlice(slice, out tokens);
                             if (tokens != null)
                             {
-                                locals = CompletionEngine.CollectQueryLocalsFromTokens(tokens, localOffset, slice);
+                                locals = CompletionEngine.CollectQueryLocalsFromTokens(tokens, localOffset, slice, fullText, caretOffset);
                                 var hover = QuickInfoSqlContext.TryGetHoverToken(tokens, localOffset);
                                 if (hover != null && hover.HasOwner)
                                 {

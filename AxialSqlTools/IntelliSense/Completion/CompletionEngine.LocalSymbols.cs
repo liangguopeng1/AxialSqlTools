@@ -397,7 +397,7 @@ namespace AxialSqlTools
             }
 
             /// <summary>收集光标所在语句的 FROM 别名映射。</summary>
-            private void CollectAliases(TSqlScript script, int localOffset, LocalSymbols local, List<TSqlParserToken> tokens)
+            private void CollectAliases(TSqlScript script, int localOffset, LocalSymbols local, List<TSqlParserToken> tokens, string fullText = null, int caretOffset = -1)
             {
                 local.Aliases.Clear();
                 TSqlStatement target = null;
@@ -465,6 +465,8 @@ namespace AxialSqlTools
                 // UPDATE t SET：无 FROM 时也要把目标表登记进别名（SET/WHERE 列补全）
                 if (tokens != null)
                     CollectUpdateTargetFromTokens(tokens, localOffset, local);
+                if (!string.IsNullOrEmpty(fullText) && caretOffset >= 0)
+                    SupplementFromAliasesFromText(fullText, caretOffset, local);
             }
 
             /// <summary>INSERT INTO [db.][schema.]table ( 列清单内时，登记目标表。</summary>
@@ -1061,12 +1063,67 @@ namespace AxialSqlTools
             }
 
             /// <summary>QuickInfo 复用：当前查询 FROM 别名 / 派生表列（只走词法）。</summary>
-            internal static LocalSymbols CollectQueryLocalsFromTokens(List<TSqlParserToken> tokens, int localOffset, string text = null)
+            internal static LocalSymbols CollectQueryLocalsFromTokens(List<TSqlParserToken> tokens, int localOffset, string text = null, string fullText = null, int caretOffset = -1)
             {
                 var local = new LocalSymbols();
                 if (tokens != null)
                     CollectAliasesFromTokens(tokens, localOffset, local, text);
+                if (!string.IsNullOrEmpty(fullText) && caretOffset >= 0)
+                    SupplementFromAliasesFromText(fullText, caretOffset, local);
                 return local;
+            }
+
+            /// <summary>
+            /// 大切片可能从相关子查询的内层 SELECT 起刀，FROM … AS KC 落在光标之后进不了 token 别名。
+            /// 用全文按括号深度找外层 FROM 再收一遍别名（只词法、不进 AST 缓存）。
+            /// </summary>
+            internal static void SupplementFromAliasesFromText(string fullText, int caret, LocalSymbols local)
+            {
+                if (string.IsNullOrEmpty(fullText) || local == null || caret < 0) return;
+                if (!TryGetBatchRange(fullText, caret, out int batchStart, out int batchEnd))
+                    return;
+                int searchTo = batchEnd;
+                int lookAhead = caret + StmtLookAheadChars;
+                if (lookAhead > searchTo) searchTo = lookAhead;
+                if (searchTo > fullText.Length) searchTo = fullText.Length;
+                int from = FindTopLevelFrom(fullText, caret, batchStart, searchTo);
+                if (from >= 0)
+                    TokenizeAndCollectFromRegion(fullText, from, local);
+                int pos = caret;
+                for (int level = 0; level < 6; level++)
+                {
+                    int open = FindUnmatchedOpenParen(fullText, batchStart, pos);
+                    if (open < 0) break;
+                    int sel = FindSelectBefore(fullText, open, batchStart);
+                    int parentFrom = sel >= 0 ? FindFromAfterSelectInText(fullText, sel, fullText.Length) : -1;
+                    if (parentFrom < 0)
+                        parentFrom = FindTopLevelFrom(fullText, open, batchStart, searchTo);
+                    if (parentFrom >= 0 && parentFrom != from)
+                        TokenizeAndCollectFromRegion(fullText, parentFrom, local);
+                    pos = open;
+                }
+            }
+
+            private static void TokenizeAndCollectFromRegion(string text, int fromKw, LocalSymbols local)
+            {
+                if (string.IsNullOrEmpty(text) || fromKw < 0 || local == null) return;
+                int regionEnd = ScanTopLevelFromRegionEnd(text, fromKw, text.Length);
+                if (regionEnd <= fromKw) return;
+                string fromSlice = text.Substring(fromKw, regionEnd - fromKw);
+                TokenizeNoCache(fromSlice, out var tokens);
+                if (tokens == null || tokens.Count == 0) return;
+                int fromIdx = 0;
+                for (int i = 0; i < tokens.Count; i++)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (string.Equals(t.Text, "FROM", StringComparison.OrdinalIgnoreCase))
+                    {
+                        fromIdx = i;
+                        break;
+                    }
+                }
+                CollectAliasesInFromRegion(tokens, fromIdx, local, fromSlice);
             }
 
             /// <summary>从当前语句整个 FROM…WHERE 区间收集所有表/JOIN 别名（含 db..table、table(nolock) alias）。</summary>

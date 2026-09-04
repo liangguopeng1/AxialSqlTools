@@ -36,6 +36,8 @@ namespace AxialSqlTools.IntelliSense
         private DateTime _lastTypeTime = DateTime.MinValue;
         private Point _lastMovePos = new Point(-1, -1);
         private Point _tooltipAnchorPos;
+        private int _tooltipAnchorLine = -1;
+        private int _tooltipAnchorCol = -1;
         private IntPtr _editorHwnd;
         private bool _tracking;
         private bool _tooltipShowing;
@@ -275,9 +277,19 @@ namespace AxialSqlTools.IntelliSense
                     return;
                 }
 
-                // 本视图已稳定显示：不要每 tick 重算/重绘
+                // 本视图已稳定显示：不要每 tick 重算/重绘。滚轮不改屏幕坐标，但文档行列会变。
                 if (_tooltipShowing && QuickInfoTooltip.IsOwnedBy(this) && QuickInfoTooltip.IsOpen)
                 {
+                if (!QuickInfoTooltip.ShouldKeepOpen
+                    && TryGetHoverLineColumn(out int hoverLine, out int hoverCol)
+                    && _tooltipAnchorLine >= 0
+                    && (hoverLine != _tooltipAnchorLine
+                        || Math.Abs(hoverCol - _tooltipAnchorCol) > 2))
+                    {
+                        CloseTooltip();
+                        _lastMoveTime = DateTime.UtcNow;
+                        return;
+                    }
                     int dx = Math.Abs(_lastMovePos.X - _tooltipAnchorPos.X);
                     int dy = Math.Abs(_lastMovePos.Y - _tooltipAnchorPos.Y);
                     if (dx <= MoveCloseThreshold && dy <= MoveCloseThreshold)
@@ -584,6 +596,8 @@ namespace AxialSqlTools.IntelliSense
                 bool opened = QuickInfoTooltip.Show(info, screenPt.x, screenPt.y, hwnd, this);
                 _tooltipShowing = opened;
                 _tooltipAnchorPos = _lastMovePos;
+                _tooltipAnchorLine = line;
+                _tooltipAnchorCol = col;
                 Diag(opened ? "shown_ok" : "shown_fail", "word={0} open={1} vis={2}",
                     word, QuickInfoTooltip.IsOpen, opened);
                 if (opened && !string.Equals(_lastLoggedWord, word, StringComparison.OrdinalIgnoreCase))
@@ -685,6 +699,8 @@ namespace AxialSqlTools.IntelliSense
         {
             if (!_tooltipShowing && !QuickInfoTooltip.IsOwnedBy(this)) return;
             _tooltipShowing = false;
+            _tooltipAnchorLine = -1;
+            _tooltipAnchorCol = -1;
             QuickInfoTooltip.CloseIfOwnedBy(this);
         }
 
