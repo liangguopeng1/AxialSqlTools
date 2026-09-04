@@ -561,6 +561,7 @@ namespace AxialSqlTools
                 if (probe < from) probe = from;
                 if (probe > to) probe = to;
                 int targetDepth = CountParenDepth(text, from, probe);
+                int n = text.Length;
                 int backDepth = targetDepth;
                 for (int i = probe - 1; i >= from; i--)
                 {
@@ -568,8 +569,11 @@ namespace AxialSqlTools
                     if (c == ')') { backDepth++; continue; }
                     if (c == '(') { if (backDepth > 0) backDepth--; continue; }
                     if (backDepth != targetDepth) continue;
-                    if (KeywordAt(text, i, text.Length, "FROM"))
+                    if (KeywordAt(text, i, n, "FROM"))
                         return i;
+                    // 无分号下一句：不要把上一句 FROM 的 aa/bb 当成当前 SELECT 列表的别名
+                    if (IsStmtBoundaryKeyword(text, i, n))
+                        break;
                 }
                 int fwdDepth = targetDepth;
                 for (int i = probe; i < to; i++)
@@ -578,8 +582,10 @@ namespace AxialSqlTools
                     if (c == '(') { fwdDepth++; continue; }
                     if (c == ')') { if (fwdDepth > 0) fwdDepth--; continue; }
                     if (fwdDepth != targetDepth) continue;
-                    if (KeywordAt(text, i, text.Length, "FROM"))
+                    if (KeywordAt(text, i, n, "FROM"))
                         return i;
+                    if (IsStmtBoundaryKeyword(text, i, n) && !IsSetOpBefore(text, i, from, n))
+                        break;
                 }
                 return -1;
             }
@@ -1076,6 +1082,15 @@ namespace AxialSqlTools
                         break;
                 }
                 return StmtKw.None;
+            }
+
+            /// <summary>顶层新语句关键字（不含 UNION/FROM）。用于无分号多语句切断 FROM 回看。</summary>
+            private static bool IsStmtBoundaryKeyword(string text, int i, int n)
+            {
+                int kwLen;
+                StmtKw kw = MatchStmtKeyword(text, i, n, out kwLen);
+                return kw != StmtKw.None && kw != StmtKw.Union && kw != StmtKw.Except
+                    && kw != StmtKw.Intersect && kw != StmtKw.Values;
             }
 
             private static bool KeywordAt(string text, int i, int n, string upper)

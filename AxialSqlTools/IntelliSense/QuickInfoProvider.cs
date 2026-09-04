@@ -672,12 +672,18 @@ namespace AxialSqlTools.IntelliSense
                     foreach (var c in table.Columns)
                     {
                         if (c != null && !string.IsNullOrEmpty(c.Name))
-                            cols.Add(c.Name);
+                            cols.Add(FormatStarColumn(c.Name, c.DataType));
                     }
                     return cols;
                 }
             }
             return null;
+        }
+
+        private static string FormatStarColumn(string name, string dataType)
+        {
+            if (string.IsNullOrEmpty(dataType)) return name;
+            return name + " " + dataType;
         }
 
         private static List<string> CopyNonEmptyNames(List<string> names)

@@ -105,7 +105,6 @@ namespace AxialSqlTools.IntelliSense
         private bool _completionInFlight;
         private bool _pendingCommit;
         private const int SessionAcceptDelayMs = 400;
-        private const int SuppressAutoTriggerAfterCommitMs = 500;
         private const int CompletionEngineWarnMs = 500;
 
         /// <summary>只用于失焦/watchdog，不拦截 Tab/Enter 提交。</summary>
@@ -325,9 +324,10 @@ namespace AxialSqlTools.IntelliSense
 
         /// <summary>
         /// 自动触发时：须光标处正在输入标识符/成员前缀，或刚输入点号。
-        /// 空前缀（如删掉 SELECT * 后的 SELECT | FROM、运算符后空白）不弹；Ctrl+Space 仍可手动。
+        /// 空前缀（如删掉 SELECT * 后的 SELECT | FROM、运算符后空白）默认不弹；Ctrl+Space 仍可手动。
+        /// keepOpenSession：弹框已开时退格删光前缀仍刷新全部候选，不直接关框。
         /// </summary>
-        private bool ShouldSuppressAutoPopup()
+        private bool ShouldSuppressAutoPopup(bool keepOpenSession = false)
         {
             if (IsCaretAtEmptyCompletionContext()) return true;
             try
@@ -348,15 +348,15 @@ namespace AxialSqlTools.IntelliSense
                 if (last == ';') return true;
                 if (last == ']') return true; // 方括号名已闭合
                 if (IsAutoPopupTerminatorChar(last)) return true;
-                // 空白、*、运算符、括号等：无活动前缀，不自动弹
+                // 空白、*、运算符、括号等：无活动前缀，不自动弹；弹框已开则保持并展示全部字段
                 if (!IsAutoTriggerPrefixChar(last))
-                    return true;
+                    return !keepOpenSession;
 
                 // 连续前缀仅空白前一段；单独 [ 也算开始输入括起标识符
                 int i = before.Length - 1;
                 while (i >= 0 && IsAutoTriggerPrefixChar(before[i])) i--;
                 int prefixLen = before.Length - 1 - i;
-                return prefixLen <= 0;
+                return prefixLen <= 0 && !keepOpenSession;
             }
             catch
             {
@@ -632,7 +632,8 @@ namespace AxialSqlTools.IntelliSense
             }
 
             // 自动触发时：空行 / 分号后无前缀 → 不弹框（Ctrl+Space 仍可手动触发）
-            if (!force && ShouldSuppressAutoPopup())
+            // 弹框已开时允许空前缀刷新（退格删光 id 后展示全部字段）
+            if (!force && ShouldSuppressAutoPopup(keepOpenSession: editingRefresh))
             {
                 CloseSession();
                 return;
@@ -851,8 +852,8 @@ namespace AxialSqlTools.IntelliSense
                 {
                     OffsetToLineCol(_replaceStartOffset, out int line, out int col);
                     SnippetExpansionHelper.SetCaretPosition(_textView, line, col, insertText, item.SnippetCursorOffset);
-                    // 光标落入 ISNULL(| , ) 等实参位时，短暂抑制自动弹，避免立刻再出 SELECT 列表
-                    _suppressAutoTriggerUntil = DateTime.UtcNow.AddMilliseconds(SuppressAutoTriggerAfterCommitMs);
+                    // MAX(|) / ISNULL(| , ) 实参位立刻出列，不再抑制（HAVING/SELECT 函数内走 WhereClause）
+                    TriggerCompletion(true);
                 }
                 else if (insertText.EndsWith(".", StringComparison.Ordinal))
                 {

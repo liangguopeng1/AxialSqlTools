@@ -293,6 +293,17 @@ Add-Case '254' 'SELECT id FROM dbo.DemoT GROUP BY id; SELECT k_id FROM dbo.DemoT
 Add-Case '255' "WITH c1 AS (SELECT a FROM t) SELECT * FROM c1`nSELECT * FROM c2 WHERE c|" @('c2') 'WhereClause' @('c1')
 # CONVERT first arg with precision parens (boundary-3): comma inside type parens is not the arg separator
 Add-Case '256' 'SELECT CONVERT(decimal(10,2), x|' @() '' @('int','decimal')
+# HAVING/SELECT 函数实参出全部列（MAX/SUM/ISNULL）；裸 HAVING 仍只出 GROUP BY 列
+Add-Case '267' 'SELECT id, k_id FROM dbo.DemoT GROUP BY id HAVING max(k|' @('k_id') 'WhereClause' -Catalog 'mock'
+Add-Case '268' 'SELECT id, k_id FROM dbo.DemoT GROUP BY id HAVING sum(k|' @('k_id') 'WhereClause' -Catalog 'mock'
+Add-Case '269' 'SELECT id, k_id FROM dbo.DemoT GROUP BY id HAVING isnull(k|' @('k_id') 'WhereClause' -Catalog 'mock'
+Add-Case '270' 'SELECT max(k|) FROM dbo.DemoT' @('k_id') 'WhereClause' -Catalog 'mock'
+# 无分号多语句：下一句别名不得串进上一句
+Add-Case '271' ("SELECT bb.| FROM dbo.DemoT" + [char]10 + [char]10 + "SELECT * FROM dbo.DemoT aa INNER JOIN dbo.kucun bb ON aa.id = bb.k_id") @() 'MemberAccess' @('oper') -Catalog 'mock'
+Add-Case '272' ("SELECT max(aa.|) FROM dbo.DemoT" + [char]10 + [char]10 + "SELECT * FROM dbo.kucun aa") @() 'MemberAccess' @('oper') -Catalog 'mock'
+Add-Case '274' ("SELECT id FROM dbo.DemoT GROUP BY id HAVING max(k|" + [char]10 + [char]10 + "SELECT * FROM dbo.kucun aa") @('k_id') 'WhereClause' @('oper') -Catalog 'mock'
+# 空前缀 SELECT 列表仍出表字段（退格删光前缀时引擎侧保持候选）
+Add-Case '273' 'SELECT | FROM dbo.DemoT' @('id','k_id') 'SelectElements' -Catalog 'mock'
 
 Write-Host "Cases=$($cases.Count)"
 
@@ -1065,7 +1076,7 @@ try {
     if ($null -ne $starInfo) {
         $starDdl = [string]$starInfo.DdlText
         $starH = if ($starInfo.HeaderLines) { ($starInfo.HeaderLines -join ' | ') } else { '' }
-        if ($starH -match 'SELECT \*' -and $starDdl -match 'Id' -and $starDdl -match 'ApiName' -and $starDdl -match 'CreateTime') { $starOk = $true }
+        if ($starH -match 'SELECT \*' -and $starDdl -match 'Id nvarchar' -and $starDdl -match 'ApiName nvarchar' -and $starDdl -match 'CreateTime nvarchar') { $starOk = $true }
         else { $starWhy = "headers=[$starH] ddl=$starDdl" }
     } else { $starWhy = 'null (hover * of t_ProductApiLog)' }
     if ($starOk) { $pass++ } else { [void]$fail.Add("261 QuickInfo SELECT * $starWhy") }

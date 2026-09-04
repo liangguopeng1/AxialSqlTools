@@ -601,6 +601,8 @@ namespace AxialSqlTools
                     case "GO":
                         return CompletionContext.BatchStart;
                     case "SELECT":
+                        if (IsInsideFunctionArgument(tokens, localOffset))
+                            return CompletionContext.WhereClause;
                         // 仅看「当前 SELECT」之后是否已有 FROM，勿扫上一句
                         if (!SeenFromAfterCurrentSelect(tokens, caretTokenIndex, localOffset))
                         {
@@ -619,6 +621,8 @@ namespace AxialSqlTools
                         return CompletionContext.FromClause;
                     case ",":
                         {
+                            if (IsInsideFunctionArgument(tokens, localOffset))
+                                return CompletionContext.WhereClause;
                             var commaCtx = TryGetSelectBeforeFromContext(tokens, localOffset);
                             if (commaCtx == CompletionContext.SelectElements)
                                 return CompletionContext.SelectElements;
@@ -627,6 +631,8 @@ namespace AxialSqlTools
                     case "WHERE":
                         return CompletionContext.WhereClause;
                     case "HAVING":
+                        if (IsInsideFunctionArgument(tokens, localOffset))
+                            return CompletionContext.WhereClause;
                         return CompletionContext.HavingClause;
                     case "ON":
                         if (LooksLikeContinuingFromKeyword(prefix))
@@ -645,12 +651,18 @@ namespace AxialSqlTools
                             if (major == "FROM" || major == "JOIN")
                                 return CompletionContext.FromClause;
                             if (major == "HAVING")
+                            {
+                                if (IsInsideFunctionArgument(tokens, localOffset))
+                                    return CompletionContext.WhereClause;
                                 return CompletionContext.HavingClause;
+                            }
                             return CompletionContext.WhereClause;
                         }
                     case "ORDER":
                     case "GROUP":
                     case "PARTITION":
+                        if (IsInsideFunctionArgument(tokens, localOffset))
+                            return CompletionContext.WhereClause;
                         return CompletionContext.OrderByGroupBy;
                     case "EXEC":
                     case "EXECUTE":
@@ -1791,6 +1803,78 @@ namespace AxialSqlTools
                         return true;
                     default:
                         return t.Text == ";";
+                }
+            }
+
+            /// <summary>
+            /// 光标是否在函数实参内（MAX(/ISNULL(/SUM( 等）。
+            /// 用于 HAVING/SELECT 列表：实参位出列，而不是只出 GROUP BY 列或 SELECT 关键字。
+            /// EXISTS(/FROM(/SELECT( 等子查询入口不算函数。
+            /// </summary>
+            private static bool IsInsideFunctionArgument(List<TSqlParserToken> tokens, int localOffset)
+            {
+                if (tokens == null || tokens.Count == 0) return false;
+                int depth = 0;
+                int openIdx = -1;
+                for (int i = tokens.Count - 1; i >= 0; i--)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset >= localOffset) continue;
+                    if (t.TokenType == TSqlTokenType.RightParenthesis)
+                    {
+                        depth++;
+                        continue;
+                    }
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                    {
+                        if (depth > 0)
+                        {
+                            depth--;
+                            continue;
+                        }
+                        openIdx = i;
+                        break;
+                    }
+                    if (depth == 0 && (t.Text == ";" || string.Equals(t.Text, "GO", StringComparison.OrdinalIgnoreCase)))
+                        return false;
+                }
+                if (openIdx < 0) return false;
+                TSqlParserToken prev = null;
+                for (int i = openIdx - 1; i >= 0; i--)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    prev = t;
+                    break;
+                }
+                if (prev == null || !IsWordLikeToken(prev)) return false;
+                string name = UnbracketIdentifier(prev.Text);
+                if (string.IsNullOrEmpty(name)) return false;
+                switch (name.ToUpperInvariant())
+                {
+                    case "SELECT":
+                    case "FROM":
+                    case "WHERE":
+                    case "JOIN":
+                    case "APPLY":
+                    case "EXISTS":
+                    case "OVER":
+                    case "PIVOT":
+                    case "UNPIVOT":
+                    case "VALUES":
+                    case "IF":
+                    case "WHILE":
+                    case "AND":
+                    case "OR":
+                    case "ON":
+                    case "WHEN":
+                    case "THEN":
+                    case "ELSE":
+                    case "WITH":
+                        return false;
+                    default:
+                        return true;
                 }
             }
 
