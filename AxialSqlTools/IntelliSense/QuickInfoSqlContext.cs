@@ -34,6 +34,18 @@ namespace AxialSqlTools.IntelliSense
         public static HoverToken TryGetHoverToken(List<TSqlParserToken> tokens, int offset)
         {
             if (tokens == null || tokens.Count == 0) return null;
+            int starIdx = FindStarTokenAt(tokens, offset);
+            if (starIdx >= 0)
+            {
+                if (!IsSelectStarAt(tokens, starIdx, out string qualifier))
+                    return null;
+                return new HoverToken
+                {
+                    Name = "*",
+                    Owner = qualifier,
+                    HasOwner = !string.IsNullOrEmpty(qualifier)
+                };
+            }
             int idx = FindTokenIndexAt(tokens, offset);
             if (idx < 0) return null;
             var tok = tokens[idx];
@@ -1055,6 +1067,75 @@ namespace AxialSqlTools.IntelliSense
                    type == TSqlTokenType.MultilineComment ||
                    type == TSqlTokenType.SingleLineComment ||
                    type == TSqlTokenType.EndOfFile;
+        }
+
+        private static bool IsStarToken(TSqlParserToken t)
+        {
+            if (t == null || string.IsNullOrEmpty(t.Text)) return false;
+            return t.Text.Length == 1 && t.Text[0] == '*';
+        }
+
+        /// <summary>相邻 '(' '*' 时，闭区间 FindTokenIndexAt 会落到括号；按半开区间命中 *。</summary>
+        private static int FindStarTokenAt(List<TSqlParserToken> tokens, int offset)
+        {
+            if (tokens == null) return -1;
+            for (int i = 0; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (!IsStarToken(t)) continue;
+                int start = t.Offset;
+                int end = start + t.Text.Length;
+                if (offset >= start && offset < end)
+                    return i;
+            }
+            return -1;
+        }
+
+        /// <summary>SELECT * / a.* / TOP 10 *，排除 COUNT(*) 与 1 * 2。</summary>
+        private static bool IsSelectStarAt(List<TSqlParserToken> tokens, int starIdx, out string qualifier)
+        {
+            qualifier = null;
+            if (tokens == null || starIdx < 0 || starIdx >= tokens.Count) return false;
+            if (!IsStarToken(tokens[starIdx])) return false;
+            var prev = PreviousSignificant(tokens, starIdx);
+            if (prev == null) return false;
+            if (prev.TokenType == TSqlTokenType.LeftParenthesis)
+                return false;
+            if (prev.TokenType == TSqlTokenType.Dot)
+            {
+                var ownerTok = PreviousSignificant(tokens, IndexOfToken(tokens, prev));
+                if (ownerTok == null || !IsWordLike(ownerTok)) return false;
+                qualifier = Unbracket(ownerTok.Text);
+                return !string.IsNullOrEmpty(qualifier);
+            }
+            if (prev.TokenType == TSqlTokenType.Comma)
+                return true;
+            if (IsSelectStarKeyword(prev))
+                return true;
+            if (prev.TokenType == TSqlTokenType.Integer || prev.TokenType == TSqlTokenType.Real)
+            {
+                var beforeNum = PreviousSignificant(tokens, IndexOfToken(tokens, prev));
+                return beforeNum != null && IsSelectStarKeyword(beforeNum)
+                    && string.Equals(Unbracket(beforeNum.Text), "TOP", StringComparison.OrdinalIgnoreCase);
+            }
+            return false;
+        }
+
+        private static bool IsSelectStarKeyword(TSqlParserToken t)
+        {
+            if (t == null || string.IsNullOrEmpty(t.Text)) return false;
+            switch (Unbracket(t.Text).ToUpperInvariant())
+            {
+                case "SELECT":
+                case "DISTINCT":
+                case "ALL":
+                case "TOP":
+                case "PERCENT":
+                case "TIES":
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         private static bool IsHoverableToken(TSqlParserToken t)

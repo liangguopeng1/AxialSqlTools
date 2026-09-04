@@ -479,6 +479,19 @@ namespace AxialSqlTools
                     return VSConstants.S_OK;
             }
 
+            if (IsCopyCommand(cmdGroup, nCmdID)
+                && QuickInfoTooltip.TryHandleCopyCommand(EditorSelectionHelper.HasTextSelection(textView)))
+                return VSConstants.S_OK;
+
+            // 复制的是编辑器选区：关掉未钉住的悬停框，避免挡着选区
+            if (IsCopyCommand(cmdGroup, nCmdID)
+                && EditorSelectionHelper.HasTextSelection(textView)
+                && !QuickInfoTooltip.IsPinned
+                && !QuickInfoTooltip.IsPointerOverPopup())
+            {
+                IntelliSenseTextViewExtension.DismissQuickInfoByUser();
+            }
+
             if (_intelliSense != null && _intelliSense.HandleSessionKey(cmdGroup, nCmdID))
             {
                 return VSConstants.S_OK;
@@ -487,7 +500,7 @@ namespace AxialSqlTools
             if (cmdGroup == VSConstants.VSStd2K && nCmdID == (uint)VSConstants.VSStd2KCmdID.CANCEL
                 && QuickInfoTooltip.IsOpen && Keyboard.IsKeyDown(Key.Escape))
             {
-                QuickInfoTooltip.Close();
+                IntelliSenseTextViewExtension.DismissQuickInfoByUser();
                 return VSConstants.S_OK;
             }
 
@@ -569,8 +582,10 @@ namespace AxialSqlTools
 
         private static bool IsCopyCommand(Guid cmdGroup, uint nCmdID)
         {
+            if (nCmdID != (uint)VSConstants.VSStd97CmdID.Copy)
+                return false;
             return cmdGroup == typeof(VSConstants.VSStd97CmdID).GUID
-                && nCmdID == (uint)VSConstants.VSStd97CmdID.Copy;
+                || cmdGroup == VSConstants.GUID_VSStandardCommandSet97;
         }
 
         private static bool IsPasteCommand(Guid cmdGroup, uint nCmdID)

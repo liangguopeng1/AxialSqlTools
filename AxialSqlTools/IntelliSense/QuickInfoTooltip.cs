@@ -60,7 +60,6 @@ namespace AxialSqlTools.IntelliSense
         /// 切走文档后由编辑器 timer 在「不在编辑器且不在弹框」时强制关闭。</summary>
         public static bool ShouldKeepOpen =>
             _isOpen && (_isPinned || _isResizing || _contextMenuOpen
-                || DateTime.UtcNow < _suppressDeactivateCloseUntil
                 || IsMouseOverPopup());
 
         /// <summary>指针是否在悬停弹框上（供编辑器 timer 判断是否离开）。</summary>
@@ -161,26 +160,32 @@ namespace AxialSqlTools.IntelliSense
         }
 
         /// <summary>
-        /// 轮询外部点击：左键新按下且不在弹框上 → 关闭。
-        /// 由悬停 timer 调用（编辑器子 HWND 常收不到 WM_LBUTTONDOWN）。
+        /// 轮询外部点击：左键按在弹框外 → 关闭。
+        /// 用「按着」而不是「按下边沿」，避免复制后第一下点编辑器被 timer 漏掉。
         /// </summary>
         public static void PollOutsideClick()
         {
             if (!_isOpen) return;
-            if (_contextMenuOpen || DateTime.UtcNow < _suppressDeactivateCloseUntil)
-                return;
+            bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+            _wasMouseLeftDown = down;
+            if (_contextMenuOpen || _isResizing) return;
             if (!IsSsmsForeground())
             {
                 Close();
                 return;
             }
-            bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-            bool pressed = down && !_wasMouseLeftDown;
-            _wasMouseLeftDown = down;
-            if (!pressed) return;
-            if (_isResizing) return;
+            if (!down) return;
             if (IsMouseOverPopup()) return;
             CloseFromOutsideClick();
+        }
+
+        /// <summary>右键菜单 / 鼠标仍在弹框上：焦点闪一下不要关。点编辑器不走这里。</summary>
+        public static bool ShouldIgnoreOutsideClose()
+        {
+            if (!_isOpen) return false;
+            if (_contextMenuOpen || _isResizing) return true;
+            if (IsMouseOverPopup()) return true;
+            return false;
         }
 
         [DllImport("user32.dll")]
@@ -345,6 +350,7 @@ namespace AxialSqlTools.IntelliSense
             _window.Deactivated += OnWindowDeactivated;
             _window.PreviewKeyDown += OnPreviewKeyDown;
             _window.GotFocus += (s, e) => Pin();
+            _window.CommandBindings.Add(new CommandBinding(ApplicationCommands.Copy, OnCopyCommand, OnCopyCommandCanExecute));
             _window.SourceInitialized += OnWindowSourceInitialized;
             _window.SizeChanged += (s, e) =>
             {
@@ -360,42 +366,69 @@ namespace AxialSqlTools.IntelliSense
         private static void HookTextBoxContextMenu(TextBox box)
         {
             if (box == null) return;
-            box.ContextMenuOpening += (s, e) =>
+            box.ContextMenu = CreateCopyContextMenu(box);
+        }
+
+        private static ContextMenu CreateCopyContextMenu(TextBox box)
+        {
+            var copy = new MenuItem { Header = "复制" };
+            copy.Click += (s, e) =>
+            {
+                NoteUserCopy();
+                if (box.SelectionLength > 0)
+                    box.Copy();
+                else
+                    TryCopy();
+            };
+            var selectAll = new MenuItem { Header = "全选" };
+            selectAll.Click += (s, e) =>
+            {
+                Pin();
+                box.SelectAll();
+            };
+            var menu = new ContextMenu();
+            menu.Items.Add(copy);
+            menu.Items.Add(selectAll);
+            menu.Opened += (s, e) =>
             {
                 _contextMenuOpen = true;
                 _suppressDeactivateCloseUntil = DateTime.UtcNow.AddSeconds(30);
                 Pin();
             };
-            box.ContextMenuClosing += (s, e) =>
+            menu.Closed += (s, e) =>
             {
                 _contextMenuOpen = false;
-                _suppressDeactivateCloseUntil = DateTime.UtcNow.AddMilliseconds(600);
+                _suppressDeactivateCloseUntil = DateTime.UtcNow.AddMilliseconds(400);
                 Pin();
-                try { _window?.Activate(); } catch { }
             };
+            return menu;
+        }
+
+        private static void NoteUserCopy()
+        {
+            Pin();
+            // 只挡剪贴板抢焦点的短暂失活，不要压住随后点编辑器
+            _suppressDeactivateCloseUntil = DateTime.UtcNow.AddMilliseconds(400);
         }
 
         private static void OnWindowDeactivated(object sender, EventArgs e)
         {
             if (!_isOpen || _isResizing) return;
-            if (_contextMenuOpen || DateTime.UtcNow < _suppressDeactivateCloseUntil)
-                return;
-            // 延迟判断：点弹框内控件时可能短暂失活；切到其他应用则立即关
+            if (_contextMenuOpen) return;
             _window.Dispatcher.BeginInvoke(new Action(() =>
             {
                 if (!_isOpen || _isResizing) return;
-                if (_contextMenuOpen || DateTime.UtcNow < _suppressDeactivateCloseUntil)
-                    return;
+                if (_contextMenuOpen) return;
                 if (!IsSsmsForeground())
                 {
                     Close();
                     return;
                 }
                 if (IsMouseOverPopup()) return;
-                if (_window.IsActive) return;
-                // ShowActivated=false：悬停弹出本就不激活窗口，Deactivated 不代表该关；
-                // 未钉住时由 PollOutsideClick / 编辑器点击关闭，避免刚 Show 就闪关。
-                if (!_isPinned) return;
+                if (_window != null && _window.IsActive) return;
+                // 刚弹出未钉住：忽略 Show 引起的闪失活。钉住后鼠标已离开 = 点了编辑器，第一下就关。
+                if (!_isPinned && DateTime.UtcNow < _suppressDeactivateCloseUntil)
+                    return;
                 CloseFromOutsideClick();
             }), DispatcherPriority.Input);
         }
@@ -451,6 +484,85 @@ namespace AxialSqlTools.IntelliSense
                 IsUndoEnabled = false,
                 Visibility = Visibility.Collapsed
             };
+        }
+
+        private static void OnCopyCommand(object sender, ExecutedRoutedEventArgs e)
+        {
+            TryCopy();
+            e.Handled = true;
+        }
+
+        private static void OnCopyCommandCanExecute(object sender, CanExecuteRoutedEventArgs e)
+        {
+            e.CanExecute = _isOpen;
+            e.Handled = true;
+        }
+
+        /// <summary>
+        /// 编辑器 Ctrl+C / 工具栏复制：若用户正在看弹框（鼠标在上、弹框内有选区、
+        /// 或已钉住且编辑器没有选区），复制弹框内容并吞掉命令。
+        /// </summary>
+        public static bool TryHandleCopyCommand(bool editorHasSelection = false)
+        {
+            if (!_isOpen) return false;
+            if (HasBoxSelection() || IsMouseOverPopup())
+                return TryCopy();
+            if (_isPinned && !editorHasSelection)
+                return TryCopy();
+            return false;
+        }
+
+        public static bool TryCopy()
+        {
+            if (!_isOpen) return false;
+            try
+            {
+                NoteUserCopy();
+                if (_ddlBox != null && _ddlBox.IsKeyboardFocusWithin && _ddlBox.SelectionLength > 0)
+                {
+                    _ddlBox.Copy();
+                    return true;
+                }
+                if (_headerBox != null && _headerBox.IsKeyboardFocusWithin && _headerBox.SelectionLength > 0)
+                {
+                    _headerBox.Copy();
+                    return true;
+                }
+                if (_ddlBox != null && _ddlBox.SelectionLength > 0)
+                {
+                    _ddlBox.Copy();
+                    return true;
+                }
+                if (_headerBox != null && _headerBox.SelectionLength > 0)
+                {
+                    _headerBox.Copy();
+                    return true;
+                }
+                string text = GetAllCopyText();
+                if (string.IsNullOrEmpty(text)) return false;
+                Clipboard.SetText(text);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool HasBoxSelection()
+        {
+            return (_ddlBox != null && _ddlBox.SelectionLength > 0)
+                || (_headerBox != null && _headerBox.SelectionLength > 0);
+        }
+
+        private static string GetAllCopyText()
+        {
+            var sb = new StringBuilder();
+            if (_headerBox != null && _headerBox.Visibility == Visibility.Visible && !string.IsNullOrEmpty(_headerBox.Text))
+                sb.AppendLine(_headerBox.Text);
+            if (_ddlBox != null && _ddlBox.Visibility == Visibility.Visible && !string.IsNullOrEmpty(_ddlBox.Text))
+                sb.Append(_ddlBox.Text);
+            return sb.ToString().TrimEnd();
         }
 
         private static void OnGoToSourceClick(object sender, RoutedEventArgs e)
@@ -542,31 +654,8 @@ namespace AxialSqlTools.IntelliSense
         {
             if (e.Key == Key.C && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
             {
-                try
-                {
-                    if (_ddlBox.IsKeyboardFocusWithin && _ddlBox.SelectionLength > 0)
-                        _ddlBox.Copy();
-                    else if (_headerBox.IsKeyboardFocusWithin && _headerBox.SelectionLength > 0)
-                        _headerBox.Copy();
-                    else if (_ddlBox.SelectionLength > 0)
-                        _ddlBox.Copy();
-                    else if (_headerBox.SelectionLength > 0)
-                        _headerBox.Copy();
-                    else
-                    {
-                        var sb = new StringBuilder();
-                        if (_headerBox.Visibility == Visibility.Visible && !string.IsNullOrEmpty(_headerBox.Text))
-                            sb.AppendLine(_headerBox.Text);
-                        if (_ddlBox.Visibility == Visibility.Visible && !string.IsNullOrEmpty(_ddlBox.Text))
-                            sb.Append(_ddlBox.Text);
-                        if (sb.Length > 0)
-                            Clipboard.SetText(sb.ToString());
-                    }
+                if (TryCopy())
                     e.Handled = true;
-                }
-                catch
-                {
-                }
             }
             else if (e.Key == Key.A && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
             {
@@ -584,7 +673,7 @@ namespace AxialSqlTools.IntelliSense
             }
             else if (e.Key == Key.Escape)
             {
-                Close();
+                IntelliSenseTextViewExtension.DismissQuickInfoByUser();
                 e.Handled = true;
             }
         }

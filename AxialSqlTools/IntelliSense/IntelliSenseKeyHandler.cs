@@ -442,6 +442,7 @@ namespace AxialSqlTools.IntelliSense
         private void OnEditorFocusLost(IntPtr newFocusHwnd)
         {
             if (IsPopupFocus(newFocusHwnd)) return;
+            if (QuickInfoTooltip.ShouldIgnoreOutsideClose()) return;
             if (_sessionOpen)
             {
                 if (!IsSsmsForeground())
@@ -457,6 +458,7 @@ namespace AxialSqlTools.IntelliSense
             {
                 if (_sessionOpen) return;
                 if (EditorHasFocus() || IsPopupFocus(GetFocus())) return;
+                if (QuickInfoTooltip.ShouldIgnoreOutsideClose()) return;
                 if (QuickInfoTooltip.IsPinned)
                 {
                     // 钉住后：焦点落到弹框外才关闭
@@ -523,8 +525,7 @@ namespace AxialSqlTools.IntelliSense
                         if (Keyboard.IsKeyDown(Key.Escape))
                         {
                             CloseSession();
-                            if (QuickInfoTooltip.IsOpen)
-                                QuickInfoTooltip.Close();
+                            _textViewExtension?.NotifyQuickInfoDismissed();
                         }
                         return true;
                     default:

@@ -13,6 +13,27 @@ namespace AxialSqlTools.IntelliSense
             return startLine != endLine || startCol != endCol;
         }
 
+        /// <summary>行列是否落在当前选区内（双击选词后鼠标仍停在词上）。</summary>
+        public static bool IsPositionInSelection(IVsTextView textView, int line, int col)
+        {
+            if (textView == null) return false;
+            if (textView.GetSelection(out int startLine, out int startCol, out int endLine, out int endCol) != VSConstants.S_OK)
+                return false;
+            if (startLine == endLine && startCol == endCol) return false;
+            if (startLine > endLine || (startLine == endLine && startCol > endCol))
+            {
+                int tl = startLine, tc = startCol;
+                startLine = endLine;
+                startCol = endCol;
+                endLine = tl;
+                endCol = tc;
+            }
+            if (line < startLine || line > endLine) return false;
+            if (line == startLine && col < startCol) return false;
+            if (line == endLine && col > endCol) return false;
+            return true;
+        }
+
         public static int TryGetPositionOfLineIndex(IVsTextView textView, int line, int col)
         {
             if (textView == null) return -1;

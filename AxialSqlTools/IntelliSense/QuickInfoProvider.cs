@@ -47,6 +47,10 @@ namespace AxialSqlTools.IntelliSense
                 string dataSource = FormatDataSource(connInfo);
                 string defaultDb = !string.IsNullOrEmpty(useDb) ? useDb : (connInfo?.Database ?? catalog?.Database);
 
+                var locals = CompletionEngine.CollectQueryLocalsFromTokens(tokens, localOffset, slice, fullText, caretOffset);
+                if (string.Equals(hover.Name, "*", StringComparison.Ordinal))
+                    return TryBuildSelectStarQuickInfo(locals, hover.HasOwner ? hover.Owner : null, catalog, connInfo, dataSource, defaultDb);
+
                 // COUNT( / ISNULL( 等：后接 '(' 时优先当内建函数，避免同名表抢走
                 if (!hover.HasOwner)
                 {
@@ -55,7 +59,6 @@ namespace AxialSqlTools.IntelliSense
                         return fnCall;
                 }
 
-                var locals = CompletionEngine.CollectQueryLocalsFromTokens(tokens, localOffset, slice, fullText, caretOffset);
                 if (!hover.HasOwner)
                 {
                     var derived = FindDerived(locals, hover.Name);
@@ -230,6 +233,8 @@ namespace AxialSqlTools.IntelliSense
                             {
                                 locals = CompletionEngine.CollectQueryLocalsFromTokens(tokens, localOffset, slice, fullText, caretOffset);
                                 var hover = QuickInfoSqlContext.TryGetHoverToken(tokens, localOffset);
+                                if (hover != null && string.Equals(hover.Name, "*", StringComparison.Ordinal))
+                                    return TryBuildSelectStarQuickInfo(locals, hover.HasOwner ? hover.Owner : null, catalog, connInfo, dataSource, defaultDb);
                                 if (hover != null && hover.HasOwner)
                                 {
                                     var dcol = TryBuildDerivedColumnQuickInfo(locals, hover.Owner, hover.Name);
@@ -293,6 +298,9 @@ namespace AxialSqlTools.IntelliSense
                     if (fromRef == null)
                         fromRef = TryParseFromClause(slice);
                 }
+
+                if (string.Equals(cleanWord, "*", StringComparison.Ordinal))
+                    return null;
 
                 var procInfo = TryBuildProcedureQuickInfo(fullText, caretOffset, cleanWord, catalog, connInfo, dataSource, defaultDb);
                 if (procInfo != null)
@@ -561,6 +569,179 @@ namespace AxialSqlTools.IntelliSense
                 && tref != null && !string.IsNullOrEmpty(tref.Name))
                 return tref;
             return null;
+        }
+
+        private QuickInfoData TryBuildSelectStarQuickInfo(
+            LocalSymbols local,
+            string qualifier,
+            MetadataCatalog catalog,
+            ScriptFactoryAccess.ConnectionInfo connInfo,
+            string dataSource,
+            string defaultDb)
+        {
+            if (local?.Aliases == null || local.Aliases.Count == 0)
+                return null;
+            var sources = new List<KeyValuePair<string, TableRef>>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in local.Aliases)
+            {
+                string alias = kv.Key;
+                if (string.IsNullOrEmpty(alias) || alias.IndexOf('.') >= 0) continue;
+                if (!string.IsNullOrEmpty(qualifier)
+                    && !string.Equals(alias, qualifier, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (AliasIsRedundantTableName(local, alias, kv.Value)) continue;
+                if (!seen.Add(alias)) continue;
+                sources.Add(kv);
+            }
+            if (sources.Count == 0) return null;
+
+            var sections = new List<Tuple<string, List<string>>>();
+            int columnCount = 0;
+            foreach (var src in sources)
+            {
+                var cols = TryGetSelectStarColumns(local, src.Key, src.Value, catalog, connInfo);
+                if (cols == null || cols.Count == 0) continue;
+                columnCount += cols.Count;
+                sections.Add(Tuple.Create(FormatStarSourceHeading(src.Key, src.Value), cols));
+            }
+
+            var data = new QuickInfoData();
+            AddHeaderLine(data, "类型", string.IsNullOrEmpty(qualifier) ? "SELECT *" : "SELECT " + qualifier + ".*");
+            if (!string.IsNullOrEmpty(dataSource))
+                AddHeaderLine(data, "数据源", dataSource);
+            if (sections.Count == 1)
+            {
+                AddHeaderLine(data, "来源", sections[0].Item1);
+                AddHeaderLine(data, "列数", columnCount.ToString());
+                var sb = new System.Text.StringBuilder();
+                foreach (var col in sections[0].Item2)
+                    sb.AppendLine(col);
+                data.DdlText = sb.ToString().TrimEnd();
+            }
+            else if (sections.Count > 1)
+            {
+                AddHeaderLine(data, "表数", sections.Count.ToString());
+                AddHeaderLine(data, "列数", columnCount.ToString());
+                var sb = new System.Text.StringBuilder();
+                for (int i = 0; i < sections.Count; i++)
+                {
+                    if (i > 0) sb.AppendLine();
+                    sb.AppendLine(sections[i].Item1);
+                    foreach (var col in sections[i].Item2)
+                        sb.Append("  ").AppendLine(col);
+                }
+                data.DdlText = sb.ToString().TrimEnd();
+            }
+            else
+            {
+                AddHeaderLine(data, "来源", FormatStarSourceHeading(sources[0].Key, sources[0].Value));
+                data.DdlText = "列元数据未就绪";
+            }
+            return data.IsEmpty ? null : data;
+        }
+
+        private List<string> TryGetSelectStarColumns(
+            LocalSymbols local,
+            string alias,
+            TableRef tref,
+            MetadataCatalog catalog,
+            ScriptFactoryAccess.ConnectionInfo connInfo)
+        {
+            var derived = FindDerived(local, alias);
+            if (derived?.ColumnNames != null && derived.ColumnNames.Count > 0)
+                return CopyNonEmptyNames(derived.ColumnNames);
+
+            string objName = tref != null && !string.IsNullOrEmpty(tref.Name) ? tref.Name : alias;
+            var tt = FindLocalTable(local?.TempTables, objName) ?? FindLocalTable(local?.TempTables, alias);
+            if (tt?.ColumnNames != null && tt.ColumnNames.Count > 0)
+                return CopyNonEmptyNames(tt.ColumnNames);
+            var tv = FindLocalTable(local?.TableVariables, objName) ?? FindLocalTable(local?.TableVariables, alias);
+            if (tv?.ColumnNames != null && tv.ColumnNames.Count > 0)
+                return CopyNonEmptyNames(tv.ColumnNames);
+
+            if (tref != null && !string.IsNullOrEmpty(tref.Name))
+            {
+                var byName = FindDerived(local, tref.Name);
+                if (byName?.ColumnNames != null && byName.ColumnNames.Count > 0)
+                    return CopyNonEmptyNames(byName.ColumnNames);
+                var table = ResolveTable(connInfo, catalog, tref);
+                if (table?.Columns != null && table.Columns.Count > 0)
+                {
+                    var cols = new List<string>(table.Columns.Count);
+                    foreach (var c in table.Columns)
+                    {
+                        if (c != null && !string.IsNullOrEmpty(c.Name))
+                            cols.Add(c.Name);
+                    }
+                    return cols;
+                }
+            }
+            return null;
+        }
+
+        private static List<string> CopyNonEmptyNames(List<string> names)
+        {
+            var cols = new List<string>();
+            if (names == null) return cols;
+            foreach (var n in names)
+            {
+                if (!string.IsNullOrEmpty(n))
+                    cols.Add(n);
+            }
+            return cols;
+        }
+
+        private static LocalTableInfo FindLocalTable(List<LocalTableInfo> list, string name)
+        {
+            if (list == null || string.IsNullOrEmpty(name)) return null;
+            return list.Find(t => t != null && string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static string FormatStarSourceHeading(string alias, TableRef tref)
+        {
+            string table = FormatStarTableName(tref);
+            if (string.IsNullOrEmpty(table))
+                return alias;
+            if (string.IsNullOrEmpty(alias)
+                || string.Equals(alias, tref.Name, StringComparison.OrdinalIgnoreCase))
+                return table;
+            return alias + " (" + table + ")";
+        }
+
+        private static string FormatStarTableName(TableRef tref)
+        {
+            if (tref == null || string.IsNullOrEmpty(tref.Name)) return string.Empty;
+            string schema = string.IsNullOrEmpty(tref.Schema) ? "dbo" : tref.Schema;
+            if (!string.IsNullOrEmpty(tref.Database))
+                return tref.Database + "." + schema + "." + tref.Name;
+            return schema + "." + tref.Name;
+        }
+
+        private static bool AliasIsRedundantTableName(LocalSymbols local, string alias, TableRef tref)
+        {
+            if (local?.Aliases == null || tref == null || string.IsNullOrEmpty(tref.Name)) return false;
+            if (!string.Equals(alias, tref.Name, StringComparison.OrdinalIgnoreCase)) return false;
+            foreach (var kv in local.Aliases)
+            {
+                if (string.IsNullOrEmpty(kv.Key) || kv.Key.IndexOf('.') >= 0) continue;
+                if (string.Equals(kv.Key, alias, StringComparison.OrdinalIgnoreCase)) continue;
+                if (SameStarTableRef(kv.Value, tref)) return true;
+            }
+            return false;
+        }
+
+        private static bool SameStarTableRef(TableRef a, TableRef b)
+        {
+            if (a == null || b == null) return false;
+            if (!string.Equals(a.Name, b.Name, StringComparison.OrdinalIgnoreCase)) return false;
+            if (!string.Equals(a.LinkedServer ?? string.Empty, b.LinkedServer ?? string.Empty, StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (!string.Equals(a.Database ?? string.Empty, b.Database ?? string.Empty, StringComparison.OrdinalIgnoreCase))
+                return false;
+            string sa = string.IsNullOrEmpty(a.Schema) ? "dbo" : a.Schema;
+            string sb = string.IsNullOrEmpty(b.Schema) ? "dbo" : b.Schema;
+            return string.Equals(sa, sb, StringComparison.OrdinalIgnoreCase);
         }
 
         private QuickInfoData TryBuildAliasTableQuickInfo(

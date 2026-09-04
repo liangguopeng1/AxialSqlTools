@@ -465,7 +465,18 @@ foreach ($cn in @('isbn','cfstate','State')) {
     [void]$tProducts.Columns.Add($col)
 }
 [void]$jichuCatalog.Tables.Add($tProducts)
+$apiLog = [Activator]::CreateInstance($tableType)
+$apiLog.Schema = 'dbo'
+$apiLog.Name = 't_ProductApiLog'
+foreach ($cn in @('Id','ApiName','CreateTime')) {
+    $col = [Activator]::CreateInstance($colType)
+    $col.Name = $cn
+    $col.DataType = 'nvarchar'
+    [void]$apiLog.Columns.Add($col)
+}
+[void]$jichuCatalog.Tables.Add($apiLog)
 $svc.PutCatalog('192.168.1.108', 'jichushuju', $jichuCatalog)
+$svc.PutCatalog('local', 'jichushuju', $jichuCatalog)
 
 $rtDataCatalog = [Activator]::CreateInstance($catalogType)
 $rtDataCatalog.Database = 'rt_data_processing'
@@ -1041,6 +1052,74 @@ try {
     if ($qiProdPOk) { $pass++ } else { [void]$fail.Add("223 QuickInfo CREATE OR ALTER t_products $qiProdPWhy") }
 } catch {
     [void]$fail.Add("221-223 EX=$($_.Exception.Message)")
+}
+
+# hover SELECT * columns (JOIN / derived / a.*)
+try {
+    $starQi = [Activator]::CreateInstance($qiType)
+    $starSql = 'SELECT * FROM jichushuju.dbo.t_ProductApiLog'
+    $starHover = $starSql.IndexOf('*')
+    $starInfo = $starQi.GetQuickInfo($starSql, $starHover, $masterCatalog, $masterConn)
+    $starOk = $false
+    $starWhy = 'null'
+    if ($null -ne $starInfo) {
+        $starDdl = [string]$starInfo.DdlText
+        $starH = if ($starInfo.HeaderLines) { ($starInfo.HeaderLines -join ' | ') } else { '' }
+        if ($starH -match 'SELECT \*' -and $starDdl -match 'Id' -and $starDdl -match 'ApiName' -and $starDdl -match 'CreateTime') { $starOk = $true }
+        else { $starWhy = "headers=[$starH] ddl=$starDdl" }
+    } else { $starWhy = 'null (hover * of t_ProductApiLog)' }
+    if ($starOk) { $pass++ } else { [void]$fail.Add("261 QuickInfo SELECT * $starWhy") }
+
+    $starJoinSql = 'SELECT * FROM rt_storage.dbo.kucun_zong a INNER JOIN rtbase.dbo.UserInfo b ON a.h_id = b.id'
+    $starJoinInfo = $starQi.GetQuickInfo($starJoinSql, $starJoinSql.IndexOf('*'), $masterCatalog, $masterConn)
+    $starJoinOk = $false
+    $starJoinWhy = 'null'
+    if ($null -ne $starJoinInfo) {
+        $jd = [string]$starJoinInfo.DdlText
+        if ($jd -match 'h_id' -and $jd -match 'stock' -and $jd -match '单位名称') { $starJoinOk = $true }
+        else { $starJoinWhy = "ddl=$jd" }
+    } else { $starJoinWhy = 'null (hover * of JOIN)' }
+    if ($starJoinOk) { $pass++ } else { [void]$fail.Add("262 QuickInfo SELECT * JOIN $starJoinWhy") }
+
+    $starQualSql = 'SELECT a.* FROM rt_storage.dbo.kucun_zong a INNER JOIN rtbase.dbo.UserInfo b ON a.h_id = b.id'
+    $starQualInfo = $starQi.GetQuickInfo($starQualSql, $starQualSql.IndexOf('*'), $masterCatalog, $masterConn)
+    $starQualOk = $false
+    $starQualWhy = 'null'
+    if ($null -ne $starQualInfo) {
+        $qd = [string]$starQualInfo.DdlText
+        $qh = if ($starQualInfo.HeaderLines) { ($starQualInfo.HeaderLines -join ' | ') } else { '' }
+        if ($qd -match 'h_id' -and $qd -match 'stock' -and $qd -notmatch '单位名称') { $starQualOk = $true }
+        else { $starQualWhy = "headers=[$qh] ddl=$qd" }
+    } else { $starQualWhy = 'null (hover a.*)' }
+    if ($starQualOk) { $pass++ } else { [void]$fail.Add("263 QuickInfo a.* $starQualWhy") }
+
+    $starDerSql = 'SELECT * FROM (SELECT isbn, cfstate FROM jichushuju.dbo.t_products) AS x'
+    $starDerInfo = $starQi.GetQuickInfo($starDerSql, $starDerSql.IndexOf('*'), $masterCatalog, $masterConn)
+    $starDerOk = $false
+    $starDerWhy = 'null'
+    if ($null -ne $starDerInfo) {
+        $dd = [string]$starDerInfo.DdlText
+        $derCols = @($dd -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if ($derCols -contains 'isbn' -and $derCols -contains 'cfstate' -and $derCols -notcontains 'State') { $starDerOk = $true }
+        else { $starDerWhy = "ddl=$dd" }
+    } else { $starDerWhy = 'null (hover * of derived)' }
+    if ($starDerOk) { $pass++ } else { [void]$fail.Add("264 QuickInfo SELECT * derived $starDerWhy") }
+
+    $starCountSql = 'SELECT COUNT(*) FROM jichushuju.dbo.t_ProductApiLog'
+    $starCountInfo = $starQi.GetQuickInfo($starCountSql, $starCountSql.IndexOf('*'), $masterCatalog, $masterConn)
+    if ($null -eq $starCountInfo) { $pass++ } else {
+        $cd = [string]$starCountInfo.DdlText
+        [void]$fail.Add("265 QuickInfo COUNT(*) should be null ddl=$cd")
+    }
+
+    $starMulSql = 'SELECT 1 * 2 FROM jichushuju.dbo.t_ProductApiLog'
+    $starMulInfo = $starQi.GetQuickInfo($starMulSql, $starMulSql.IndexOf('*'), $masterCatalog, $masterConn)
+    if ($null -eq $starMulInfo) { $pass++ } else {
+        $md = [string]$starMulInfo.DdlText
+        [void]$fail.Add("266 QuickInfo multiply * should be null ddl=$md")
+    }
+} catch {
+    [void]$fail.Add("261-266 EX=$($_.Exception.Message)")
 }
 
 # DDL detection + cache invalidation (schema freshness)
