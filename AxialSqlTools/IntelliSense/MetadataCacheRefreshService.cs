@@ -26,6 +26,8 @@ namespace AxialSqlTools.IntelliSense
             new ConcurrentDictionary<string, ServerJob>(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, byte> _kicked =
             new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, byte> _dbRefreshKicked =
+            new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
 
         private MetadataCacheRefreshService()
         {
@@ -61,6 +63,7 @@ namespace AxialSqlTools.IntelliSense
                 {
                     bool loaded = MetadataCatalogService.Instance.IsServerLoadedInMemory(server);
                     bool needPull = ShouldSilentRefresh(server);
+                    Logger.Info("EnsureServerCache {0} loaded={1} needPull={2}", server, loaded, needPull);
                     if (loaded && !needPull)
                         return;
                     await RunWithProgressWindowAsync(server, async progress =>
@@ -100,16 +103,14 @@ namespace AxialSqlTools.IntelliSense
                 try
                 {
                     bool loaded = MetadataCatalogService.Instance.IsServerLoadedInMemory(name);
-                    bool missing = !MetadataCacheStore.TryGetMeta(name, out var meta) || meta == null;
-                    bool needPull = missing || ShouldSilentRefresh(name);
+                    bool needPull = ShouldSilentRefresh(name);
                     if (loaded && !needPull)
                         return;
                     await RunWithProgressWindowAsync(name, async progress =>
                     {
                         if (!MetadataCatalogService.Instance.IsServerLoadedInMemory(name))
                             MetadataCatalogService.Instance.LoadServerFromDisk(name, progress);
-                        missing = !MetadataCacheStore.TryGetMeta(name, out meta) || meta == null;
-                        if (missing || ShouldSilentRefresh(name))
+                        if (ShouldSilentRefresh(name))
                             await StartLinkedOrAttach(captured, name, progress).ConfigureAwait(false);
                     }).ConfigureAwait(false);
                 }
@@ -198,14 +199,94 @@ namespace AxialSqlTools.IntelliSense
             }
         }
 
+        /// <summary>
+        /// 7 天整机刷新看 meta.IndexedAtUtc（与各库 BuiltAt 在整机拉取结束时一起写）。
+        /// meta 缺失时回退看各库 BuiltAt，避免误当过期整机重拉。
+        /// </summary>
         private static bool ShouldSilentRefresh(string serverName)
         {
             int days = UiSettingsStore.GetIntelliSenseSettings().cacheRefreshDays;
             if (days <= 0)
                 return false;
-            if (!MetadataCacheStore.TryGetMeta(serverName, out var meta) || meta == null)
-                return true;
-            return (DateTime.UtcNow - meta.IndexedAtUtc) > TimeSpan.FromDays(days);
+            DateTime stamp;
+            if (TryGetMetaIndexedAtUtc(serverName, out stamp)
+                || MetadataCacheStore.TryGetOldestCatalogBuiltAtUtc(serverName, out stamp))
+                return (DateTime.UtcNow - stamp) > TimeSpan.FromDays(days);
+            return true;
+        }
+
+        private static bool TryGetMetaIndexedAtUtc(string serverName, out DateTime indexedUtc)
+        {
+            indexedUtc = DateTime.MinValue;
+            IntelliSenseCacheMeta meta;
+            if (!MetadataCacheStore.TryGetMeta(serverName, out meta) || meta == null)
+                return false;
+            DateTime indexed = meta.IndexedAtUtc;
+            if (indexed == DateTime.MinValue)
+                return false;
+            if (indexed.Kind == DateTimeKind.Local)
+                indexed = indexed.ToUniversalTime();
+            else if (indexed.Kind == DateTimeKind.Unspecified)
+                indexed = DateTime.SpecifyKind(indexed, DateTimeKind.Utc);
+            indexedUtc = indexed;
+            return true;
+        }
+
+        /// <summary>
+        /// 只重建指定库（执行 DDL 后）。只更新这些库的 BuiltAt，不改 meta.IndexedAtUtc。
+        /// </summary>
+        public void RefreshDatabases(ScriptFactoryAccess.ConnectionInfo connInfo, IList<string> databases)
+        {
+            if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.ServerName) || databases == null)
+                return;
+            if (!UiSettingsStore.GetIntelliSenseEnabled())
+                return;
+            var pending = new List<string>();
+            foreach (var db in databases)
+            {
+                if (string.IsNullOrWhiteSpace(db)) continue;
+                string key = connInfo.ServerName + "|" + db;
+                if (_dbRefreshKicked.TryAdd(key, 0))
+                    pending.Add(db);
+            }
+            if (pending.Count == 0)
+                return;
+            var captured = connInfo;
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    foreach (var db in pending)
+                    {
+                        try
+                        {
+                            Logger.Info("Refresh database cache {0}.{1}", captured.ServerName, db);
+                            var catalog = MetadataCatalogService.Instance.BuildCatalogForCache(
+                                captured, db, BuildCommandTimeoutSeconds);
+                            if (catalog != null)
+                            {
+                                MetadataCacheStore.SaveCatalog(captured.ServerName, db, catalog);
+                                MetadataCatalogService.Instance.PutCatalog(captured.ServerName, db, catalog);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Warn(ex, "Refresh database cache failed {0}.{1}", captured.ServerName, db);
+                        }
+                        byte removed;
+                        _dbRefreshKicked.TryRemove(captured.ServerName + "|" + db, out removed);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn(ex, "RefreshDatabases failed for {0}", captured.ServerName);
+                    foreach (var db in pending)
+                    {
+                        byte removed;
+                        _dbRefreshKicked.TryRemove(captured.ServerName + "|" + db, out removed);
+                    }
+                }
+            });
         }
 
         private static ScriptFactoryAccess.ConnectionInfo TryCurrentConnection()

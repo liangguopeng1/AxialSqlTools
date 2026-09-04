@@ -99,6 +99,7 @@ namespace AxialSqlTools.IntelliSense
         private DateTime _sessionOpenedAt;
         private DateTime _suppressAutoTriggerUntil = DateTime.MinValue;
         private int _sessionCaretLine = -1;
+        private int _sessionCaretCol = -1;
         private int _replaceStartOffset = -1;
         private int _replaceEndOffset = -1;
         private int _completionGen;
@@ -190,7 +191,10 @@ namespace AxialSqlTools.IntelliSense
                     line != _sessionCaretLine)
                 {
                     CloseSession();
+                    return;
                 }
+                if (HasCaretLeftCompletionSpan())
+                    CloseSession();
             };
 
             // 悬停 ToolTip + 编辑器失焦关闭（独立于补全 session 的 ToolTip 部分）
@@ -271,14 +275,26 @@ namespace AxialSqlTools.IntelliSense
             {
                 IntPtr editorHwnd = _textView.GetWindowHandle();
                 if (editorHwnd == IntPtr.Zero) return false;
-                IntPtr focus = GetFocus();
-                IntPtr foreground = GetForegroundWindow();
-                return IsSameOrRelatedHwnd(editorHwnd, focus) || IsSameOrRelatedHwnd(editorHwnd, foreground);
+                return IsSameOrRelatedHwnd(editorHwnd, GetFocus());
             }
             catch
             {
                 return false;
             }
+        }
+
+        /// <summary>文本光标已离开当前补全词。鼠标移动不关框。</summary>
+        private bool HasCaretLeftCompletionSpan()
+        {
+            if (_replaceStartOffset < 0) return false;
+            if (_completionInFlight) return false;
+            if (_debounceTimer != null && _debounceTimer.IsEnabled) return false;
+            if (_textView.GetCaretPos(out int line, out int col) != VSConstants.S_OK)
+                return false;
+            if (line == _sessionCaretLine && col == _sessionCaretCol)
+                return false;
+            int caret = GetCaretOffset();
+            return caret >= 0 && (caret < _replaceStartOffset || caret > _replaceEndOffset);
         }
 
         private static bool IsSameOrRelatedHwnd(IntPtr editorHwnd, IntPtr hwnd)
@@ -929,7 +945,6 @@ namespace AxialSqlTools.IntelliSense
                 {
                     try
                     {
-                        MetadataCatalogService.Instance.InvalidateDdlTargets(snap, sql);
                         MetadataCatalogService.Instance.BuildCatalogsReferencedInSql(snap, sql);
                     }
                     catch (Exception ex)
@@ -966,6 +981,7 @@ namespace AxialSqlTools.IntelliSense
             _completionInFlight = false;
             _pendingCommit = false;
             _sessionCaretLine = -1;
+            _sessionCaretCol = -1;
             _debounceTimer?.Stop();
             _externalFocusCloseTimer?.Stop();
             _sessionWatchdogTimer?.Stop();
@@ -974,8 +990,11 @@ namespace AxialSqlTools.IntelliSense
 
         private void UpdateSessionCaretAnchor()
         {
-            if (_textView.GetCaretPos(out int line, out _) == VSConstants.S_OK)
+            if (_textView.GetCaretPos(out int line, out int col) == VSConstants.S_OK)
+            {
                 _sessionCaretLine = line;
+                _sessionCaretCol = col;
+            }
         }
 
         private void EnsureSessionWatchdogRunning()

@@ -1278,8 +1278,8 @@ ORDER BY s.name, o.name;";
             }
 
             /// <summary>
-            /// 文档含 DDL 时使当前库缓存失效（内存 + 磁盘），下次补全/悬停触发重建，
-            /// 避免最长 cacheRefreshDays 天内提示陈旧 schema。
+            /// 文档含 DDL 时使目标库缓存失效（内存 + 该库磁盘文件）。
+            /// 不删除服务器 meta.json，否则 7 天刷新会被重置、下次启动会整机重拉。
             /// </summary>
             public void InvalidateDdlTargets(ScriptFactoryAccess.ConnectionInfo connInfo, string sql)
             {
@@ -1295,7 +1295,6 @@ ORDER BY s.name, o.name;";
                     Invalidate(connInfo.ServerName, db);
                     MetadataCacheStore.DeleteCatalog(connInfo.ServerName, db);
                 }
-                MetadataCacheStore.DeleteMeta(connInfo.ServerName);
             }
 
             /// <summary>常用系统对象（includeSystemObjects 开启时追加到候选）。</summary>

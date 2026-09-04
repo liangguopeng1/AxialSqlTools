@@ -351,16 +351,25 @@ namespace AxialSqlTools.IntelliSense
                     IntPtr hwndAtPoint = WindowFromPoint(pt);
                     IntPtr tipHwnd = QuickInfoTooltip.GetWindowHandle();
                     bool onTip = tipHwnd != IntPtr.Zero && (hwndAtPoint == tipHwnd || IsChild(tipHwnd, hwndAtPoint));
-                    if (!onTip && _editorHwnd != IntPtr.Zero && IsRelatedHwnd(_editorHwnd, hwndAtPoint))
+                    bool onPopup = onTip || (ShouldIgnoreFocusTarget != null && ShouldIgnoreFocusTarget(hwndAtPoint));
+                    bool onEditor = _editorHwnd != IntPtr.Zero && IsRelatedHwnd(_editorHwnd, hwndAtPoint);
+                    if (onPopup)
                     {
-                        ClaimHoverOwnership("pointer");
-                        EditorPointerDown?.Invoke();
-                        _editorLeftCapture = true;
-                        NoteEditorMouseDown(pt);
+                        _editorLeftCapture = false;
                     }
                     else
                     {
-                        _editorLeftCapture = false;
+                        EditorPointerDown?.Invoke();
+                        if (onEditor)
+                        {
+                            ClaimHoverOwnership("pointer");
+                            _editorLeftCapture = true;
+                            NoteEditorMouseDown(pt);
+                        }
+                        else
+                        {
+                            _editorLeftCapture = false;
+                        }
                     }
                 }
                 else

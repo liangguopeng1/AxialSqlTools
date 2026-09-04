@@ -1086,6 +1086,26 @@ namespace AxialSqlTools
 
                 EnqueueDataForProcessing(QueryHistoryObj);
 
+                try
+                {
+                    string qtext = QueryHistoryObj.QueryText;
+                    if (IntelliSense.MetadataCatalogService.ContainsDdl(qtext))
+                    {
+                        var conn = ScriptFactoryAccess.GetCurrentConnectionInfo();
+                        if (conn != null)
+                        {
+                            IntelliSense.MetadataCatalogService.Instance.InvalidateDdlTargets(conn, qtext);
+                            var dbs = IntelliSense.MetadataCatalogService.ExtractDdlTargetDatabases(
+                                qtext, QueryHistoryObj.DatabaseName ?? conn.Database);
+                            IntelliSense.MetadataCacheRefreshService.Instance.RefreshDatabases(conn, dbs);
+                        }
+                    }
+                }
+                catch (Exception ddlEx)
+                {
+                    _logger.Warn(ddlEx, "IntelliSense DDL cache refresh after execute failed");
+                }
+
             }
             catch (Exception ex)
             {
