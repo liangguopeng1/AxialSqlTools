@@ -239,9 +239,15 @@ namespace AxialSqlTools.IntelliSense
                 if (!TryUpdateCursorFromScreen(out string cursorReason))
                 {
                     Diag("cursor_miss", cursorReason);
-                    // 鼠标不在本编辑器：钉住时若也不在弹框上，稍候强制关（切设置页）
+                    // 鼠标不在本编辑器：钉住时若也不在弹框上，稍候强制关（切设置页）。
+                    // 右键菜单是独立 HWND，指针不在弹框上，但不能当离开。
                     if (QuickInfoTooltip.IsOwnedBy(this) && !QuickInfoTooltip.IsPointerOverPopup())
                     {
+                        if (QuickInfoTooltip.ShouldIgnoreOutsideClose())
+                        {
+                            _awayFromEditorSince = DateTime.MinValue;
+                            return;
+                        }
                         if (_awayFromEditorSince == DateTime.MinValue)
                             _awayFromEditorSince = DateTime.UtcNow;
                         if ((DateTime.UtcNow - _awayFromEditorSince).TotalMilliseconds >= 400)
