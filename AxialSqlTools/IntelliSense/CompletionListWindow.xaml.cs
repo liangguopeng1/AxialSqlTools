@@ -276,8 +276,8 @@ namespace AxialSqlTools.IntelliSense
 
         private void ApplyScreenPosition(double deviceScreenX, double deviceScreenY, IntPtr editorHwnd)
         {
-            double dipX = deviceScreenX;
-            double dipY = deviceScreenY;
+            double scaleX = 1.0;
+            double scaleY = 1.0;
             try
             {
                 // 只用本窗口的 PresentationSource 做 DPI，禁止 HwndSource.FromHwnd(编辑器 HWND)
@@ -285,29 +285,23 @@ namespace AxialSqlTools.IntelliSense
                 if (src?.CompositionTarget != null)
                 {
                     var m = src.CompositionTarget.TransformFromDevice;
-                    dipX = deviceScreenX * m.M11;
-                    dipY = deviceScreenY * m.M22;
+                    scaleX = m.M11;
+                    scaleY = m.M22;
                 }
             }
             catch (Exception ex)
             {
                 _logger.Warn(ex, "ApplyScreenPosition DPI conversion failed");
             }
+            double dipX = deviceScreenX * scaleX;
+            double dipY = deviceScreenY * scaleY;
             UpdateLayout();
-            double left = dipX;
-            double top = dipY;
-            double workBottom = SystemParameters.WorkArea.Bottom;
-            double workRight = SystemParameters.WorkArea.Right;
-            if (top + ActualHeight > workBottom)
-            {
-                top = Math.Max(0, workBottom - ActualHeight - 4);
-            }
-            if (left + ActualWidth > workRight)
-            {
-                left = Math.Max(0, workRight - ActualWidth - 4);
-            }
-            Left = left;
-            Top = top;
+            double width = ActualWidth > 0 ? ActualWidth : Width;
+            double height = ActualHeight > 0 ? ActualHeight : Height;
+            Rect work = PopupScreenPlacement.GetWorkAreaDip(deviceScreenX, deviceScreenY, scaleX, scaleY);
+            Point pos = PopupScreenPlacement.ClampToWorkArea(dipX, dipY, width, height, work);
+            Left = pos.X;
+            Top = pos.Y;
         }
 
         public void UpdateItems(List<CompletionItem> items)
@@ -484,5 +478,87 @@ namespace AxialSqlTools.IntelliSense
         }
 
         public event EventHandler CommitClicked;
+    }
+
+    /// <summary>
+    /// 弹框定位：按光标所在显示器的工作区夹紧，避免 SystemParameters.WorkArea（仅主屏）把窗口拉回第一屏。
+    /// </summary>
+    public static class PopupScreenPlacement
+    {
+        private const int DwmwaExtendedFrameBounds = 9;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeRect
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [DllImport("user32.dll")]
+        private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect lpRect);
+
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out NativeRect pvAttribute, int cbAttribute);
+
+        public static Rect GetWorkAreaDip(double deviceScreenX, double deviceScreenY, double scaleX, double scaleY)
+        {
+            try
+            {
+                var pixel = new System.Drawing.Point(
+                    (int)Math.Round(deviceScreenX),
+                    (int)Math.Round(deviceScreenY));
+                var wa = System.Windows.Forms.Screen.FromPoint(pixel).WorkingArea;
+                if (scaleX <= 0) scaleX = 1;
+                if (scaleY <= 0) scaleY = 1;
+                return new Rect(wa.Left * scaleX, wa.Top * scaleY, wa.Width * scaleX, wa.Height * scaleY);
+            }
+            catch
+            {
+                return SystemParameters.WorkArea;
+            }
+        }
+
+        public static Rect GetWindowRectDip(IntPtr hwnd, double scaleX, double scaleY)
+        {
+            try
+            {
+                if (hwnd == IntPtr.Zero)
+                    return SystemParameters.WorkArea;
+                NativeRect rc;
+                if (DwmGetWindowAttribute(hwnd, DwmwaExtendedFrameBounds, out rc, Marshal.SizeOf(typeof(NativeRect))) != 0
+                    || rc.Right <= rc.Left)
+                {
+                    if (!GetWindowRect(hwnd, out rc) || rc.Right <= rc.Left)
+                        return SystemParameters.WorkArea;
+                }
+                if (scaleX <= 0) scaleX = 1;
+                if (scaleY <= 0) scaleY = 1;
+                return new Rect(rc.Left * scaleX, rc.Top * scaleY, (rc.Right - rc.Left) * scaleX, (rc.Bottom - rc.Top) * scaleY);
+            }
+            catch
+            {
+                return SystemParameters.WorkArea;
+            }
+        }
+
+        public static Point PlaceBottomRight(Rect anchor, double width, double height)
+        {
+            return new Point(anchor.Right - width - 16, anchor.Bottom - height - 16);
+        }
+
+        public static Point ClampToWorkArea(double left, double top, double width, double height, Rect work)
+        {
+            if (top + height > work.Bottom)
+                top = Math.Max(work.Top, work.Bottom - height - 4);
+            if (left + width > work.Right)
+                left = Math.Max(work.Left, work.Right - width - 4);
+            if (left < work.Left)
+                left = work.Left;
+            if (top < work.Top)
+                top = work.Top;
+            return new Point(left, top);
+        }
     }
 }

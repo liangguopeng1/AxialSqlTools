@@ -856,8 +856,8 @@ namespace AxialSqlTools.IntelliSense
         {
             EnsureWindowShell();
             if (_window == null) return;
-            double dipX = deviceScreenX;
-            double dipY = deviceScreenY;
+            double scaleX = 1.0;
+            double scaleY = 1.0;
             try
             {
                 IntPtr hwnd = ownerHwnd != IntPtr.Zero ? ownerHwnd : new WindowInteropHelper(_window).Owner;
@@ -876,14 +876,16 @@ namespace AxialSqlTools.IntelliSense
                     if (src?.CompositionTarget != null)
                     {
                         var m = src.CompositionTarget.TransformFromDevice;
-                        dipX = deviceScreenX * m.M11;
-                        dipY = deviceScreenY * m.M22;
+                        scaleX = m.M11;
+                        scaleY = m.M22;
                     }
                 }
             }
             catch
             {
             }
+            double dipX = deviceScreenX * scaleX;
+            double dipY = deviceScreenY * scaleY;
 
             if (!_userResized)
             {
@@ -901,12 +903,13 @@ namespace AxialSqlTools.IntelliSense
                 const double offset = 16;
                 double left = dipX + 8;
                 double top = dipY + offset;
-                double workRight = SystemParameters.WorkArea.Right;
-                double workBottom = SystemParameters.WorkArea.Bottom;
-                if (left + _window.Width > workRight)
-                    left = Math.Max(0, dipX - _window.Width - 8);
-                if (top + _window.Height > workBottom)
-                    top = Math.Max(0, dipY - _window.Height - offset);
+                Rect work = PopupScreenPlacement.GetWorkAreaDip(deviceScreenX, deviceScreenY, scaleX, scaleY);
+                if (left + _window.Width > work.Right)
+                    left = Math.Max(work.Left, dipX - _window.Width - 8);
+                if (top + _window.Height > work.Bottom)
+                    top = Math.Max(work.Top, dipY - _window.Height - offset);
+                if (left < work.Left) left = work.Left;
+                if (top < work.Top) top = work.Top;
                 _window.Left = left;
                 _window.Top = top;
             }

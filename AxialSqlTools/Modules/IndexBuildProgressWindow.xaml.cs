@@ -1,6 +1,7 @@
 using System;
 using System.Windows;
 using System.Windows.Interop;
+using AxialSqlTools.IntelliSense;
 
 namespace AxialSqlTools
 {
@@ -87,9 +88,37 @@ namespace AxialSqlTools
 
         private void PositionBottomRight()
         {
-            var work = SystemParameters.WorkArea;
-            Left = work.Right - ActualWidth - 16;
-            Top = work.Bottom - ActualHeight - 16;
+            double scaleX = 1.0;
+            double scaleY = 1.0;
+            try
+            {
+                var src = PresentationSource.FromVisual(this) as HwndSource;
+                if (src?.CompositionTarget != null)
+                {
+                    var m = src.CompositionTarget.TransformFromDevice;
+                    scaleX = m.M11;
+                    scaleY = m.M22;
+                }
+            }
+            catch
+            {
+            }
+            IntPtr hwnd = IntPtr.Zero;
+            try
+            {
+                hwnd = new WindowInteropHelper(this).Owner;
+                if (hwnd == IntPtr.Zero)
+                    hwnd = System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle;
+            }
+            catch
+            {
+            }
+            double width = ActualWidth > 0 ? ActualWidth : Width;
+            double height = ActualHeight > 0 ? ActualHeight : Height;
+            Rect owner = PopupScreenPlacement.GetWindowRectDip(hwnd, scaleX, scaleY);
+            Point pos = PopupScreenPlacement.PlaceBottomRight(owner, width, height);
+            Left = pos.X;
+            Top = pos.Y;
         }
     }
 }

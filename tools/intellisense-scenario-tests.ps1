@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   100 common SQL IntelliSense keyword/context scenarios against Release AxialSqlTools.dll.
 .EXAMPLE
@@ -1242,6 +1242,34 @@ try {
     $pass++
 } catch {
     [void]$fail.Add("252 empty-catalog $($_.Exception.Message)")
+}
+
+# 261: clamp popup to caret monitor, not primary WorkArea
+try {
+    Add-Type -AssemblyName WindowsBase -ErrorAction SilentlyContinue
+    $placeType = $asm.GetType('AxialSqlTools.IntelliSense.PopupScreenPlacement')
+    if ($null -eq $placeType) { throw 'PopupScreenPlacement not found' }
+    $clamp = $placeType.GetMethod('ClampToWorkArea')
+    if ($null -eq $clamp) { throw 'ClampToWorkArea not found' }
+    $workRight = New-Object -TypeName System.Windows.Rect -ArgumentList ([double]1920), ([double]0), ([double]1920), ([double]1080)
+    $pt = $clamp.Invoke($null, [object[]]@([double]2500, [double]100, [double]520, [double]240, $workRight))
+    if ([math]::Abs($pt.X - 2500) -gt 0.5) { throw "right-monitor X $($pt.X) pulled off caret" }
+    if ([math]::Abs($pt.Y - 100) -gt 0.5) { throw "right-monitor Y $($pt.Y)" }
+    $ptEdge = $clamp.Invoke($null, [object[]]@([double]3700, [double]100, [double]520, [double]240, $workRight))
+    if ($ptEdge.X -lt 1920) { throw "right-edge clamp X $($ptEdge.X) fell onto primary" }
+    if (($ptEdge.X + 520) -gt 3840.5) { throw "right-edge clamp X $($ptEdge.X) overflows secondary" }
+    $workLeft = New-Object -TypeName System.Windows.Rect -ArgumentList ([double](-1920)), ([double]0), ([double]1920), ([double]1080)
+    $ptLeft = $clamp.Invoke($null, [object[]]@([double](-800), [double]100, [double]520, [double]240, $workLeft))
+    if ($ptLeft.X -ge 0) { throw "left-monitor X $($ptLeft.X) pulled onto primary" }
+    $placeBr = $placeType.GetMethod('PlaceBottomRight')
+    if ($null -eq $placeBr) { throw 'PlaceBottomRight not found' }
+    $win = New-Object -TypeName System.Windows.Rect -ArgumentList ([double]400), ([double]200), ([double]1200), ([double]800)
+    $ptBr = $placeBr.Invoke($null, [object[]]@($win, [double]360, [double]140))
+    if ([math]::Abs($ptBr.X - 1224) -gt 0.5) { throw "progress X $($ptBr.X) not SSMS window corner" }
+    if ([math]::Abs($ptBr.Y - 844) -gt 0.5) { throw "progress Y $($ptBr.Y) not SSMS window corner" }
+    $pass++
+} catch {
+    [void]$fail.Add("261 popup-screen $($_.Exception.Message)")
 }
 
 Write-Host "PASS=$pass FAIL=$($fail.Count)"
