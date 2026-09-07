@@ -262,7 +262,11 @@ namespace AxialSqlTools
                     if (hasFromRaw)
                     {
                         // ScriptDom 把 192. 收成 Numeric，无独立 Dot；IP 链接服务器以原文解析为准
-                        if (fromNameRaw.InFromClause && JoinNumericFromSegments(fromNameRaw) != null)
+                        bool rawIp = fromNameRaw.InFromClause && (
+                            JoinNumericFromSegments(fromNameRaw) != null
+                            || (fromNameRaw.Segments != null && fromNameRaw.Segments.Count > 0
+                                && IsCompleteIpv4(fromNameRaw.Segments[0])));
+                        if (rawIp)
                             fromName = fromNameRaw;
                         else if (!fromName.InFromClause)
                             fromName = fromNameRaw;
@@ -291,7 +295,6 @@ namespace AxialSqlTools
                         if (!string.IsNullOrEmpty(owner) && !local.Aliases.ContainsKey(owner))
                             CollectAliasesFromTokens(tokens, localOffset, local);
 
-                        bool aliasMember = !string.IsNullOrEmpty(owner) && local.Aliases.ContainsKey(owner);
                         int memBeforeIdx = FindTokenIndexBefore(tokens, localOffset);
                         string majorForMember = memBeforeIdx >= 0
                             ? FindNearestMajorClauseKeyword(tokens, memBeforeIdx, localOffset)
@@ -302,9 +305,12 @@ namespace AxialSqlTools
                         bool inDmlTargetName = majorForMember == "UPDATE" || majorForMember == "DELETE"
                             || majorForMember == "INSERT" || majorForMember == "INTO";
                         bool ipLinkedServer = JoinNumericFromSegments(fromName) != null
-                            || (fromName != null && fromName.UsesDoubleDot);
+                            || (fromName != null && fromName.UsesDoubleDot)
+                            || (fromName != null && fromName.Segments != null && fromName.Segments.Count > 0
+                                && IsLinkedServerName(connInfo, fromName.Segments[0]));
 
-                        if (!inDmlTargetName && !ipLinkedServer && (aliasMember || inExprClause || !fromQualifiedName))
+                        // FROM 里的 库.架构. / server.db. 不能因为 dbo 被收成别名就改走列补全
+                        if (!inDmlTargetName && !ipLinkedServer && (inExprClause || !fromQualifiedName))
                         {
                             result.Context = CompletionContext.MemberAccess;
                             result.Prefix = memberPrefix;

@@ -168,6 +168,12 @@ Add-Case '159' 'SELECT * FROM RtBase....' @() 'FromClause' @('kucun','dbo.kucun'
 Add-Case '160' 'SELECT * FROM [192.168.1.23].baoxiao..BaoXiao aa where aa.|' @('id') 'MemberAccess' -Catalog 'linked'
 Add-Case '161' 'SELECT * FROM [192.168.1.23].baoxiao..BaoXiao  where |' @('id') 'WhereClause' -Catalog 'linked'
 Add-Case '162' 'SELECT * FROM [192.168.1.23].baoxiao..BaoXiao  where id|' @('id') 'WhereClause' -Catalog 'linked'
+# 库. 提示 dbo / dbo.表；库.dbo. 只提示表名（本地与链接服务器相同）
+Add-Case '280' 'SELECT * FROM jichushuju.' @('dbo','dbo.t_products') 'FromClause' -Catalog 'use'
+Add-Case '281' 'SELECT * FROM jichushuju.dbo.' @('t_products') 'FromClause' @('dbo.t_products') -Catalog 'use'
+Add-Case '282' 'SELECT * FROM [192.168.1.108].jichushuju.' @('dbo','dbo.t_products') 'FromClause' -Catalog 'use'
+Add-Case '283' 'SELECT * FROM [192.168.1.108].jichushuju.dbo.' @('t_products') 'FromClause' @('dbo.t_products') -Catalog 'use'
+Add-Case '284' 'SELECT * FROM RtBase.' @('dbo','dbo.kucun') 'FromClause' -Catalog 'mock'
 # 上一句无分号时行首 ex → EXEC（勿被 EXCEPT 续写抢走）
 Add-Case '164' ("SELECT * FROM t where x=1" + [char]10 + [char]10 + "ex") @('EXEC') 'BatchStart'
 Add-Case '165' ("SELECT * FROM t" + [char]10 + "ex") @('EXEC') 'BatchStart'
@@ -534,6 +540,8 @@ foreach ($c in $cases) {
     $allInsert = $null
     $kucunInsert = $null
     $ssPiciInsert = $null
+    $tProductsInsert = $null
+    $tProductsDisplay = $null
     if ($r.Items) {
         foreach ($it in $r.Items) {
             [void]$n.Add([string]$it.DisplayText)
@@ -541,6 +549,10 @@ foreach ($c in $cases) {
             if ([string]$it.Kind -eq 'AllColumns') { $allInsert = [string]$it.InsertText }
             if ([string]$it.DisplayText -eq 'kucun' -or [string]$it.DisplayText -eq 'dbo.kucun') {
                 $kucunInsert = [string]$it.InsertText
+            }
+            if ([string]$it.DisplayText -eq 't_products' -or [string]$it.DisplayText -eq 'dbo.t_products') {
+                $tProductsInsert = [string]$it.InsertText
+                $tProductsDisplay = [string]$it.DisplayText
             }
             if ([string]$it.DisplayText -eq 'SS_PiCi') { $ssPiciInsert = [string]$it.InsertText }
         }
@@ -598,6 +610,33 @@ foreach ($c in $cases) {
         if ($ssPiciInsert -notmatch 'SS_PiCi' -or $ssPiciInsert -notlike '*.') {
             $ok = $false
             $why = "SS_PiCi insert=[$ssPiciInsert] want alias."
+        }
+    }
+    if ($c.Name -in @('280','282')) {
+        if ($tProductsDisplay -ne 'dbo.t_products') {
+            $ok = $false
+            $why = "display=[$tProductsDisplay] want dbo.t_products"
+        } elseif ($tProductsInsert -notmatch 'dbo') {
+            $ok = $false
+            $why = "insert missing dbo: $tProductsInsert"
+        }
+    }
+    if ($c.Name -eq '284') {
+        if (-not $n.Contains('dbo.kucun')) {
+            $ok = $false
+            $why = "display missing dbo.kucun"
+        } elseif ($kucunInsert -notmatch 'dbo') {
+            $ok = $false
+            $why = "insert missing dbo: $kucunInsert"
+        }
+    }
+    if ($c.Name -in @('281','283')) {
+        if ($tProductsDisplay -ne 't_products') {
+            $ok = $false
+            $why = "display=[$tProductsDisplay] want t_products"
+        } elseif ($tProductsInsert -match 'dbo') {
+            $ok = $false
+            $why = "insert should be table only: $tProductsInsert"
         }
     }
     if ($ok) { $pass++ } else { [void]$fail.Add("$($c.Name) $why prefix=[$($r.Prefix)]") }

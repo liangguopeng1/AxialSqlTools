@@ -211,7 +211,13 @@ namespace AxialSqlTools
                         if (segCount == 2)
                         {
                             var remote = MetadataCatalogService.Instance.GetOrBuildLinkedCatalog(connInfo, linkedServer, fromName.Segments[1]);
-                            AddTablesInSchema(items, remote, null, settings, fromName, connInfo, includeSystemObjects: false, namePrefix: namePrefix);
+                            // server.db.. → 省略 dbo，只出表名；server.db. → 架构或 dbo.表
+                            if (fromName.UsesDoubleDot)
+                            {
+                                AddTablesInSchema(items, remote, "dbo", settings, fromName, connInfo, includeSystemObjects: false, namePrefix: namePrefix);
+                                return;
+                            }
+                            AddDatabaseDotCompletions(items, remote, fromName, connInfo, settings, namePrefix);
                             return;
                         }
                         if (segCount == 3)
@@ -229,7 +235,7 @@ namespace AxialSqlTools
                     if (segCount == 2 && IsLinkedServerDatabase(connInfo, linkedServer, fromName.Segments[1]))
                     {
                         var remote = MetadataCatalogService.Instance.GetOrBuildLinkedCatalog(connInfo, linkedServer, fromName.Segments[1]);
-                        AddTablesInSchema(items, remote, null, settings, fromName, connInfo, includeSystemObjects: false, namePrefix: namePrefix);
+                        AddDatabaseDotCompletions(items, remote, fromName, connInfo, settings, namePrefix);
                         return;
                     }
                 }
@@ -253,10 +259,10 @@ namespace AxialSqlTools
                         AddTablesInSchema(items, remote, "dbo", settings, fromName, connInfo, includeSystemObjects: false, namePrefix: namePrefix);
                         return;
                     }
-                    if (segCount == 1 && IsDatabaseName(connInfo, fromName.Segments[0]))
+                    if (segCount == 1 && IsDatabasePrefix(connInfo, catalog, fromName.Segments[0]))
                     {
                         var remote = ResolveDatabaseCatalog(connInfo, catalog, fromName.Segments[0]);
-                        AddTablesInSchema(items, remote, null, settings, fromName, connInfo, includeSystemObjects: false, namePrefix: namePrefix);
+                        AddDatabaseDotCompletions(items, remote, fromName, connInfo, settings, namePrefix);
                         return;
                     }
                     if (segCount == 1)
@@ -285,10 +291,10 @@ namespace AxialSqlTools
                     return;
                 }
 
-                if (segCount == 1 && IsDatabaseName(connInfo, fromName.Segments[0]))
+                if (segCount == 1 && IsDatabasePrefix(connInfo, catalog, fromName.Segments[0]))
                 {
                     var remote = ResolveDatabaseCatalog(connInfo, catalog, fromName.Segments[0]);
-                    AddTablesInSchema(items, remote, null, settings, fromName, connInfo, includeSystemObjects: false, namePrefix: namePrefix);
+                    AddDatabaseDotCompletions(items, remote, fromName, connInfo, settings, namePrefix);
                     return;
                 }
 
@@ -326,39 +332,79 @@ namespace AxialSqlTools
                 return GetCatalogNonBlocking(connInfo, database);
             }
 
-            private void AddSchemasForDatabase(List<CompletionItem> items, ScriptFactoryAccess.ConnectionInfo connInfo, string database)
+            /// <summary>
+            /// 库名后一个点：提示架构（dbo 优先）以及 dbo.表。选架构后再点则只出表名。
+            /// </summary>
+            private void AddDatabaseDotCompletions(
+                List<CompletionItem> items,
+                MetadataCatalog catalog,
+                FromObjectNameContext fromName,
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                IntelliSenseSettings settings,
+                string namePrefix)
             {
-                var cat = GetCatalogNonBlocking(connInfo, database);
-                if (cat == null) return;
+                AddSchemasFromCatalog(items, catalog, settings, namePrefix ?? fromName?.Partial);
+                AddTablesInSchema(items, catalog, null, settings, fromName, connInfo, includeSystemObjects: false, namePrefix: namePrefix);
+            }
+
+            /// <summary>ContainsDatabase 未就绪时，用已缓存目录判断第一段是否是库名，避免把 jichushuju. 当成当前库的架构。</summary>
+            private bool IsDatabasePrefix(ScriptFactoryAccess.ConnectionInfo connInfo, MetadataCatalog current, string name)
+            {
+                if (string.IsNullOrEmpty(name)) return false;
+                if (IsLinkedServerName(connInfo, name)) return false;
+                if (IsDatabaseName(connInfo, name)) return true;
+                if (current != null && string.Equals(current.Database, name, StringComparison.OrdinalIgnoreCase))
+                    return true;
+                var cached = MetadataCatalogService.Instance.GetCachedCatalogOrDisk(connInfo, name);
+                return cached != null && string.Equals(cached.Database, name, StringComparison.OrdinalIgnoreCase);
+            }
+
+            private void AddSchemasFromCatalog(List<CompletionItem> items, MetadataCatalog catalog, IntelliSenseSettings settings, string namePrefix)
+            {
+                if (catalog == null) return;
                 var schemas = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var t in cat.Tables)
+                if (catalog.Tables != null)
                 {
-                    if (!string.IsNullOrEmpty(t.Schema)) schemas.Add(t.Schema);
+                    foreach (var t in catalog.Tables)
+                    {
+                        if (!string.IsNullOrEmpty(t.Schema)) schemas.Add(t.Schema);
+                    }
                 }
-                foreach (var v in cat.Views)
+                if (catalog.Views != null)
                 {
-                    if (!string.IsNullOrEmpty(v.Schema)) schemas.Add(v.Schema);
+                    foreach (var v in catalog.Views)
+                    {
+                        if (!string.IsNullOrEmpty(v.Schema)) schemas.Add(v.Schema);
+                    }
                 }
-                foreach (var s in schemas.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+                string filter = GetLastSegment(namePrefix);
+                string dbLabel = catalog.Database ?? string.Empty;
+                foreach (var s in schemas
+                    .OrderBy(x => string.Equals(x, "dbo", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                    .ThenBy(x => x, StringComparer.OrdinalIgnoreCase))
                 {
-                    items.Add(new CompletionItem(s, "[" + s + "]", CompletionKind.Schema, "架构 (" + database + ")"));
+                    if (!ObjectNameMatchesFilter(s, filter)) continue;
+                    items.Add(new CompletionItem(s, FormatIdentifier(s, settings), CompletionKind.Schema,
+                        string.IsNullOrEmpty(dbLabel) ? "架构" : "架构 (" + dbLabel + ")"));
                 }
             }
 
             private void AddTablesInSchema(List<CompletionItem> items, MetadataCatalog catalog, string schema, IntelliSenseSettings settings, FromObjectNameContext fromName, ScriptFactoryAccess.ConnectionInfo connInfo, bool includeSystemObjects, string namePrefix = null)
             {
                 if (catalog == null) return;
-                bool tableNameOnly = fromName != null && fromName.InFromClause && fromName.UsesDoubleDot;
                 string filter = GetLastSegment(namePrefix ?? fromName?.Partial);
                 int cap = Math.Max(PreSortCandidateFloor, settings.maxCompletionItems * PreSortCandidateMultiplier);
                 // 插入文本策略只算一次，避免每张表都 IsDatabaseName/连库
-                var insertMode = ResolveTableInsertMode(fromName, connInfo);
+                var insertMode = ResolveTableInsertMode(fromName, connInfo, catalog);
+                bool tableNameOnly = ShouldDisplayTableNameOnly(fromName, connInfo);
+                bool matchQualified = string.IsNullOrEmpty(schema) && insertMode == TableInsertMode.SchemaAndTable;
                 int added = 0;
                 foreach (var t in catalog.Tables)
                 {
                     if (!string.IsNullOrEmpty(schema) && !string.Equals(t.Schema, schema, StringComparison.OrdinalIgnoreCase))
                         continue;
-                    if (!ObjectNameMatchesFilter(t.Name, filter))
+                    if (!ObjectNameMatchesFilter(t.Name, filter)
+                        && !(matchQualified && ObjectNameMatchesFilter(t.QualifiedName, filter)))
                         continue;
                     string insert = BuildTableInsertText(fromName, t, connInfo, settings, insertMode);
                     string display = tableNameOnly ? t.Name : t.QualifiedName;
@@ -369,7 +415,8 @@ namespace AxialSqlTools
                 {
                     if (!string.IsNullOrEmpty(schema) && !string.Equals(v.Schema, schema, StringComparison.OrdinalIgnoreCase))
                         continue;
-                    if (!ObjectNameMatchesFilter(v.Name, filter))
+                    if (!ObjectNameMatchesFilter(v.Name, filter)
+                        && !(matchQualified && ObjectNameMatchesFilter(v.QualifiedName, filter)))
                         continue;
                     string insert = BuildTableInsertText(fromName, v, connInfo, settings, insertMode);
                     string display = tableNameOnly ? v.Name : v.QualifiedName;
@@ -406,24 +453,25 @@ namespace AxialSqlTools
                 SchemaDotTable
             }
 
-            private TableInsertMode ResolveTableInsertMode(FromObjectNameContext fromName, ScriptFactoryAccess.ConnectionInfo connInfo)
+            private TableInsertMode ResolveTableInsertMode(FromObjectNameContext fromName, ScriptFactoryAccess.ConnectionInfo connInfo, MetadataCatalog catalog = null)
             {
                 if (fromName == null || !fromName.InFromClause)
                     return TableInsertMode.FullQualified;
                 int segCount = fromName.Segments?.Count ?? 0;
-                bool linkedServerContext = segCount > 0 && connInfo != null && IsLinkedServerName(connInfo, fromName.Segments[0]);
+                bool linkedServerContext = segCount > 0 && IsLinkedServerName(connInfo, fromName.Segments[0]);
                 if (fromName.AfterDot || fromName.PartialStartOffset >= 0)
                 {
                     if (linkedServerContext)
                     {
-                        if (segCount == 1) return TableInsertMode.TableOnly;
-                        if (fromName.UsesDoubleDot || segCount >= 2) return TableInsertMode.TableOnly;
+                        if (fromName.UsesDoubleDot || segCount >= 3) return TableInsertMode.TableOnly;
+                        if (segCount == 2) return TableInsertMode.SchemaAndTable;
+                        return TableInsertMode.TableOnly;
                     }
                     if (fromName.UsesDoubleDot) return TableInsertMode.TableOnly;
                     if (segCount >= 2) return TableInsertMode.TableOnly;
                     if (segCount == 1)
                     {
-                        if (IsDatabaseName(connInfo, fromName.Segments[0]))
+                        if (IsDatabasePrefix(connInfo, catalog, fromName.Segments[0]))
                             return TableInsertMode.SchemaAndTable;
                         return TableInsertMode.TableOnly;
                     }
@@ -431,12 +479,24 @@ namespace AxialSqlTools
                 }
                 if (segCount == 0) return TableInsertMode.FullQualified;
                 string dbOrSchema = fromName.Segments[0];
-                bool isDb = IsDatabaseName(connInfo, dbOrSchema);
+                bool isDb = IsDatabasePrefix(connInfo, catalog, dbOrSchema);
                 if (isDb && fromName.UsesDoubleDot) return TableInsertMode.DbDoubleDotTable;
                 if (isDb && segCount >= 2) return TableInsertMode.DbDotSchemaTable;
                 if (isDb) return TableInsertMode.DbDotSchemaAndTable;
                 if (segCount == 1) return TableInsertMode.SchemaDotTable;
                 return TableInsertMode.FullQualified;
+            }
+
+            /// <summary>库.dbo. / server.db.dbo. / db.. 只显示表名；当前库 dbo. 仍显示 dbo.表（与既有列表一致）。</summary>
+            private bool ShouldDisplayTableNameOnly(FromObjectNameContext fromName, ScriptFactoryAccess.ConnectionInfo connInfo)
+            {
+                if (fromName == null || !fromName.InFromClause) return false;
+                if (fromName.UsesDoubleDot) return true;
+                int segCount = fromName.Segments?.Count ?? 0;
+                if (segCount == 0) return false;
+                if (IsLinkedServerName(connInfo, fromName.Segments[0]))
+                    return segCount >= 3;
+                return segCount >= 2;
             }
 
             private void AddSnippets(List<CompletionItem> items, string prefix)
@@ -504,7 +564,7 @@ namespace AxialSqlTools
                 AddTablesAndViews(items, catalog, settings, fromName, connInfo, namePrefix);
                 if (catalog == null) return;
                 string filter = GetLastSegment(namePrefix ?? fromName?.Partial);
-                var insertMode = ResolveTableInsertMode(fromName, connInfo);
+                var insertMode = ResolveTableInsertMode(fromName, connInfo, catalog);
                 foreach (var s in catalog.Synonyms)
                 {
                     if (!ObjectNameMatchesFilter(s.Name, filter)) continue;
@@ -527,7 +587,7 @@ namespace AxialSqlTools
                 if (catalog == null) return;
                 string filter = GetLastSegment(namePrefix ?? fromName?.Partial);
                 int cap = Math.Max(PreSortCandidateFloor, settings.maxCompletionItems * PreSortCandidateMultiplier);
-                var insertMode = ResolveTableInsertMode(fromName, connInfo);
+                var insertMode = ResolveTableInsertMode(fromName, connInfo, catalog);
                 int added = 0;
                 foreach (var t in catalog.Tables)
                 {
@@ -1237,6 +1297,7 @@ namespace AxialSqlTools
                     case CompletionKind.Column: return -3;
                     case CompletionKind.Procedure: return -2;
                     case CompletionKind.Database: return -1;
+                    case CompletionKind.Schema: return -1; // 库. 后 dbo 须排在表前面
                     case CompletionKind.Keyword: return 0;
                     case CompletionKind.ScalarFunction: return 1; // 有前缀时靠 GetMatchScore；空前缀紧随关键字，避免被表挤掉
                     case CompletionKind.Snippet: return 2;
@@ -1244,7 +1305,6 @@ namespace AxialSqlTools
                     case CompletionKind.View: return 4;
                     case CompletionKind.Synonym: return 5;
                     case CompletionKind.TableFunction: return 6;
-                    case CompletionKind.Schema: return 7;
                     default: return 10;
                 }
             }
