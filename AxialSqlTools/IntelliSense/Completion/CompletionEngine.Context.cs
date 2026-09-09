@@ -533,6 +533,14 @@ namespace AxialSqlTools
                                 ?? target.FindTableOrView(null, tref.Name);
                     if (found != null) return found;
                 }
+                if (IsSystemSchemaName(tref.Schema))
+                {
+                    string server = !string.IsNullOrEmpty(tref.LinkedServer)
+                        ? tref.LinkedServer
+                        : (connInfo != null ? connInfo.ServerName : catalog?.Server);
+                    var sysFound = MetadataCatalogService.Instance.FindSystemTableOrView(server, tref.Schema, tref.Name);
+                    if (sysFound != null) return sysFound;
+                }
                 // 目标库缓存未就绪时，勿直接失败：按表名在当前库再试一次（同名表）
                 if (catalog != null && !ReferenceEquals(catalog, target))
                 {

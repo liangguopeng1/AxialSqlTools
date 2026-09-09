@@ -19,10 +19,12 @@ namespace AxialSqlTools.IntelliSense
 
     /// <summary>
     /// IntelliSense 目录磁盘缓存：%APPDATA%\AxialSqlTools\intellisense-cache\{server}\
-    /// meta.json + 每库一份 {database}.json。不与快速搜索 objects.jsonl 共用。
+    /// meta.json + 每库一份 {database}.json + 实例共用 __axial_sys.json（sys / INFORMATION_SCHEMA）。
+    /// 不与快速搜索 objects.jsonl 共用。
     /// </summary>
     internal static class MetadataCacheStore
     {
+        internal const string SystemCatalogFileName = "__axial_sys.json";
         private static readonly JsonSerializerSettings JsonSettings = new JsonSerializerSettings
         {
             NullValueHandling = NullValueHandling.Ignore
@@ -41,6 +43,11 @@ namespace AxialSqlTools.IntelliSense
         public static string GetCatalogPath(string serverName, string database)
         {
             return Path.Combine(GetServerDirectory(serverName), UserConfigPaths.SanitizePathSegment(database) + ".json");
+        }
+
+        public static string GetSystemCatalogPath(string serverName)
+        {
+            return Path.Combine(GetServerDirectory(serverName), SystemCatalogFileName);
         }
 
         public static bool TryGetMeta(string serverName, out IntelliSenseCacheMeta meta)
@@ -101,7 +108,8 @@ namespace AxialSqlTools.IntelliSense
             foreach (string path in Directory.GetFiles(dir, "*.json"))
             {
                 string name = Path.GetFileName(path);
-                if (string.Equals(name, "meta.json", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(name, "meta.json", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(name, SystemCatalogFileName, StringComparison.OrdinalIgnoreCase))
                     continue;
                 yield return path;
             }
@@ -115,6 +123,42 @@ namespace AxialSqlTools.IntelliSense
             Directory.CreateDirectory(dir);
             string path = GetCatalogPath(serverName, database);
             WriteAtomic(path, JsonConvert.SerializeObject(catalog, JsonSettings));
+        }
+
+        public static MetadataCatalog TryLoadSystemCatalog(string serverName)
+        {
+            if (string.IsNullOrWhiteSpace(serverName))
+                return null;
+            string path = GetSystemCatalogPath(serverName);
+            if (!File.Exists(path))
+                return null;
+            try
+            {
+                using (var stream = File.OpenRead(path))
+                using (var reader = new StreamReader(stream))
+                using (var json = new JsonTextReader(reader))
+                {
+                    var catalog = JsonSerializer.Create(JsonSettings).Deserialize<MetadataCatalog>(json);
+                    if (catalog == null)
+                        return null;
+                    if (string.IsNullOrEmpty(catalog.Server))
+                        catalog.Server = serverName;
+                    return catalog;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        public static void SaveSystemCatalog(string serverName, MetadataCatalog catalog)
+        {
+            if (string.IsNullOrWhiteSpace(serverName) || catalog == null)
+                return;
+            string dir = GetServerDirectory(serverName);
+            Directory.CreateDirectory(dir);
+            WriteAtomic(GetSystemCatalogPath(serverName), JsonConvert.SerializeObject(catalog, JsonSettings));
         }
 
         public static void SaveMeta(string serverName, IntelliSenseCacheMeta meta)

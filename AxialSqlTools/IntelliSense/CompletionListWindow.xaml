@@ -25,6 +25,7 @@
         <SolidColorBrush x:Key="PopupSelectedBgBrush" Color="#E0E0E0"/>
         <SolidColorBrush x:Key="PopupHoverBgBrush" Color="#EBEBEB"/>
         <SolidColorBrush x:Key="PopupAccentBrush" Color="#007ACC"/>
+        <SolidColorBrush x:Key="PopupMatchFgBrush" Color="#C2410C"/>
         <Style x:Key="KindGlyphBorder" TargetType="Border">
             <Setter Property="Width" Value="18"/>
             <Setter Property="Height" Value="18"/>
@@ -171,7 +172,7 @@
                                                VerticalAlignment="Center"/>
                                 </Border>
                                 <TextBlock DockPanel.Dock="Left"
-                                           Text="{Binding DisplayText}"
+                                           local:MatchHighlight.Item="{Binding}"
                                            Margin="8,0,0,0"
                                            VerticalAlignment="Center"
                                            FontFamily="Segoe UI, Microsoft YaHei UI"

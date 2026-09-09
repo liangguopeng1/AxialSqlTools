@@ -28,7 +28,7 @@ function Add-Case([string]$name, [string]$sql, [string[]]$expect, [string]$ctx =
         $caret = $marker
         $sql = $sql.Remove($marker, 1)
     }
-    # Catalog: ''=none; 'mock'=mockCatalog; 'linked'=mockCatalog+linked conn; 'use'=masterCatalog+master conn.
+    # Catalog: ''=none; 'mock'=mockCatalog; 'linked'=mockCatalog+linked conn; 'use'=masterCatalog+master conn; 'emptysys'=已加载标志但无 sys 对象; 'sharesys'=库目录无 sys，走实例级共用目录.
     # Catalog requirement is inline with each case, avoiding drift from scattered lists.
     [void]$script:cases.Add([pscustomobject]@{ Name = $name; Sql = $sql; Expect = $expect; Ctx = $ctx; MustNot = $mustNot; Caret = $caret; Catalog = $Catalog })
 }
@@ -165,6 +165,11 @@ Add-Case '156' 'SELECT * FROM dbo.' @() ''
 Add-Case '157' 'SELECT * FROM RtBase..' @('kucun') 'FromClause' @('dbo.kucun') -Catalog 'mock'
 Add-Case '158' 'SELECT * FROM RtBase...' @() 'FromClause' @('kucun','dbo.kucun') -Catalog 'mock'
 Add-Case '159' 'SELECT * FROM RtBase....' @() 'FromClause' @('kucun','dbo.kucun') -Catalog 'mock'
+# 架构已经写出后再打 .. 不是 db.. 省略架构，不应再出表
+Add-Case '321' 'SELECT * FROM RtBase.dbo..' @() 'FromClause' @('kucun','dbo.kucun') -Catalog 'mock'
+Add-Case '322' 'SELECT * FROM rt_fenjian.dbo..' @() 'FromClause' @('SS_PiCi') -Catalog 'use'
+Add-Case '323' 'SELECT * FROM [192.168.1.108].jichushuju.dbo..' @() 'FromClause' @('t_products') -Catalog 'use'
+Add-Case '324' 'SELECT * FROM RtBase.dbo.' @('kucun') 'FromClause' @('dbo.kucun') -Catalog 'mock'
 # 跨服务器 server.db..table：列补全走链接服务器缓存，勿在当前库找表
 Add-Case '160' 'SELECT * FROM [192.168.1.23].baoxiao..BaoXiao aa where aa.|' @('id') 'MemberAccess' -Catalog 'linked'
 Add-Case '161' 'SELECT * FROM [192.168.1.23].baoxiao..BaoXiao  where |' @('id') 'WhereClause' -Catalog 'linked'
@@ -336,6 +341,33 @@ Add-Case '304' 'ALTER TABLE k' @('kucun') 'DdlObjectTarget' -Catalog 'mock'
 Add-Case '305' 'co' @('COMMIT') 'BatchStart'; Add-Case '306' 'ro' @('ROLLBACK') 'BatchStart'
 Add-Case '307' 'MERGE INTO k' @('kucun') 'DdlObjectTarget' -Catalog 'mock'
 Add-Case '308' 'tr' @('TRUNCATE') 'BatchStart'
+# 按序子序列：ddi / daoitem → DH_DaoHuoItem
+Add-Case '310' ("USE rt_storage" + [char]10 + "SELECT * FROM ddi") @('DH_DaoHuoItem') 'FromClause' -Catalog 'use'
+Add-Case '311' ("USE rt_storage" + [char]10 + "SELECT * FROM daoitem") @('DH_DaoHuoItem') 'FromClause' -Catalog 'use'
+Add-Case '312' 'SELECT * FROM rt_storage.dbo.ddi' @('DH_DaoHuoItem') 'FromClause' -Catalog 'use'
+# sys.* / INFORMATION_SCHEMA.* 系统对象（缓存不含 is_ms_shipped）
+Add-Case '313' 'SELECT * FROM sys' @('sys') 'FromClause' @('sys.tables','sys.objects','tables') -Catalog 'mock'
+Add-Case '314' 'SELECT * FROM sys.' @('tables','objects','columns') 'FromClause' -Catalog 'mock'
+Add-Case '315' 'SELECT * FROM sys.tab' @('tables') 'FromClause' -Catalog 'mock'
+Add-Case '316' 'SELECT * FROM INFORMATION_SCHEMA' @('INFORMATION_SCHEMA') 'FromClause' @('INFORMATION_SCHEMA.TABLES','TABLES') -Catalog 'mock'
+Add-Case '316b' 'SELECT * FROM INFORMATION_SCHEMA.' @('TABLES') 'FromClause' -Catalog 'mock'
+# 目录已加载 sys 对象时，以服务器名单为准（含静态表没有的 partitions）
+Add-Case '325' 'SELECT * FROM sys.par' @('partitions') 'FromClause' -Catalog 'mock'
+# 标了已加载但缓存里没有 sys 对象时，回退静态名单（避免 FROM sys. 空白）
+Add-Case '326' 'SELECT * FROM sys.ta' @('tables') 'FromClause' -Catalog 'emptysys'
+# sys 表值函数 / 系统过程从目录拉取（DMF）
+Add-Case '327' 'SELECT * FROM sys.dm_db_log' @('dm_db_log_info') 'FromClause' -Catalog 'mock'
+Add-Case '328' 'EXEC sys.sp_helpt' @('sp_helptext') 'AfterExec' -Catalog 'mock'
+# 实例级 sys 目录：当前库缓存没有 sys 对象时，仍用服务器共用目录
+Add-Case '329' 'SELECT * FROM sys.dm_db_log' @('dm_db_log_info') 'FromClause' -Catalog 'sharesys'
+Add-Case '330' 'SELECT * FROM sys.par' @('partitions') 'FromClause' -Catalog 'sharesys'
+# 未写出 sys. 时不把系统对象混进 FROM 候选
+Add-Case '331' 'SELECT * FROM ' @() 'FromClause' @('sys.tables','tables','objects','dm_db_log_info') -Catalog 'mock'
+# 系统架构从 sys.schemas 拉取（与 dbo 相同），不再写死
+Add-Case '317' 'SELECT * FROM RtBase.' @('dbo','sys','guest','db_owner','INFORMATION_SCHEMA','db_datareader') 'FromClause' -Catalog 'mock'
+Add-Case '318' 'SELECT * FROM db_' @('db_owner','db_datareader','db_datawriter','db_ddladmin') 'FromClause' -Catalog 'mock'
+Add-Case '319' 'SELECT * FROM guest' @('guest') 'FromClause' -Catalog 'mock'
+Add-Case '320' 'SELECT * FROM jichushuju.' @('dbo','sys','guest','db_owner') 'FromClause' -Catalog 'use'
 
 Write-Host "Cases=$($cases.Count)"
 
@@ -436,6 +468,16 @@ foreach ($cn in @('j_id','status','H_ID','K_ID','CeShu','Y_GHSID','Y_Cost0','isq
     [void]$tuiGhs.Columns.Add($col)
 }
 [void]$storageCatalog.Tables.Add($tuiGhs)
+$daoHuo = [Activator]::CreateInstance($tableType)
+$daoHuo.Schema = 'dbo'
+$daoHuo.Name = 'DH_DaoHuoItem'
+foreach ($cn in @('Id','Qty')) {
+    $col = [Activator]::CreateInstance($colType)
+    $col.Name = $cn
+    $col.DataType = 'int'
+    [void]$daoHuo.Columns.Add($col)
+}
+[void]$storageCatalog.Tables.Add($daoHuo)
 $snowFn2 = [Activator]::CreateInstance($routineType)
 $snowFn2.Schema = 'dbo'
 $snowFn2.Name = 'SnowflakeID'
@@ -549,6 +591,91 @@ foreach ($cn in @('primarycode','price')) {
 [void]$rtDataCatalog.Tables.Add($kuagong)
 $svc.PutCatalog('local', 'rt_data_processing', $rtDataCatalog)
 
+function Add-StandardSchemas($catalog) {
+    if ($null -eq $catalog) { return }
+    foreach ($s in @(
+            'db_accessadmin','db_backupoperator','db_datareader','db_datawriter',
+            'db_ddladmin','db_denydatareader','db_denydatawriter','db_owner',
+            'db_securityadmin','dbo','guest','INFORMATION_SCHEMA','sys'
+        )) {
+        [void]$catalog.Schemas.Add($s)
+    }
+}
+Add-StandardSchemas $mockCatalog
+Add-StandardSchemas $linkedCatalog
+Add-StandardSchemas $storageCatalog
+Add-StandardSchemas $masterCatalog
+Add-StandardSchemas $rtbaseCatalog
+Add-StandardSchemas $newdakuCatalog
+Add-StandardSchemas $fenjianCatalog
+Add-StandardSchemas $jichuCatalog
+Add-StandardSchemas $rtDataCatalog
+
+function Add-SystemCatalogViews($catalog) {
+    if ($null -eq $catalog) { return }
+    foreach ($pair in @(
+            @('sys','tables'), @('sys','objects'), @('sys','columns'), @('sys','views'),
+            @('sys','partitions'), @('INFORMATION_SCHEMA','TABLES')
+        )) {
+        $v = [Activator]::CreateInstance($tableType)
+        $v.Schema = $pair[0]
+        $v.Name = $pair[1]
+        $v.IsView = $true
+        $col = [Activator]::CreateInstance($colType)
+        $col.Name = 'name'
+        $col.DataType = 'sysname'
+        [void]$v.Columns.Add($col)
+        [void]$catalog.Views.Add($v)
+    }
+    $catalog.SystemObjectsLoaded = $true
+}
+function Add-SystemRoutines($catalog) {
+    if ($null -eq $catalog) { return }
+    $paramType = $asm.GetType('AxialSqlTools.IntelliSense.RoutineParam')
+    $tf = [Activator]::CreateInstance($routineType)
+    $tf.Schema = 'sys'
+    $tf.Name = 'dm_db_log_info'
+    $tf.Kind = [Enum]::Parse($kindType, 'TableFunction')
+    $p = [Activator]::CreateInstance($paramType)
+    $p.Name = '@DatabaseId'
+    $p.DataType = 'int'
+    [void]$tf.Parameters.Add($p)
+    [void]$catalog.TableFunctions.Add($tf)
+    $proc = [Activator]::CreateInstance($routineType)
+    $proc.Schema = 'sys'
+    $proc.Name = 'sp_helptext'
+    $proc.Kind = [Enum]::Parse($kindType, 'Procedure')
+    [void]$catalog.Procedures.Add($proc)
+    $catalog.SystemRoutinesLoaded = $true
+}
+Add-SystemCatalogViews $mockCatalog
+Add-SystemCatalogViews $masterCatalog
+Add-SystemCatalogViews $jichuCatalog
+Add-SystemRoutines $mockCatalog
+Add-SystemRoutines $masterCatalog
+Add-SystemRoutines $jichuCatalog
+
+$emptySysCatalog = [Activator]::CreateInstance($catalogType)
+$emptySysCatalog.Database = 'master'
+$emptySysCatalog.IsIndexed = $true
+$emptySysCatalog.SystemObjectsLoaded = $true
+Add-StandardSchemas $emptySysCatalog
+
+$shareSysCatalog = [Activator]::CreateInstance($catalogType)
+$shareSysCatalog.Server = 'axial-sys-share-test'
+$shareSysCatalog.IsIndexed = $true
+Add-SystemCatalogViews $shareSysCatalog
+Add-SystemRoutines $shareSysCatalog
+$svc.PutSystemCatalog('axial-sys-share-test', $shareSysCatalog)
+$shareDbCatalog = [Activator]::CreateInstance($catalogType)
+$shareDbCatalog.Server = 'axial-sys-share-test'
+$shareDbCatalog.Database = 'RtBase'
+$shareDbCatalog.IsIndexed = $true
+Add-StandardSchemas $shareDbCatalog
+$shareConn = [Activator]::CreateInstance($connType)
+[void]$connType.GetProperty('ServerName').SetValue($shareConn, 'axial-sys-share-test')
+[void]$connType.GetProperty('Database').SetValue($shareConn, 'RtBase')
+
 $masterConn = [Activator]::CreateInstance($connType)
 [void]$connType.GetProperty('ServerName').SetValue($masterConn, 'local')
 [void]$connType.GetProperty('Database').SetValue($masterConn, 'master')
@@ -562,9 +689,11 @@ foreach ($c in $cases) {
     $cat = $null
     $conn = $null
     switch ($c.Catalog) {
-        'mock'   { $cat = $mockCatalog }
-        'linked' { $cat = $mockCatalog; $conn = $linkedConn }
-        'use'    { $cat = $masterCatalog; $conn = $masterConn }
+        'mock'     { $cat = $mockCatalog }
+        'linked'   { $cat = $mockCatalog; $conn = $linkedConn }
+        'use'      { $cat = $masterCatalog; $conn = $masterConn }
+        'emptysys' { $cat = $emptySysCatalog }
+        'sharesys' { $cat = $shareDbCatalog; $conn = $shareConn }
     }
     try {
         $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -624,6 +753,30 @@ foreach ($c in $cases) {
     if ($c.Name -eq '292' -and $kucunSuffix -ne '(cc)') {
         $ok = $false
         $why = "suffix=$kucunSuffix want=(cc)"
+    }
+    if ($c.Name -in @('310','311','312')) {
+        $wantChars = if ($c.Name -eq '311') { 'daoitem' } else { 'ddi' }
+        $hitIt = $null
+        if ($r.Items) {
+            foreach ($it in $r.Items) {
+                $dt = [string]$it.DisplayText
+                if ($dt -eq 'DH_DaoHuoItem' -or $dt.EndsWith('.DH_DaoHuoItem')) { $hitIt = $it; break }
+            }
+        }
+        if ($null -ne $hitIt) {
+            $idx = $hitIt.MatchIndices
+            $gotChars = ''
+            if ($idx) {
+                foreach ($i in $idx) {
+                    $dt = [string]$hitIt.DisplayText
+                    if ($i -ge 0 -and $i -lt $dt.Length) { $gotChars += $dt[$i] }
+                }
+            }
+            if ($gotChars.ToLower() -ne $wantChars) {
+                $ok = $false
+                $why = "highlight=[$gotChars] want=$wantChars display=$($hitIt.DisplayText)"
+            }
+        }
     }
     if ($c.Name -in @('141','142','143')) {
         if (-not $kinds.Contains('AllColumns')) {

@@ -110,6 +110,11 @@ namespace AxialSqlTools.IntelliSense
         private static extern IntPtr GetFocus();
 
         [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        private static readonly uint SsmsProcessId = (uint)Process.GetCurrentProcess().Id;
+
+        [DllImport("user32.dll")]
         private static extern uint GetDoubleClickTime();
 
         [StructLayout(LayoutKind.Sequential)]
@@ -221,6 +226,14 @@ namespace AxialSqlTools.IntelliSense
         {
             try
             {
+                // DTE 活动文档仍是 SQL 时，切到 RTX 等其它进程不会清 SqlEditorIsForeground。
+                // 先看 OS 前台是否本进程，避免 WindowFromPoint/GetClassName 去扫别人的窗口。
+                if (!QuickInfoTooltip.IsSsmsForeground())
+                {
+                    if (QuickInfoTooltip.IsOpen)
+                        QuickInfoTooltip.Close();
+                    return;
+                }
                 if (!IntelliSenseManager.SqlEditorIsForeground)
                 {
                     if (QuickInfoTooltip.IsOpen)
@@ -646,7 +659,7 @@ namespace AxialSqlTools.IntelliSense
                 return false;
             }
 
-                IntPtr hwndAtPoint = WindowFromPoint(screenPt);
+            IntPtr hwndAtPoint = WindowFromPoint(screenPt);
             if (hwndAtPoint != IntPtr.Zero)
             {
                 if (IntelliSenseKeyHandler.IsAnyPopupHwnd(hwndAtPoint))
@@ -654,18 +667,16 @@ namespace AxialSqlTools.IntelliSense
                     reason = "on_tip";
                     return true;
                 }
+                if (IsForeignProcessWindow(hwndAtPoint))
+                {
+                    reason = "foreign_process";
+                    return false;
+                }
                 // 查询画布 HWND 经常对不上 GetWindowHandle，不能按父子/顶层根拦截。
                 // 挡模态对话框，以及本扩展的 WPF 工具窗口（查询历史/设置等）。
                 if (IsDefinitelyForeignShell(hwndAtPoint))
                 {
                     reason = string.Format("foreign_shell hit=0x{0:X}", hwndAtPoint.ToInt64());
-                    if ((DateTime.UtcNow - _lastDiagLog).TotalSeconds >= 2)
-                    {
-                        _lastDiagLog = DateTime.UtcNow;
-                        DescribeWindow(hwndAtPoint, out string cls, out string title);
-                        _logger.Info("QuickInfo skip hover foreign hwnd=0x{0:X} class={1} title={2}",
-                            hwndAtPoint.ToInt64(), cls, title);
-                    }
                     return false;
                 }
             }
@@ -805,9 +816,24 @@ namespace AxialSqlTools.IntelliSense
         /// 从命中窗口向上认设置页/选项对话框。SSMS 查询画布是独立 HWND（日志里 hit≠editor），
         /// 不能用父子或 GA_ROOT 判断，否则编辑器里也不弹。
         /// </summary>
+        private static bool IsForeignProcessWindow(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return false;
+            try
+            {
+                GetWindowThreadProcessId(hwnd, out uint pid);
+                return pid != 0 && pid != SsmsProcessId;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         internal static bool IsDefinitelyForeignShell(IntPtr hit)
         {
             if (hit == IntPtr.Zero) return false;
+            if (IsForeignProcessWindow(hit)) return true;
             if (IntelliSenseKeyHandler.IsAnyPopupHwnd(hit)) return false;
             IntPtr p = hit;
             for (int i = 0; i < 16 && p != IntPtr.Zero; i++)

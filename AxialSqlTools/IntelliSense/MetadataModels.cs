@@ -45,12 +45,58 @@ namespace AxialSqlTools
             public List<RoutineInfo> ScalarFunctions { get; set; } = new List<RoutineInfo>();
             public List<RoutineInfo> TableFunctions { get; set; } = new List<RoutineInfo>();
             public List<DatabaseObjectInfo> Synonyms { get; set; } = new List<DatabaseObjectInfo>();
+            /// <summary>sys.schemas 全量架构名（含 sys / guest / db_owner 等），与表一样从服务器拉取。</summary>
+            public List<string> Schemas { get; set; } = new List<string>();
+            /// <summary>是否已从服务器加载 sys / INFORMATION_SCHEMA 对象（旧缓存为 false，需重建）。</summary>
+            public bool SystemObjectsLoaded { get; set; }
+            /// <summary>是否已从服务器加载 sys 例程（过程/函数/DMF）。旧缓存为 false，需重建。</summary>
+            public bool SystemRoutinesLoaded { get; set; }
             /// <summary>LoadRoutines 是否成功跑完（失败时可能有表无过程，EXEC 需重建）。</summary>
             public bool RoutinesLoaded { get; set; }
 
             public bool IsEmpty =>
                 Tables.Count == 0 && Views.Count == 0 && Procedures.Count == 0 &&
                 ScalarFunctions.Count == 0 && TableFunctions.Count == 0 && Synonyms.Count == 0;
+
+            /// <summary>缓存里是否已有 sys / INFORMATION_SCHEMA 表或视图（空名单不能当「已加载」）。</summary>
+            public bool HasSystemCatalogObjects()
+            {
+                return ContainsSystemSchema(Tables) || ContainsSystemSchema(Views);
+            }
+
+            /// <summary>缓存里是否已有 sys / INFORMATION_SCHEMA 过程或函数。</summary>
+            public bool HasSystemRoutines()
+            {
+                return ContainsSystemSchemaRoutine(Procedures)
+                    || ContainsSystemSchemaRoutine(ScalarFunctions)
+                    || ContainsSystemSchemaRoutine(TableFunctions);
+            }
+
+            private static bool ContainsSystemSchema(List<TableColumnInfo> list)
+            {
+                if (list == null) return false;
+                for (int i = 0; i < list.Count; i++)
+                {
+                    if (IsSystemSchema(list[i].Schema)) return true;
+                }
+                return false;
+            }
+
+            private static bool ContainsSystemSchemaRoutine(List<RoutineInfo> list)
+            {
+                if (list == null) return false;
+                for (int i = 0; i < list.Count; i++)
+                {
+                    if (IsSystemSchema(list[i].Schema)) return true;
+                }
+                return false;
+            }
+
+            private static bool IsSystemSchema(string schema)
+            {
+                return string.Equals(schema, "sys", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(schema, "INFORMATION_SCHEMA", StringComparison.OrdinalIgnoreCase);
+            }
 
             /// <summary>在所有表/视图里查找匹配 schema.name 的对象（含列）。</summary>
             public TableColumnInfo FindTableOrView(string schema, string name)

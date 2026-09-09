@@ -56,7 +56,7 @@ namespace AxialSqlTools
                         break;
 
                     case CompletionContext.FromClause:
-                        if (fromName != null && fromName.ExcessiveDots)
+                        if (fromName != null && (fromName.ExcessiveDots || IsDoubleDotAfterSchema(fromName, connInfo)))
                             break;
                         AddFromClauseItems(items, fromName, catalog, settings, connInfo, prefix, local);
                         if (settings.includeKeywords && ShouldSuggestAfterFromKeywords(fromName, prefix))
@@ -207,10 +207,11 @@ namespace AxialSqlTools
                     AddLocalFromObjects(items, local, settings, namePrefix);
                     AddDatabases(items, connInfo, settings);
                     AddLinkedServers(items, connInfo, settings);
+                    AddSchemasFromCatalog(items, catalog, settings, namePrefix);
                     AddTablesViewsAndRoutines(items, catalog, settings, includeTableFunctions: true, fromName: fromName, connInfo: connInfo, namePrefix: namePrefix);
                     return;
                 }
-                if (fromName.ExcessiveDots)
+                if (fromName.ExcessiveDots || IsDoubleDotAfterSchema(fromName, connInfo))
                     return;
 
                 int segCount = fromName.Segments?.Count ?? 0;
@@ -253,6 +254,9 @@ namespace AxialSqlTools
                         }
                         if (segCount == 3)
                         {
+                            // server.db.schema.. 架构已写出，再打 .. 不是合法省略
+                            if (fromName.UsesDoubleDot)
+                                return;
                             var remote = MetadataCatalogService.Instance.GetOrBuildLinkedCatalog(connInfo, linkedServer, fromName.Segments[1]);
                             AddTablesInSchema(items, remote, fromName.Segments[2], settings, fromName, connInfo, includeSystemObjects: false, namePrefix: namePrefix);
                             return;
@@ -277,6 +281,7 @@ namespace AxialSqlTools
                     // 数据库优先加入，避免被表列表占满 maxCompletionItems
                     AddDatabases(items, connInfo, settings);
                     AddLinkedServers(items, connInfo, settings);
+                    AddSchemasFromCatalog(items, catalog, settings, namePrefix ?? fromName?.Partial);
                     AddTablesViewsAndRoutines(items, catalog, settings, includeTableFunctions: true, fromName: fromName, connInfo: connInfo, namePrefix: namePrefix);
                     return;
                 }
@@ -351,6 +356,41 @@ namespace AxialSqlTools
             }
 
             /// <summary>
+            /// db.schema.. / server.db.schema..：架构已经写出后再打 .. 不是合法省略，不应再出对象补全。
+            /// db.. / server.db.. 仍是省略 dbo，保持提示。
+            /// </summary>
+            private bool IsDoubleDotAfterSchema(FromObjectNameContext fromName, ScriptFactoryAccess.ConnectionInfo connInfo)
+            {
+                if (fromName == null || !fromName.UsesDoubleDot) return false;
+                var segs = fromName.Segments;
+                int n = segs == null ? 0 : segs.Count;
+                if (n <= 1) return false;
+                int dbIndex;
+                if (CountLeadingIpv4Octets(segs) == 4)
+                    dbIndex = 4;
+                else if (IsLinkedServerName(connInfo, segs[0]) || IsCompleteIpv4(StripNumericDots(segs[0])))
+                    dbIndex = 1;
+                else
+                    dbIndex = 0;
+                return n > dbIndex + 1;
+            }
+
+            private static int CountLeadingIpv4Octets(List<string> segs)
+            {
+                if (segs == null || segs.Count < 4) return 0;
+                for (int i = 0; i < 4; i++)
+                {
+                    string s = segs[i];
+                    if (string.IsNullOrEmpty(s) || s.Length > 3) return 0;
+                    for (int j = 0; j < s.Length; j++)
+                    {
+                        if (!char.IsDigit(s[j])) return 0;
+                    }
+                }
+                return 4;
+            }
+
+            /// <summary>
             /// 按库名取元数据：优先缓存；若与当前 catalog 库名相同则直接复用（跨库前缀写当前库时常见）。
             /// </summary>
             private static MetadataCatalog ResolveDatabaseCatalog(
@@ -392,31 +432,63 @@ namespace AxialSqlTools
 
             private void AddSchemasFromCatalog(List<CompletionItem> items, MetadataCatalog catalog, IntelliSenseSettings settings, string namePrefix)
             {
-                if (catalog == null) return;
                 var schemas = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                if (catalog.Tables != null)
+                bool includeSystem = settings == null || settings.includeSystemObjects;
+                bool fromServer = catalog != null && catalog.Schemas != null && catalog.Schemas.Count > 0;
+                if (fromServer && includeSystem)
                 {
-                    foreach (var t in catalog.Tables)
+                    foreach (var s in catalog.Schemas)
                     {
-                        if (!string.IsNullOrEmpty(t.Schema)) schemas.Add(t.Schema);
+                        if (!string.IsNullOrEmpty(s)) schemas.Add(s);
                     }
                 }
-                if (catalog.Views != null)
+                else if (catalog != null)
                 {
-                    foreach (var v in catalog.Views)
+                    // 旧缓存没有 Schemas，或关闭了系统对象：从用户对象反推架构
+                    if (catalog.Tables != null)
                     {
-                        if (!string.IsNullOrEmpty(v.Schema)) schemas.Add(v.Schema);
+                        foreach (var t in catalog.Tables)
+                        {
+                            if (!string.IsNullOrEmpty(t.Schema)) schemas.Add(t.Schema);
+                        }
+                    }
+                    if (catalog.Views != null)
+                    {
+                        foreach (var v in catalog.Views)
+                        {
+                            if (!string.IsNullOrEmpty(v.Schema)) schemas.Add(v.Schema);
+                        }
+                    }
+                    if (catalog.ScalarFunctions != null)
+                    {
+                        foreach (var f in catalog.ScalarFunctions)
+                        {
+                            if (!string.IsNullOrEmpty(f.Schema)) schemas.Add(f.Schema);
+                        }
+                    }
+                    if (catalog.Procedures != null)
+                    {
+                        foreach (var p in catalog.Procedures)
+                        {
+                            if (!string.IsNullOrEmpty(p.Schema)) schemas.Add(p.Schema);
+                        }
+                    }
+                    if (catalog.Synonyms != null)
+                    {
+                        foreach (var syn in catalog.Synonyms)
+                        {
+                            if (!string.IsNullOrEmpty(syn.Schema)) schemas.Add(syn.Schema);
+                        }
                     }
                 }
-                if (catalog.ScalarFunctions != null)
+                if (includeSystem && !fromServer)
                 {
-                    foreach (var f in catalog.ScalarFunctions)
-                    {
-                        if (!string.IsNullOrEmpty(f.Schema)) schemas.Add(f.Schema);
-                    }
+                    foreach (var s in MetadataCatalogService.CommonSystemSchemas)
+                        schemas.Add(s);
                 }
+                if (schemas.Count == 0) return;
                 string filter = GetLastSegment(namePrefix);
-                string dbLabel = catalog.Database ?? string.Empty;
+                string dbLabel = catalog != null ? (catalog.Database ?? string.Empty) : string.Empty;
                 foreach (var s in schemas
                     .OrderBy(x => string.Equals(x, "dbo", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
                     .ThenBy(x => x, StringComparer.OrdinalIgnoreCase))
@@ -429,7 +501,11 @@ namespace AxialSqlTools
 
             private void AddTablesInSchema(List<CompletionItem> items, MetadataCatalog catalog, string schema, IntelliSenseSettings settings, FromObjectNameContext fromName, ScriptFactoryAccess.ConnectionInfo connInfo, bool includeSystemObjects, string namePrefix = null)
             {
-                if (catalog == null) return;
+                if (catalog == null)
+                {
+                    AddSystemCatalogObjects(items, fromName, schema, namePrefix, settings, null, connInfo);
+                    return;
+                }
                 string filter = GetLastSegment(namePrefix ?? fromName?.Partial);
                 int cap = Math.Max(PreSortCandidateFloor, settings.maxCompletionItems * PreSortCandidateMultiplier);
                 // 插入文本策略只算一次，避免每张表都 IsDatabaseName/连库
@@ -439,6 +515,7 @@ namespace AxialSqlTools
                 int added = 0;
                 foreach (var t in catalog.Tables)
                 {
+                    if (IsSystemSchemaName(t.Schema)) continue;
                     if (!string.IsNullOrEmpty(schema) && !string.Equals(t.Schema, schema, StringComparison.OrdinalIgnoreCase))
                         continue;
                     if (!ObjectNameMatchesFilter(t.Name, filter)
@@ -447,25 +524,44 @@ namespace AxialSqlTools
                     string insert = BuildTableInsertText(fromName, t, connInfo, settings, insertMode);
                     string display = tableNameOnly ? t.Name : t.QualifiedName;
                     items.Add(new CompletionItem(display, insert, CompletionKind.Table, BuildTableDescription(t)));
-                    if (++added >= cap) return;
+                    if (++added >= cap) break;
                 }
-                foreach (var v in catalog.Views)
+                if (added < cap)
                 {
-                    if (!string.IsNullOrEmpty(schema) && !string.Equals(v.Schema, schema, StringComparison.OrdinalIgnoreCase))
-                        continue;
-                    if (!ObjectNameMatchesFilter(v.Name, filter)
-                        && !(matchQualified && ObjectNameMatchesFilter(v.QualifiedName, filter)))
-                        continue;
-                    string insert = BuildTableInsertText(fromName, v, connInfo, settings, insertMode);
-                    string display = tableNameOnly ? v.Name : v.QualifiedName;
-                    items.Add(new CompletionItem(display, insert, CompletionKind.View, BuildTableDescription(v)));
-                    if (++added >= cap) return;
+                    foreach (var v in catalog.Views)
+                    {
+                        if (IsSystemSchemaName(v.Schema)) continue;
+                        if (!string.IsNullOrEmpty(schema) && !string.Equals(v.Schema, schema, StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        if (!ObjectNameMatchesFilter(v.Name, filter)
+                            && !(matchQualified && ObjectNameMatchesFilter(v.QualifiedName, filter)))
+                            continue;
+                        string insert = BuildTableInsertText(fromName, v, connInfo, settings, insertMode);
+                        string display = tableNameOnly ? v.Name : v.QualifiedName;
+                        items.Add(new CompletionItem(display, insert, CompletionKind.View, BuildTableDescription(v)));
+                        if (++added >= cap) break;
+                    }
                 }
-                if (includeSystemObjects && settings.includeSystemObjects && string.IsNullOrEmpty(schema)
-                    && string.IsNullOrEmpty(filter))
+                if (added < cap && catalog.TableFunctions != null)
                 {
-                    AddSystemObjects(items);
+                    foreach (var f in catalog.TableFunctions)
+                    {
+                        if (IsSystemSchemaName(f.Schema)) continue;
+                        if (!string.IsNullOrEmpty(schema) && !string.Equals(f.Schema, schema, StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        if (!ObjectNameMatchesFilter(f.Name, filter)
+                            && !(matchQualified && ObjectNameMatchesFilter(f.QualifiedName, filter)))
+                            continue;
+                        string insert = BuildTableInsertText(fromName, f, connInfo, settings, insertMode);
+                        insert = AppendFunctionCallParens(insert, out int cursor);
+                        string display = tableNameOnly ? f.Name : f.QualifiedName;
+                        var item = new CompletionItem(display, insert, CompletionKind.TableFunction, BuildRoutineDescription(f));
+                        item.SnippetCursorOffset = cursor;
+                        items.Add(item);
+                        if (++added >= cap) break;
+                    }
                 }
+                AddSystemCatalogObjects(items, fromName, schema, namePrefix, settings, catalog, connInfo);
             }
 
             private static bool ObjectNameMatchesFilter(string objectName, string filter)
@@ -476,8 +572,11 @@ namespace AxialSqlTools
                 if (objectName.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0) return true;
                 string collapsedName = CollapseForMatch(objectName);
                 string collapsedFilter = CollapseForMatch(filter);
-                return !string.IsNullOrEmpty(collapsedFilter)
-                    && collapsedName.IndexOf(collapsedFilter, StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!string.IsNullOrEmpty(collapsedFilter)
+                    && collapsedName.IndexOf(collapsedFilter, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+                int[] unused;
+                return TryMatchSubsequence(objectName, filter, out unused);
             }
 
             private enum TableInsertMode
@@ -612,41 +711,51 @@ namespace AxialSqlTools
                 {
                     foreach (var f in catalog.TableFunctions)
                     {
+                        if (IsSystemSchemaName(f.Schema)) continue;
                         if (!ObjectNameMatchesFilter(f.Name, filter)) continue;
                         string insert = fromName != null ? BuildTableInsertText(fromName, f, connInfo, settings, insertMode) : FormatObjectInsert(f, settings);
-                        items.Add(new CompletionItem(f.QualifiedName, insert, CompletionKind.TableFunction,
-                            BuildRoutineDescription(f)));
+                        insert = AppendFunctionCallParens(insert, out int cursor);
+                        var item = new CompletionItem(f.QualifiedName, insert, CompletionKind.TableFunction,
+                            BuildRoutineDescription(f));
+                        item.SnippetCursorOffset = cursor;
+                        items.Add(item);
                     }
                 }
             }
 
             private void AddTablesAndViews(List<CompletionItem> items, MetadataCatalog catalog, IntelliSenseSettings settings, FromObjectNameContext fromName = null, ScriptFactoryAccess.ConnectionInfo connInfo = null, string namePrefix = null)
             {
-                if (catalog == null) return;
+                if (catalog == null)
+                {
+                    AddSystemCatalogObjects(items, fromName, null, namePrefix, settings, null, connInfo);
+                    return;
+                }
                 string filter = GetLastSegment(namePrefix ?? fromName?.Partial);
                 int cap = Math.Max(PreSortCandidateFloor, settings.maxCompletionItems * PreSortCandidateMultiplier);
                 var insertMode = ResolveTableInsertMode(fromName, connInfo, catalog);
                 int added = 0;
                 foreach (var t in catalog.Tables)
                 {
+                    if (IsSystemSchemaName(t.Schema)) continue;
                     if (!ObjectNameMatchesFilter(t.Name, filter)) continue;
                     string insert = fromName != null ? BuildTableInsertText(fromName, t, connInfo, settings, insertMode) : FormatObjectInsert(t, settings);
                     items.Add(new CompletionItem(t.QualifiedName, insert, CompletionKind.Table,
                         BuildTableDescription(t)));
-                    if (++added >= cap) return;
+                    if (++added >= cap) break;
                 }
-                foreach (var v in catalog.Views)
+                if (added < cap)
                 {
-                    if (!ObjectNameMatchesFilter(v.Name, filter)) continue;
-                    string insert = fromName != null ? BuildTableInsertText(fromName, v, connInfo, settings, insertMode) : FormatObjectInsert(v, settings);
-                    items.Add(new CompletionItem(v.QualifiedName, insert, CompletionKind.View,
-                        BuildTableDescription(v)));
-                    if (++added >= cap) return;
+                    foreach (var v in catalog.Views)
+                    {
+                        if (IsSystemSchemaName(v.Schema)) continue;
+                        if (!ObjectNameMatchesFilter(v.Name, filter)) continue;
+                        string insert = fromName != null ? BuildTableInsertText(fromName, v, connInfo, settings, insertMode) : FormatObjectInsert(v, settings);
+                        items.Add(new CompletionItem(v.QualifiedName, insert, CompletionKind.View,
+                            BuildTableDescription(v)));
+                        if (++added >= cap) break;
+                    }
                 }
-                if (settings.includeSystemObjects && fromName == null && string.IsNullOrEmpty(filter))
-                {
-                    AddSystemObjects(items);
-                }
+                AddSystemCatalogObjects(items, fromName, null, namePrefix, settings, catalog, connInfo);
             }
 
             private void AddColumnsAndFunctions(List<CompletionItem> items, MetadataCatalog catalog, LocalSymbols local, IntelliSenseSettings settings, ScriptFactoryAccess.ConnectionInfo connInfo)
@@ -952,6 +1061,8 @@ namespace AxialSqlTools
                 // 库.前缀（单点）→ 插入 dbo.name；库.. / 库.dbo. → 只插过程名
                 bool insertSchemaWithName = false;
                 int segCount = fromName?.Segments?.Count ?? 0;
+                if (fromName != null && (fromName.ExcessiveDots || IsDoubleDotAfterSchema(fromName, connInfo)))
+                    return;
 
                 // EXEC caiwu..pro / EXEC caiwu.dbo.pro / EXEC caiwu.pro / EXEC pro
                 if (fromName != null && (segCount > 0 || fromName.AfterDot))
@@ -991,7 +1102,14 @@ namespace AxialSqlTools
                 if (target == null)
                     return;
 
-                AddProceduresFromCatalog(items, target, settings, schema, nameOnlyInsert, insertSchemaWithName);
+                MetadataCatalog procCatalog = target;
+                if (IsSystemSchemaName(schema))
+                {
+                    var sysCat = GetSystemCatalogForCompletion(connInfo, catalog, fromName);
+                    if (sysCat != null && sysCat.HasSystemRoutines())
+                        procCatalog = sysCat;
+                }
+                AddProceduresFromCatalog(items, procCatalog, settings, schema, nameOnlyInsert, insertSchemaWithName);
                 if (string.IsNullOrEmpty(database) && !nameOnlyInsert)
                     AddDatabases(items, connInfo, settings);
             }
@@ -1022,6 +1140,8 @@ namespace AxialSqlTools
                 if (catalog == null) return;
                 foreach (var p in catalog.Procedures)
                 {
+                    if (string.IsNullOrEmpty(schemaFilter) && IsSystemSchemaName(p.Schema))
+                        continue;
                     if (!string.IsNullOrEmpty(schemaFilter)
                         && !string.Equals(p.Schema, schemaFilter, StringComparison.OrdinalIgnoreCase))
                         continue;
@@ -1106,6 +1226,7 @@ namespace AxialSqlTools
                 string namePrefix)
             {
                 if (fromName == null) return;
+                if (fromName.ExcessiveDots || IsDoubleDotAfterSchema(fromName, connInfo)) return;
                 int segCount = fromName.Segments?.Count ?? 0;
                 if (fromName.AfterDot)
                 {
@@ -1173,6 +1294,14 @@ namespace AxialSqlTools
                 ScriptFactoryAccess.ConnectionInfo connInfo,
                 string namePrefix)
             {
+                if (catalog?.ScalarFunctions == null && (string.IsNullOrEmpty(schema) || !IsSystemSchemaName(schema)))
+                    return;
+                if (IsSystemSchemaName(schema))
+                {
+                    var sysCat = GetSystemCatalogForCompletion(connInfo, catalog, fromName);
+                    if (sysCat != null && sysCat.HasSystemRoutines())
+                        catalog = sysCat;
+                }
                 if (catalog?.ScalarFunctions == null) return;
                 string filter = GetLastSegment(namePrefix ?? fromName?.Partial);
                 var insertMode = ResolveTableInsertMode(fromName, connInfo, catalog);
@@ -1182,6 +1311,8 @@ namespace AxialSqlTools
                 int added = 0;
                 foreach (var f in catalog.ScalarFunctions)
                 {
+                    if (string.IsNullOrEmpty(schema) && IsSystemSchemaName(f.Schema))
+                        continue;
                     if (!string.IsNullOrEmpty(schema)
                         && !string.Equals(f.Schema, schema, StringComparison.OrdinalIgnoreCase))
                         continue;
@@ -1383,12 +1514,189 @@ namespace AxialSqlTools
                 return db;
             }
 
+            private static bool IsSystemSchemaName(string name)
+            {
+                if (string.IsNullOrEmpty(name)) return false;
+                foreach (var s in MetadataCatalogService.CommonSystemSchemas)
+                {
+                    if (string.Equals(s, name, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                return false;
+            }
+
+            /// <summary>
+            /// sys / INFORMATION_SCHEMA 对象：仅在已写出架构并打点（sys. / INFORMATION_SCHEMA.）后列出。
+            /// 未限定架构时不混入，避免 FROM 空前缀扫全量系统目录。
+            /// </summary>
+            private void AddSystemCatalogObjects(
+                List<CompletionItem> items,
+                FromObjectNameContext fromName,
+                string schemaFilter,
+                string namePrefix,
+                IntelliSenseSettings settings,
+                MetadataCatalog catalog,
+                ScriptFactoryAccess.ConnectionInfo connInfo)
+            {
+                if (settings == null || !settings.includeSystemObjects) return;
+                if (string.IsNullOrEmpty(schemaFilter) || !IsSystemSchemaName(schemaFilter))
+                    return;
+                if (fromName != null && !fromName.AfterDot)
+                    return;
+                var sysCatalog = GetSystemCatalogForCompletion(connInfo, catalog, fromName);
+                var objectSource = (sysCatalog != null && sysCatalog.HasSystemCatalogObjects())
+                    ? sysCatalog
+                    : (catalog != null && catalog.HasSystemCatalogObjects() ? catalog : null);
+                if (objectSource != null)
+                    AddSystemCatalogObjectsFromCatalog(items, objectSource, fromName, schemaFilter, namePrefix, settings, connInfo);
+                else
+                {
+                    string nameFilter = GetLastSegment(namePrefix ?? fromName?.Partial);
+                    bool nameOnly = !string.IsNullOrEmpty(schemaFilter)
+                        && fromName != null
+                        && fromName.AfterDot;
+                    foreach (var s in MetadataCatalogService.CommonSystemObjects)
+                    {
+                        if (string.IsNullOrEmpty(s) || s.StartsWith("sp_", StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        int dot = s.IndexOf('.');
+                        if (dot <= 0) continue;
+                        string schema = s.Substring(0, dot);
+                        string objName = s.Substring(dot + 1);
+                        if (!string.IsNullOrEmpty(schemaFilter)
+                            && !string.Equals(schema, schemaFilter, StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        string matchName = nameOnly ? objName : s;
+                        if (!ObjectNameMatchesFilter(matchName, nameFilter)
+                            && !ObjectNameMatchesFilter(s, nameFilter)
+                            && !ObjectNameMatchesFilter(schema, nameFilter))
+                            continue;
+                        string display = nameOnly ? objName : s;
+                        string insert = nameOnly
+                            ? FormatIdentifier(objName, settings)
+                            : FormatIdentifier(schema, settings) + "." + FormatIdentifier(objName, settings);
+                        items.Add(new CompletionItem(display, insert, CompletionKind.View, "系统对象"));
+                    }
+                }
+                var routineSource = (sysCatalog != null && sysCatalog.HasSystemRoutines()) ? sysCatalog : catalog;
+                AddSystemSchemaTableFunctions(items, routineSource, fromName, schemaFilter, namePrefix, settings, connInfo);
+            }
+
+            private MetadataCatalog GetSystemCatalogForCompletion(
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                MetadataCatalog current,
+                FromObjectNameContext fromName)
+            {
+                string server = null;
+                if (fromName?.Segments != null && fromName.Segments.Count > 0
+                    && IsLinkedServerName(connInfo, fromName.Segments[0]))
+                    server = fromName.Segments[0];
+                else if (!string.IsNullOrEmpty(current?.Server))
+                    server = current.Server;
+                else if (connInfo != null)
+                    server = connInfo.ServerName;
+                if (string.IsNullOrEmpty(server))
+                    return null;
+                return MetadataCatalogService.Instance.GetCachedSystemCatalog(server);
+            }
+
+            private void AddSystemCatalogObjectsFromCatalog(
+                List<CompletionItem> items,
+                MetadataCatalog catalog,
+                FromObjectNameContext fromName,
+                string schemaFilter,
+                string namePrefix,
+                IntelliSenseSettings settings,
+                ScriptFactoryAccess.ConnectionInfo connInfo)
+            {
+                string nameFilter = GetLastSegment(namePrefix ?? fromName?.Partial);
+                bool nameOnly = !string.IsNullOrEmpty(schemaFilter)
+                    && fromName != null
+                    && fromName.AfterDot;
+                var insertMode = ResolveTableInsertMode(fromName, connInfo, catalog);
+                bool tableNameOnly = ShouldDisplayTableNameOnly(fromName, connInfo) || nameOnly;
+                AddSystemSchemaObjects(items, catalog.Tables, CompletionKind.Table, schemaFilter, nameFilter, nameOnly, tableNameOnly, fromName, connInfo, settings, insertMode);
+                AddSystemSchemaObjects(items, catalog.Views, CompletionKind.View, schemaFilter, nameFilter, nameOnly, tableNameOnly, fromName, connInfo, settings, insertMode);
+            }
+
+            private void AddSystemSchemaTableFunctions(
+                List<CompletionItem> items,
+                MetadataCatalog catalog,
+                FromObjectNameContext fromName,
+                string schemaFilter,
+                string namePrefix,
+                IntelliSenseSettings settings,
+                ScriptFactoryAccess.ConnectionInfo connInfo)
+            {
+                if (catalog?.TableFunctions == null || catalog.TableFunctions.Count == 0) return;
+                string nameFilter = GetLastSegment(namePrefix ?? fromName?.Partial);
+                bool nameOnly = !string.IsNullOrEmpty(schemaFilter)
+                    && fromName != null
+                    && fromName.AfterDot;
+                var insertMode = ResolveTableInsertMode(fromName, connInfo, catalog);
+                bool tableNameOnly = ShouldDisplayTableNameOnly(fromName, connInfo) || nameOnly;
+                foreach (var f in catalog.TableFunctions)
+                {
+                    if (!IsSystemSchemaName(f.Schema)) continue;
+                    if (!string.IsNullOrEmpty(schemaFilter)
+                        && !string.Equals(f.Schema, schemaFilter, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    string qualified = f.QualifiedName;
+                    string matchName = nameOnly ? f.Name : qualified;
+                    if (!ObjectNameMatchesFilter(matchName, nameFilter)
+                        && !ObjectNameMatchesFilter(qualified, nameFilter)
+                        && !ObjectNameMatchesFilter(f.Name, nameFilter)
+                        && !ObjectNameMatchesFilter(f.Schema, nameFilter))
+                        continue;
+                    string display = tableNameOnly ? f.Name : qualified;
+                    string insert = fromName != null
+                        ? BuildTableInsertText(fromName, f, connInfo, settings, insertMode)
+                        : FormatObjectInsert(f, settings);
+                    insert = AppendFunctionCallParens(insert, out int cursor);
+                    var item = new CompletionItem(display, insert, CompletionKind.TableFunction, BuildRoutineDescription(f));
+                    item.SnippetCursorOffset = cursor;
+                    items.Add(item);
+                }
+            }
+
+            private void AddSystemSchemaObjects(
+                List<CompletionItem> items,
+                List<TableColumnInfo> source,
+                CompletionKind kind,
+                string schemaFilter,
+                string nameFilter,
+                bool nameOnly,
+                bool tableNameOnly,
+                FromObjectNameContext fromName,
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                IntelliSenseSettings settings,
+                TableInsertMode insertMode)
+            {
+                if (source == null) return;
+                foreach (var obj in source)
+                {
+                    if (!IsSystemSchemaName(obj.Schema)) continue;
+                    if (!string.IsNullOrEmpty(schemaFilter)
+                        && !string.Equals(obj.Schema, schemaFilter, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    string qualified = obj.QualifiedName;
+                    string matchName = nameOnly ? obj.Name : qualified;
+                    if (!ObjectNameMatchesFilter(matchName, nameFilter)
+                        && !ObjectNameMatchesFilter(qualified, nameFilter)
+                        && !ObjectNameMatchesFilter(obj.Name, nameFilter)
+                        && !ObjectNameMatchesFilter(obj.Schema, nameFilter))
+                        continue;
+                    string display = tableNameOnly ? obj.Name : qualified;
+                    string insert = fromName != null
+                        ? BuildTableInsertText(fromName, obj, connInfo, settings, insertMode)
+                        : FormatObjectInsert(obj, settings);
+                    items.Add(new CompletionItem(display, insert, kind, "系统对象"));
+                }
+            }
+
             private void AddSystemObjects(List<CompletionItem> items)
             {
-                foreach (var s in MetadataCatalogService.CommonSystemObjects)
-                {
-                    items.Add(new CompletionItem(s, s, CompletionKind.Table, "系统对象"));
-                }
+                AddSystemCatalogObjects(items, null, null, null, new IntelliSenseSettings(), null, null);
             }
 
             /// <summary>候选保留下限：即使 maxCompletionItems 很小，也至少保留这些候选供后续排序截断。</summary>
@@ -1407,8 +1715,13 @@ namespace AxialSqlTools
                 // 先收集全部匹配再排序截断，避免目录靠前的弱匹配占满配额、漏掉后面的高分表
                 foreach (var item in items)
                 {
-                    if (string.IsNullOrEmpty(filterPrefix) || ItemMatchesPrefix(item, filterPrefix))
+                    int[] indices = null;
+                    if (string.IsNullOrEmpty(filterPrefix) || GetMatchScore(item, filterPrefix, out indices) > 0)
+                    {
+                        if (!string.IsNullOrEmpty(filterPrefix))
+                            item.MatchIndices = indices;
                         filtered.Add(item);
+                    }
                 }
 
                 filtered.Sort((a, b) =>
@@ -1481,33 +1794,54 @@ namespace AxialSqlTools
             private static bool IsSystemObjectName(string displayText)
             {
                 if (string.IsNullOrEmpty(displayText)) return false;
-                string name = GetMatchableName(displayText);
-                return name.StartsWith("INFORMATION_SCHEMA.", StringComparison.OrdinalIgnoreCase) ||
-                       name.StartsWith("sp_", StringComparison.OrdinalIgnoreCase) ||
-                       name.StartsWith("sys.", StringComparison.OrdinalIgnoreCase);
+                return displayText.StartsWith("INFORMATION_SCHEMA.", StringComparison.OrdinalIgnoreCase) ||
+                       displayText.StartsWith("sp_", StringComparison.OrdinalIgnoreCase) ||
+                       displayText.StartsWith("sys.", StringComparison.OrdinalIgnoreCase);
             }
 
             private static int GetMatchScore(CompletionItem item, string filterPrefix)
             {
+                int[] unused;
+                return GetMatchScore(item, filterPrefix, out unused);
+            }
+
+            private static int GetMatchScore(CompletionItem item, string filterPrefix, out int[] matchIndices)
+            {
+                matchIndices = null;
                 if (string.IsNullOrEmpty(filterPrefix)) return 0;
                 string displayText = item?.DisplayText ?? string.Empty;
                 if (IsNumericOrIpPrefix(filterPrefix))
                 {
-                    if (displayText.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 100;
+                    if (displayText.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        matchIndices = ContiguousMatchIndices(0, filterPrefix.Length);
+                        return 100;
+                    }
                     return 0;
                 }
                 // 全字段：空前缀已在外层保留；有前缀时任一列名前缀命中则保留（略低于精确列）
                 if (item != null && item.Kind == CompletionKind.AllColumns)
                 {
                     if (displayText.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        matchIndices = ContiguousMatchIndices(0, filterPrefix.Length);
                         return 90;
+                    }
                     string insert = item.InsertText ?? string.Empty;
                     foreach (var part in insert.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
                     {
                         string col = UnbracketIdentifier(GetLastSegment(part.Trim()));
                         if (string.IsNullOrEmpty(col)) continue;
-                        if (col.Equals(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 95;
-                        if (col.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 90;
+                        if (col.Equals(filterPrefix, StringComparison.OrdinalIgnoreCase))
+                        {
+                            matchIndices = ContiguousMatchIndices(0, Math.Min(filterPrefix.Length, displayText.Length));
+                            return 95;
+                        }
+                        if (col.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase))
+                        {
+                            matchIndices = ContiguousMatchIndices(0, Math.Min(filterPrefix.Length, displayText.Length));
+                            return 90;
+                        }
                     }
                     return 0;
                 }
@@ -1531,20 +1865,45 @@ namespace AxialSqlTools
                     && !string.IsNullOrEmpty(item.Description)
                     && item.Description.StartsWith("表别名", StringComparison.Ordinal))
                 {
-                    if (name.Equals(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 130;
-                    if (name.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 120;
+                    if (name.Equals(filterPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        matchIndices = MapMatchIndicesToDisplay(displayText, name, ContiguousMatchIndices(0, name.Length));
+                        return 130;
+                    }
+                    if (name.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        matchIndices = MapMatchIndicesToDisplay(displayText, name, ContiguousMatchIndices(0, filterPrefix.Length));
+                        return 120;
+                    }
                 }
 
                 if (name.Equals(filterPrefix, StringComparison.OrdinalIgnoreCase))
                 {
+                    matchIndices = MapMatchIndicesToDisplay(displayText, name, ContiguousMatchIndices(0, name.Length));
                     return item != null && item.Kind == CompletionKind.Snippet ? 110 : 100;
                 }
                 if (name.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase))
                 {
+                    matchIndices = MapMatchIndicesToDisplay(displayText, name, ContiguousMatchIndices(0, filterPrefix.Length));
                     // 子句关键字略高于 CASE 片段：wh → WHERE 优先于 WHEN
                     if (item != null && item.Kind == CompletionKind.Keyword && IsClauseTrailingKeyword(name))
                         return 105;
                     return 100;
+                }
+                // sys.tables：前缀 sys 要对整段限定名计分，不能只拿最后一段 tables
+                if (!string.Equals(displayText, name, StringComparison.OrdinalIgnoreCase)
+                    && displayText.IndexOf('.') >= 0)
+                {
+                    if (displayText.Equals(filterPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        matchIndices = ContiguousMatchIndices(0, displayText.Length);
+                        return 100;
+                    }
+                    if (displayText.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        matchIndices = ContiguousMatchIndices(0, filterPrefix.Length);
+                        return 95;
+                    }
                 }
                 // 多词关键字：in → INNER JOIN、group → GROUP BY
                 if (item != null && item.Kind == CompletionKind.Keyword && name.IndexOf(' ') >= 0)
@@ -1552,13 +1911,20 @@ namespace AxialSqlTools
                     int sp = name.IndexOf(' ');
                     string first = sp > 0 ? name.Substring(0, sp) : name;
                     if (first.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        matchIndices = MapMatchIndicesToDisplay(displayText, name, ContiguousMatchIndices(0, filterPrefix.Length));
                         return IsClauseTrailingKeyword(name) ? 100 : 95;
+                    }
                 }
                 // 片段：ss → sess（包含）；仍低于前缀命中，ssf 排在 sess 前
                 if (item != null && item.Kind == CompletionKind.Snippet)
                 {
-                    if (name.IndexOf(filterPrefix, StringComparison.OrdinalIgnoreCase) >= 0)
+                    int snippetAt = name.IndexOf(filterPrefix, StringComparison.OrdinalIgnoreCase);
+                    if (snippetAt >= 0)
+                    {
+                        matchIndices = MapMatchIndicesToDisplay(displayText, name, ContiguousMatchIndices(snippetAt, filterPrefix.Length));
                         return 80;
+                    }
                     return 0;
                 }
                 // 关键字/内建函数只做前缀匹配，避免 pr 命中 DATEPART 等缩写误匹配
@@ -1569,10 +1935,19 @@ namespace AxialSqlTools
                 // 下划线段前缀：rt_fenjian ← fe（≥2 即可；单字母仍不做，避免 a 扫到过多段）
                 if (filterPrefix.Length >= 2)
                 {
-                    var segments = name.Split(new[] { '_' }, StringSplitOptions.RemoveEmptyEntries);
-                    foreach (var seg in segments)
+                    int segStart = 0;
+                    for (int i = 0; i <= name.Length; i++)
                     {
-                        if (seg.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase)) return 60;
+                        if (i < name.Length && name[i] != '_') continue;
+                        int segLen = i - segStart;
+                        if (segLen > 0
+                            && segLen >= filterPrefix.Length
+                            && string.Compare(name, segStart, filterPrefix, 0, filterPrefix.Length, StringComparison.OrdinalIgnoreCase) == 0)
+                        {
+                            matchIndices = MapMatchIndicesToDisplay(displayText, name, ContiguousMatchIndices(segStart, filterPrefix.Length));
+                            return 60;
+                        }
+                        segStart = i + 1;
                     }
                 }
 
@@ -1582,21 +1957,51 @@ namespace AxialSqlTools
                     && (item == null || item.Kind != CompletionKind.Database))
                     return 0;
 
-                if (name.IndexOf(filterPrefix, StringComparison.OrdinalIgnoreCase) >= 0) return 80;
+                int containsAt = name.IndexOf(filterPrefix, StringComparison.OrdinalIgnoreCase);
+                if (containsAt >= 0)
+                {
+                    matchIndices = MapMatchIndicesToDisplay(displayText, name, ContiguousMatchIndices(containsAt, filterPrefix.Length));
+                    return 80;
+                }
 
                 string collapsedName = CollapseForMatch(name);
                 string collapsedFilter = CollapseForMatch(filterPrefix);
                 if (!string.IsNullOrEmpty(collapsedFilter))
                 {
-                    if (collapsedName.StartsWith(collapsedFilter, StringComparison.OrdinalIgnoreCase)) return 85;
-                    if (collapsedName.IndexOf(collapsedFilter, StringComparison.OrdinalIgnoreCase) >= 0) return 65;
-                    if (MatchesAbbreviation(collapsedName, collapsedFilter)) return 50;
+                    if (collapsedName.StartsWith(collapsedFilter, StringComparison.OrdinalIgnoreCase))
+                    {
+                        matchIndices = MapMatchIndicesToDisplay(displayText, name,
+                            MapCollapsedRangeToName(name, 0, collapsedFilter.Length));
+                        return 85;
+                    }
+                    int collapsedAt = collapsedName.IndexOf(collapsedFilter, StringComparison.OrdinalIgnoreCase);
+                    if (collapsedAt >= 0)
+                    {
+                        matchIndices = MapMatchIndicesToDisplay(displayText, name,
+                            MapCollapsedRangeToName(name, collapsedAt, collapsedFilter.Length));
+                        return 65;
+                    }
+                    int[] subIndices;
+                    if (TryMatchSubsequence(name, filterPrefix, out subIndices))
+                    {
+                        matchIndices = MapMatchIndicesToDisplay(displayText, name, subIndices);
+                        return 50;
+                    }
                 }
 
                 var segs = name.Split(new[] { '_' }, StringSplitOptions.RemoveEmptyEntries);
+                int searchFrom = 0;
                 foreach (var seg in segs)
                 {
-                    if (seg.IndexOf(filterPrefix, StringComparison.OrdinalIgnoreCase) >= 0) return 40;
+                    int segAt = name.IndexOf(seg, searchFrom, StringComparison.OrdinalIgnoreCase);
+                    if (segAt < 0) segAt = searchFrom;
+                    int inner = seg.IndexOf(filterPrefix, StringComparison.OrdinalIgnoreCase);
+                    if (inner >= 0)
+                    {
+                        matchIndices = MapMatchIndicesToDisplay(displayText, name, ContiguousMatchIndices(segAt + inner, filterPrefix.Length));
+                        return 40;
+                    }
+                    searchFrom = segAt + seg.Length;
                 }
                 return 0;
             }
@@ -1644,20 +2049,125 @@ namespace AxialSqlTools
                 return sb.ToString();
             }
 
-            /// <summary>缩写匹配：filter 字符按序出现在 name 中（如 tpr → t_products）。</summary>
-            private static bool MatchesAbbreviation(string name, string abbr)
+            /// <summary>按序子序列匹配：filter 字符按出现顺序命中 name（如 ddi / daoitem → DH_DaoHuoItem）。优先选连续段更多的命中，便于高亮。</summary>
+            private static bool TryMatchSubsequence(string name, string filter, out int[] indices)
             {
-                if (string.IsNullOrEmpty(abbr)) return true;
-                if (string.IsNullOrEmpty(name)) return false;
-                int j = 0;
-                for (int i = 0; i < name.Length && j < abbr.Length; i++)
+                indices = null;
+                if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(filter)) return false;
+                string compactFilter = CollapseForMatch(filter);
+                if (string.IsNullOrEmpty(compactFilter)) return false;
+
+                int[] best = null;
+                int bestAdjacent = -1;
+                for (int start = 0; start < name.Length; start++)
                 {
-                    if (char.ToLowerInvariant(name[i]) == char.ToLowerInvariant(abbr[j]))
+                    char sc = name[start];
+                    if (sc == '_' || sc == '.') continue;
+                    if (!CharsEqualIgnoreCase(sc, compactFilter[0])) continue;
+
+                    var acc = new int[compactFilter.Length];
+                    acc[0] = start;
+                    int fi = 1;
+                    for (int i = start + 1; i < name.Length && fi < compactFilter.Length; i++)
                     {
-                        j++;
+                        char nc = name[i];
+                        if (nc == '_' || nc == '.') continue;
+                        if (!CharsEqualIgnoreCase(nc, compactFilter[fi])) continue;
+                        acc[fi] = i;
+                        fi++;
+                    }
+                    if (fi < compactFilter.Length) continue;
+                    int adjacent = CountAdjacentMatches(name, acc);
+                    if (adjacent > bestAdjacent)
+                    {
+                        bestAdjacent = adjacent;
+                        best = acc;
+                        if (bestAdjacent >= compactFilter.Length - 1) break;
                     }
                 }
-                return j == abbr.Length;
+                if (best == null) return false;
+                indices = best;
+                return true;
+            }
+
+            private static bool CharsEqualIgnoreCase(char a, char b)
+            {
+                return char.ToLowerInvariant(a) == char.ToLowerInvariant(b);
+            }
+
+            private static int CountAdjacentMatches(string name, int[] idx)
+            {
+                int n = 0;
+                for (int i = 1; i < idx.Length; i++)
+                {
+                    bool adjacent = true;
+                    for (int p = idx[i - 1] + 1; p < idx[i]; p++)
+                    {
+                        char c = name[p];
+                        if (c != '_' && c != '.')
+                        {
+                            adjacent = false;
+                            break;
+                        }
+                    }
+                    if (adjacent) n++;
+                }
+                return n;
+            }
+
+            private static int[] ContiguousMatchIndices(int start, int length)
+            {
+                if (length <= 0) return null;
+                var a = new int[length];
+                for (int i = 0; i < length; i++) a[i] = start + i;
+                return a;
+            }
+
+            private static int[] MapCollapsedRangeToName(string name, int collapsedStart, int collapsedLen)
+            {
+                if (string.IsNullOrEmpty(name) || collapsedLen <= 0) return null;
+                var list = new int[collapsedLen];
+                int ci = 0;
+                int filled = 0;
+                for (int i = 0; i < name.Length && filled < collapsedLen; i++)
+                {
+                    if (name[i] == '_' || name[i] == '.') continue;
+                    if (ci >= collapsedStart)
+                    {
+                        list[filled] = i;
+                        filled++;
+                    }
+                    ci++;
+                }
+                if (filled < collapsedLen) return null;
+                return list;
+            }
+
+            private static int[] MapMatchIndicesToDisplay(string displayText, string matchedName, int[] nameIndices)
+            {
+                if (nameIndices == null || nameIndices.Length == 0) return nameIndices;
+                if (string.IsNullOrEmpty(displayText) || string.Equals(displayText, matchedName, StringComparison.OrdinalIgnoreCase))
+                    return nameIndices;
+                int offset = 0;
+                if (!string.IsNullOrEmpty(matchedName) && displayText.Length >= matchedName.Length)
+                {
+                    if (displayText.EndsWith(matchedName, StringComparison.OrdinalIgnoreCase)
+                        && (displayText.Length == matchedName.Length
+                            || displayText[displayText.Length - matchedName.Length - 1] == '.'))
+                    {
+                        offset = displayText.Length - matchedName.Length;
+                    }
+                    else
+                    {
+                        int at = displayText.IndexOf(matchedName, StringComparison.OrdinalIgnoreCase);
+                        if (at >= 0) offset = at;
+                    }
+                }
+                if (offset == 0) return nameIndices;
+                var mapped = new int[nameIndices.Length];
+                for (int i = 0; i < nameIndices.Length; i++)
+                    mapped[i] = nameIndices[i] + offset;
+                return mapped;
             }
 
             private static int GetMatchScore(string displayText, string filterPrefix)

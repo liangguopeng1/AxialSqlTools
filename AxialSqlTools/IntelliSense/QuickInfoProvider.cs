@@ -549,7 +549,9 @@ namespace AxialSqlTools.IntelliSense
                 {
                     MetadataCatalogService.Instance.EnsureCatalogBuilding(connInfo, tref.Database);
                     target = MetadataCatalogService.Instance.GetCachedCatalogOrDisk(connInfo, tref.Database);
-                    if (target == null)
+                    if (target == null
+                        && !string.Equals(tref.Schema, "sys", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(tref.Schema, "INFORMATION_SCHEMA", StringComparison.OrdinalIgnoreCase))
                         return null;
                 }
             }
@@ -557,6 +559,16 @@ namespace AxialSqlTools.IntelliSense
             {
                 var found = target.FindTableOrView(tref.Schema, tref.Name);
                 if (found != null) return found;
+            }
+            if (!string.IsNullOrEmpty(tref.Schema)
+                && (string.Equals(tref.Schema, "sys", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(tref.Schema, "INFORMATION_SCHEMA", StringComparison.OrdinalIgnoreCase)))
+            {
+                string server = !string.IsNullOrEmpty(tref.LinkedServer)
+                    ? tref.LinkedServer
+                    : (connInfo != null ? connInfo.ServerName : catalog?.Server);
+                var sysFound = MetadataCatalogService.Instance.FindSystemTableOrView(server, tref.Schema, tref.Name);
+                if (sysFound != null) return sysFound;
             }
             return null;
         }

@@ -13,6 +13,9 @@ namespace AxialSqlTools
             /// <summary>列名后的来源提示，如 (cc) 或 (rt_kucun.dbo.kucun)。</summary>
             public string DisplaySuffix { get; set; }
 
+            /// <summary>当前过滤前缀命中的 DisplayText 字符下标，用于列表高亮。</summary>
+            public int[] MatchIndices { get; set; }
+
             /// <summary>选中后插入编辑器的文本（含 [dbo].[t] 等括号化形式）。</summary>
             public string InsertText { get; set; }
 

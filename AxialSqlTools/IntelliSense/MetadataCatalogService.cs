@@ -41,6 +41,9 @@ namespace AxialSqlTools
             private readonly ConcurrentDictionary<string, byte> _memoryLoadedServers =
                 new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
 
+            private readonly ConcurrentDictionary<string, MetadataCatalog> _systemCache =
+                new ConcurrentDictionary<string, MetadataCatalog>(StringComparer.OrdinalIgnoreCase);
+
             private static readonly Regex IPv4Regex = new Regex(
                 @"^\d{1,3}(\.\d{1,3}){3}$",
                 RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -301,6 +304,35 @@ namespace AxialSqlTools
                 _cache[LinkedCatalogKey(server, database)] = catalog;
             }
 
+            public void PutSystemCatalog(string server, MetadataCatalog catalog)
+            {
+                if (string.IsNullOrWhiteSpace(server) || catalog == null)
+                    return;
+                _systemCache[server] = catalog;
+            }
+
+            /// <summary>实例级 sys / INFORMATION_SCHEMA 目录：内存 → 磁盘，不连库。</summary>
+            public MetadataCatalog GetCachedSystemCatalog(string serverName)
+            {
+                if (string.IsNullOrWhiteSpace(serverName))
+                    return null;
+                if (_systemCache.TryGetValue(serverName, out var cached) && cached != null
+                    && (cached.HasSystemCatalogObjects() || cached.HasSystemRoutines()))
+                    return cached;
+                var fromDisk = MetadataCacheStore.TryLoadSystemCatalog(serverName);
+                if (fromDisk != null)
+                    _systemCache[serverName] = fromDisk;
+                return fromDisk;
+            }
+
+            public TableColumnInfo FindSystemTableOrView(string serverName, string schema, string name)
+            {
+                if (string.IsNullOrWhiteSpace(serverName) || string.IsNullOrWhiteSpace(name))
+                    return null;
+                var sys = GetCachedSystemCatalog(serverName);
+                return sys?.FindTableOrView(schema, name);
+            }
+
             public void PutDatabaseList(string server, List<string> databases)
             {
                 if (string.IsNullOrWhiteSpace(server))
@@ -327,12 +359,38 @@ namespace AxialSqlTools
                 return !string.IsNullOrWhiteSpace(serverName) && _memoryLoadedServers.ContainsKey(serverName);
             }
 
+            /// <summary>磁盘缓存缺少实例级 sys 目录，或某库仍无 sys.schemas 名单时需要整机重拉。</summary>
+            internal bool HasIncompleteSchemaCache(string serverName)
+            {
+                if (string.IsNullOrWhiteSpace(serverName))
+                    return false;
+                var sys = GetCachedSystemCatalog(serverName);
+                if (sys == null || !sys.HasSystemCatalogObjects() || !sys.HasSystemRoutines())
+                    return true;
+                string prefix = serverName + "|";
+                foreach (var kv in _cache)
+                {
+                    if (kv.Key.StartsWith("ls:", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (kv.Key.IndexOf(prefix, StringComparison.OrdinalIgnoreCase) != 0)
+                        continue;
+                    var catalog = kv.Value;
+                    if (catalog != null && catalog.IsIndexed
+                        && (catalog.Schemas == null || catalog.Schemas.Count == 0))
+                        return true;
+                }
+                return false;
+            }
+
             public void LoadServerFromDisk(string serverName, IProgress<IndexBuildProgress> progress = null, string preferDatabase = null)
             {
                 if (string.IsNullOrWhiteSpace(serverName))
                     return;
                 if (_memoryLoadedServers.ContainsKey(serverName))
                     return;
+                var sysFromDisk = MetadataCacheStore.TryLoadSystemCatalog(serverName);
+                if (sysFromDisk != null)
+                    _systemCache[serverName] = sysFromDisk;
                 var toLoad = new List<string>();
                 if (MetadataCacheStore.TryGetMeta(serverName, out var meta) && meta?.Databases != null)
                 {
@@ -370,6 +428,8 @@ namespace AxialSqlTools
                 for (int i = 0; i < toLoad.Count; i++)
                 {
                     string db = toLoad[i];
+                    if (string.Equals(db, "__axial_sys", StringComparison.OrdinalIgnoreCase))
+                        continue;
                     TryLoadCatalogIntoMemory(serverName, db);
                     done++;
                     progress?.Report(new IndexBuildProgress
@@ -404,6 +464,63 @@ namespace AxialSqlTools
                 int commandTimeoutSeconds)
             {
                 return BuildCatalog(connInfo, database, commandTimeoutSeconds);
+            }
+
+            internal MetadataCatalog BuildSystemCatalogForCache(
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                int commandTimeoutSeconds)
+            {
+                return BuildSystemCatalog(connInfo, null, null, commandTimeoutSeconds);
+            }
+
+            internal MetadataCatalog BuildLinkedSystemCatalogForCache(
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string linkedServer,
+                int commandTimeoutSeconds)
+            {
+                linkedServer = UnbracketSqlIdent(linkedServer);
+                if (string.IsNullOrWhiteSpace(linkedServer))
+                    return null;
+                return BuildSystemCatalog(connInfo, linkedServer, FourPartPrefix(linkedServer, "master"), commandTimeoutSeconds);
+            }
+
+            /// <summary>同一实例的 sys / INFORMATION_SCHEMA 对象只拉一次，写入 __axial_sys.json。</summary>
+            private MetadataCatalog BuildSystemCatalog(
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string serverOverride,
+                string fourPartPrefix,
+                int commandTimeoutSeconds)
+            {
+                if (connInfo == null || string.IsNullOrWhiteSpace(connInfo.FullConnectionString))
+                    return null;
+                string connectDb = string.IsNullOrWhiteSpace(connInfo.Database) ? "master" : connInfo.Database;
+                var target = fourPartPrefix == null
+                    ? ScriptFactoryAccess.CloneWithDatabase(connInfo, connectDb)
+                    : connInfo;
+                if (target == null || string.IsNullOrWhiteSpace(target.FullConnectionString))
+                    return null;
+                try
+                {
+                    using (var conn = new SqlConnection(WithConnectTimeout(target.FullConnectionString)))
+                    {
+                        conn.Open();
+                        var catalog = new MetadataCatalog
+                        {
+                            Server = string.IsNullOrEmpty(serverOverride) ? target.ServerName : serverOverride,
+                            Database = string.Empty,
+                            BuiltAt = DateTime.Now,
+                            IsIndexed = true
+                        };
+                        LoadSystemTablesAndViews(conn, catalog, fourPartPrefix, commandTimeoutSeconds);
+                        LoadSystemRoutines(conn, catalog, fourPartPrefix, commandTimeoutSeconds);
+                        return catalog;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn(ex, "BuildSystemCatalog failed for {0}", serverOverride ?? connInfo.ServerName);
+                    return null;
+                }
             }
 
             private MetadataCatalog TryLoadCatalogFromDisk(ScriptFactoryAccess.ConnectionInfo connInfo, string dbOverride)
@@ -775,6 +892,7 @@ ORDER BY d.name;", prefix);
                             BuiltAt = DateTime.Now,
                             IsIndexed = true
                         };
+                        LoadSchemas(conn, catalog, prefix, commandTimeoutSeconds);
                         LoadTablesAndViews(conn, catalog, prefix, commandTimeoutSeconds);
                         LoadRoutines(conn, catalog, prefix, commandTimeoutSeconds);
                         LoadSynonyms(conn, catalog, prefix, commandTimeoutSeconds);
@@ -858,6 +976,7 @@ ORDER BY d.name;", prefix);
                             IsIndexed = true
                         };
 
+                        LoadSchemas(conn, catalog, null, commandTimeoutSeconds);
                         LoadTablesAndViews(conn, catalog, null, commandTimeoutSeconds);
                         LoadRoutines(conn, catalog, null, commandTimeoutSeconds);
                         LoadSynonyms(conn, catalog, null, commandTimeoutSeconds);
@@ -896,6 +1015,30 @@ ORDER BY d.name;", prefix);
             private static string QualifySys(string fourPartPrefix, string objectName)
             {
                 return string.IsNullOrEmpty(fourPartPrefix) ? objectName : fourPartPrefix + "." + objectName;
+            }
+
+            private void LoadSchemas(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null, int timeoutSeconds = QueryTimeoutSeconds)
+            {
+                string schemas = QualifySys(fourPartPrefix, "sys.schemas");
+                string sql = $@"SELECT name FROM {schemas} ORDER BY name;";
+                try
+                {
+                    using (var cmd = Cmd(conn, sql, timeoutSeconds))
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            if (reader.IsDBNull(0)) continue;
+                            string name = reader.GetString(0);
+                            if (!string.IsNullOrEmpty(name))
+                                catalog.Schemas.Add(name);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn(ex, "LoadSchemas failed for {0}", catalog.Database);
+                }
             }
 
             private void LoadTablesAndViews(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null, int timeoutSeconds = QueryTimeoutSeconds)
@@ -1005,6 +1148,113 @@ ORDER BY s.name, o.name, c.column_id;";
                 LoadIndexes(conn, catalog, fourPartPrefix, timeoutSeconds);
             }
 
+            /// <summary>
+            /// 从服务器拉取 sys / INFORMATION_SCHEMA 表、视图（含列）。
+            /// 必须用 sys.all_objects / sys.all_columns：sys.objects 不含系统目录视图，查出来是 0 行。
+            /// 表值函数/过程走 LoadSystemRoutines，不放进 Views。
+            /// </summary>
+            private void LoadSystemTablesAndViews(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null, int timeoutSeconds = QueryTimeoutSeconds)
+            {
+                string objects = QualifySys(fourPartPrefix, "sys.all_objects");
+                string schemas = QualifySys(fourPartPrefix, "sys.schemas");
+                string columns = QualifySys(fourPartPrefix, "sys.all_columns");
+                string types = QualifySys(fourPartPrefix, "sys.types");
+                string sql = $@"
+SELECT s.name AS schema_name,
+       o.name AS object_name,
+       o.type AS object_type,
+       c.name AS column_name,
+       t.name AS type_name,
+       c.max_length,
+       c.precision,
+       c.scale,
+       c.is_nullable
+FROM {objects} o
+JOIN {schemas} s ON o.schema_id = s.schema_id
+LEFT JOIN {columns} c ON c.object_id = o.object_id
+LEFT JOIN {types} t ON c.user_type_id = t.user_type_id
+WHERE s.name IN (N'sys', N'INFORMATION_SCHEMA')
+  AND RTRIM(o.type) IN (N'U', N'V')
+ORDER BY s.name, o.name, c.column_id;";
+                try
+                {
+                    int added = 0;
+                    using (var cmd = Cmd(conn, sql, timeoutSeconds))
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        TableColumnInfo current = null;
+                        while (reader.Read())
+                        {
+                            string schema = reader.IsDBNull(0) ? null : reader.GetString(0);
+                            string name = reader.IsDBNull(1) ? null : reader.GetString(1);
+                            string type = reader.IsDBNull(2) ? null : reader.GetString(2);
+                            string colName = reader.IsDBNull(3) ? null : reader.GetString(3);
+                            string typeName = reader.IsDBNull(4) ? null : reader.GetString(4);
+                            short maxLength = ReadInt16(reader, 5);
+                            byte precision = ReadByte(reader, 6);
+                            byte scale = ReadByte(reader, 7);
+                            bool nullable = !reader.IsDBNull(8) && reader.GetBoolean(8);
+                            if (string.IsNullOrEmpty(name)) continue;
+                            if (current == null ||
+                                !string.Equals(current.Schema, schema, StringComparison.OrdinalIgnoreCase) ||
+                                !string.Equals(current.Name, name, StringComparison.OrdinalIgnoreCase))
+                            {
+                                bool isTable = string.Equals(type?.Trim(), "U", StringComparison.OrdinalIgnoreCase);
+                                current = new TableColumnInfo
+                                {
+                                    Schema = schema,
+                                    Name = name,
+                                    IsView = !isTable
+                                };
+                                if (isTable)
+                                    catalog.Tables.Add(current);
+                                else
+                                    catalog.Views.Add(current);
+                                added++;
+                            }
+                            if (string.IsNullOrEmpty(colName)) continue;
+                            current.Columns.Add(new ColumnInfo
+                            {
+                                Name = colName,
+                                DataType = FormatDataType(typeName, maxLength, precision, scale),
+                                Nullable = nullable
+                            });
+                        }
+                    }
+                    if (added > 0)
+                    {
+                        catalog.SystemObjectsLoaded = true;
+                        Logger.Info("LoadSystemTablesAndViews {0}: {1} objects", catalog.Database, added);
+                    }
+                    else
+                        Logger.Warn("LoadSystemTablesAndViews {0}: 0 objects", catalog.Database);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn(ex, "LoadSystemTablesAndViews failed for {0}", catalog.Database);
+                }
+            }
+
+            private static short ReadInt16(SqlDataReader reader, int ordinal)
+            {
+                if (reader.IsDBNull(ordinal)) return 0;
+                object v = reader.GetValue(ordinal);
+                if (v is short s) return s;
+                if (v is int i) return (short)i;
+                if (v is byte b) return b;
+                try { return Convert.ToInt16(v); }
+                catch { return 0; }
+            }
+
+            private static byte ReadByte(SqlDataReader reader, int ordinal)
+            {
+                if (reader.IsDBNull(ordinal)) return 0;
+                object v = reader.GetValue(ordinal);
+                if (v is byte b) return b;
+                try { return Convert.ToByte(v); }
+                catch { return 0; }
+            }
+
             private void LoadIndexes(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null, int timeoutSeconds = QueryTimeoutSeconds)
             {
                 string objects = QualifySys(fourPartPrefix, "sys.objects");
@@ -1077,12 +1327,28 @@ ORDER BY s.name, o.name, i.index_id, ic.key_ordinal;";
 
             private void LoadRoutines(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null, int timeoutSeconds = QueryTimeoutSeconds)
             {
-                // 补全只需名/参数类型；不拉 sql_modules / OBJECT_DEFINITION（大库 5s 必超时 → 有表无过程）
-                string objects = QualifySys(fourPartPrefix, "sys.objects");
+                LoadRoutinesCore(conn, catalog, fourPartPrefix, timeoutSeconds, systemObjects: false);
+            }
+
+            private void LoadSystemRoutines(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix = null, int timeoutSeconds = QueryTimeoutSeconds)
+            {
+                LoadRoutinesCore(conn, catalog, fourPartPrefix, timeoutSeconds, systemObjects: true);
+            }
+
+            /// <summary>
+            /// 补全只需名/参数类型；不拉 sql_modules / OBJECT_DEFINITION（大库超时 → 有表无过程）。
+            /// 系统例程必须走 sys.all_objects / sys.all_parameters，否则 DMF 全被 is_ms_shipped 滤掉。
+            /// </summary>
+            private void LoadRoutinesCore(SqlConnection conn, MetadataCatalog catalog, string fourPartPrefix, int timeoutSeconds, bool systemObjects)
+            {
+                string objects = QualifySys(fourPartPrefix, systemObjects ? "sys.all_objects" : "sys.objects");
                 string schemas = QualifySys(fourPartPrefix, "sys.schemas");
-                string parameters = QualifySys(fourPartPrefix, "sys.parameters");
+                string parameters = QualifySys(fourPartPrefix, systemObjects ? "sys.all_parameters" : "sys.parameters");
                 string types = QualifySys(fourPartPrefix, "sys.types");
                 string extProps = QualifySys(fourPartPrefix, "sys.extended_properties");
+                string whereClause = systemObjects
+                    ? "s.name IN (N'sys', N'INFORMATION_SCHEMA') AND RTRIM(o.type) IN (N'P', N'FN', N'TF', N'IF', N'FS', N'FT')"
+                    : "o.type IN ('P','FN','TF','IF','FS','FT') AND o.is_ms_shipped = 0";
                 string sql = $@"
 SELECT s.name AS schema_name,
        o.name AS object_name,
@@ -1102,11 +1368,12 @@ LEFT JOIN {parameters} p ON p.object_id = o.object_id
 LEFT JOIN {types} t ON p.user_type_id = t.user_type_id
 LEFT JOIN {extProps} ep
        ON ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description'
-WHERE o.type IN ('P','FN','TF','IF') AND o.is_ms_shipped = 0
+WHERE {whereClause}
 ORDER BY s.name, o.name, p.parameter_id;";
 
                 try
                 {
+                    int added = 0;
                     using (var cmd = Cmd(conn, sql, timeoutSeconds))
                     using (var reader = cmd.ExecuteReader())
                     {
@@ -1121,7 +1388,7 @@ ORDER BY s.name, o.name, p.parameter_id;";
                                 !string.Equals(current.Schema, schema, StringComparison.OrdinalIgnoreCase) ||
                                 !string.Equals(current.Name, name, StringComparison.OrdinalIgnoreCase))
                             {
-                                string objDesc = reader.IsDBNull(11) ? null : reader.GetString(11);
+                                string objDesc = reader.IsDBNull(11) ? null : Convert.ToString(reader.GetValue(11));
                                 current = new RoutineInfo
                                 {
                                     Schema = schema,
@@ -1130,16 +1397,17 @@ ORDER BY s.name, o.name, p.parameter_id;";
                                     Description = objDesc
                                 };
                                 AddRoutine(catalog, current);
+                                added++;
                             }
 
-                            // parameter_id = 0 表示无参数例程占位行（SQL Server 行为），跳过
+                            // parameter_id = 0 表示返回值/无参数占位行，跳过
                             if (!reader.IsDBNull(3) && reader.GetInt32(3) > 0)
                             {
                                 string paramName = reader.IsDBNull(4) ? null : reader.GetString(4);
                                 string typeName = reader.IsDBNull(5) ? null : reader.GetString(5);
-                                short maxLength = reader.IsDBNull(6) ? (short)0 : reader.GetInt16(6);
-                                byte precision = reader.IsDBNull(7) ? (byte)0 : reader.GetByte(7);
-                                byte scale = reader.IsDBNull(8) ? (byte)0 : reader.GetByte(8);
+                                short maxLength = ReadInt16(reader, 6);
+                                byte precision = ReadByte(reader, 7);
+                                byte scale = ReadByte(reader, 8);
                                 bool isOutput = !reader.IsDBNull(9) && reader.GetBoolean(9);
                                 bool hasDefault = !reader.IsDBNull(10) && reader.GetBoolean(10);
 
@@ -1153,12 +1421,24 @@ ORDER BY s.name, o.name, p.parameter_id;";
                             }
                         }
                     }
-                    catalog.RoutinesLoaded = true;
+                    if (systemObjects)
+                    {
+                        if (added > 0)
+                        {
+                            catalog.SystemRoutinesLoaded = true;
+                            Logger.Info("LoadSystemRoutines {0}: {1} routines", catalog.Database, added);
+                        }
+                        else
+                            Logger.Warn("LoadSystemRoutines {0}: 0 routines", catalog.Database);
+                    }
+                    else
+                        catalog.RoutinesLoaded = true;
                 }
                 catch (Exception ex)
                 {
-                    catalog.RoutinesLoaded = false;
-                    Logger.Warn(ex, "LoadRoutines failed for {0}", catalog.Database);
+                    if (!systemObjects)
+                        catalog.RoutinesLoaded = false;
+                    Logger.Warn(ex, systemObjects ? "LoadSystemRoutines failed for {0}" : "LoadRoutines failed for {0}", catalog.Database);
                 }
             }
 
@@ -1219,11 +1499,13 @@ ORDER BY s.name, o.name;";
             private static RoutineKind RoutineKindFromType(string type)
             {
                 if (string.IsNullOrEmpty(type)) return RoutineKind.Procedure;
-                switch (type.ToUpperInvariant())
+                switch (type.Trim().ToUpperInvariant())
                 {
-                    case "FN": return RoutineKind.ScalarFunction;
+                    case "FN":
+                    case "FS": return RoutineKind.ScalarFunction;
                     case "TF":
-                    case "IF": return RoutineKind.TableFunction;
+                    case "IF":
+                    case "FT": return RoutineKind.TableFunction;
                     default: return RoutineKind.Procedure;
                 }
             }
@@ -1274,6 +1556,7 @@ ORDER BY s.name, o.name;";
                 _linkedServerCache.Clear();
                 _tableColumnCache.Clear();
                 _memoryLoadedServers.Clear();
+                _systemCache.Clear();
             }
 
             private static readonly Regex DdlRegex = new Regex(
@@ -1306,9 +1589,16 @@ ORDER BY s.name, o.name;";
                 }
             }
 
-            /// <summary>常用系统对象（includeSystemObjects 开启时追加到候选）。</summary>
+            /// <summary>
+            /// 旧缓存未含 Schemas 字段、或尚无目录时的系统架构兜底。
+            /// 新缓存以 sys.schemas 为准，不再依赖这份名单补全架构。
+            /// </summary>
             public static readonly string[] CommonSystemSchemas = { "sys", "INFORMATION_SCHEMA" };
 
+            /// <summary>
+            /// 目录尚未从服务器加载 sys 对象（或加载结果为空）时的表/视图/系统过程兜底。
+            /// 缓存里已有 sys 对象时以缓存为准。
+            /// </summary>
             public static readonly string[] CommonSystemObjects =
             {
                 "sys.tables", "sys.views", "sys.columns", "sys.objects", "sys.schemas",

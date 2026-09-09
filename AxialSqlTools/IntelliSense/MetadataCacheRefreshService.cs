@@ -65,13 +65,14 @@ namespace AxialSqlTools.IntelliSense
                     bool needPull = ShouldSilentRefresh(server);
                     Logger.Info("EnsureServerCache {0} loaded={1} needPull={2} source={3}",
                         server, loaded, needPull, needPull ? "server" : "disk");
-                    if (!loaded || needPull)
+                    if (!loaded || needPull || MetadataCatalogService.Instance.HasIncompleteSchemaCache(server))
                     {
                         await RunWithProgressWindowAsync(server, async progress =>
                         {
                             if (!MetadataCatalogService.Instance.IsServerLoadedInMemory(server))
                                 MetadataCatalogService.Instance.LoadServerFromDisk(server, progress, captured.Database);
-                            if (!needPull)
+                            if (!needPull
+                                && !MetadataCatalogService.Instance.HasIncompleteSchemaCache(server))
                                 return;
                             Logger.Info("IntelliSense cache load from server {0}", server);
                             await StartOrAttach(captured, progress).ConfigureAwait(false);
@@ -110,13 +111,14 @@ namespace AxialSqlTools.IntelliSense
                     bool needPull = ShouldSilentRefresh(name);
                     Logger.Info("EnsureLinkedServerCache {0} loaded={1} needPull={2} source={3}",
                         name, loaded, needPull, needPull ? "server" : "disk");
-                    if (!loaded || needPull)
+                    if (!loaded || needPull || MetadataCatalogService.Instance.HasIncompleteSchemaCache(name))
                     {
                         await RunWithProgressWindowAsync(name, async progress =>
                         {
                             if (!MetadataCatalogService.Instance.IsServerLoadedInMemory(name))
                                 MetadataCatalogService.Instance.LoadServerFromDisk(name, progress);
-                            if (!needPull)
+                            if (!needPull
+                                && !MetadataCatalogService.Instance.HasIncompleteSchemaCache(name))
                                 return;
                             Logger.Info("IntelliSense cache load from server {0}", name);
                             await StartLinkedOrAttach(captured, name, progress).ConfigureAwait(false);
@@ -357,16 +359,40 @@ namespace AxialSqlTools.IntelliSense
                 MetadataCatalogService.Instance.PutDatabaseList(server, databases);
                 var linkedServers = MetadataCatalogService.Instance.QueryLinkedServersForCache(connInfo);
                 MetadataCatalogService.Instance.PutLinkedServers(server, linkedServers);
-                int total = databases.Count;
+                int total = databases.Count + 1;
                 int completed = 0;
-                Logger.Info("IntelliSense cache load from server {0} databases={1}", server, total);
+                Logger.Info("IntelliSense cache load from server {0} databases={1} + sys", server, databases.Count);
                 job.Report(new IndexBuildProgress
                 {
                     ServerName = server,
                     Title = "从服务器加载 IntelliSense 缓存",
                     Completed = 0,
                     Total = total,
-                    Message = total == 0 ? "没有可访问的用户库" : "服务器  0/" + total + "  开始索引（并行 " + MaxParallelDatabases + "）"
+                    CurrentItem = "sys",
+                    Message = "服务器  0/" + total + "  sys（整机共用）"
+                });
+                try
+                {
+                    var sysCatalog = MetadataCatalogService.Instance.BuildSystemCatalogForCache(
+                        connInfo, BuildCommandTimeoutSeconds);
+                    if (sysCatalog != null)
+                    {
+                        MetadataCacheStore.SaveSystemCatalog(server, sysCatalog);
+                        MetadataCatalogService.Instance.PutSystemCatalog(server, sysCatalog);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn(ex, "Build system catalog failed {0}", server);
+                }
+                completed = 1;
+                job.Report(new IndexBuildProgress
+                {
+                    ServerName = server,
+                    CurrentItem = "sys",
+                    Completed = completed,
+                    Total = total,
+                    Message = "服务器  1/" + total + "  sys（整机共用）"
                 });
 
                 var options = new ParallelOptions
@@ -489,7 +515,7 @@ namespace AxialSqlTools.IntelliSense
                 if (databases.Count == 0)
                     Logger.Warn("Linked cache pull got 0 databases for {0} via {1}", linkedServer, viaConn?.ServerName);
                 MetadataCatalogService.Instance.PutDatabaseList(linkedServer, databases);
-                int total = databases.Count;
+                int total = databases.Count + 1;
                 int completed = 0;
                 job.Report(new IndexBuildProgress
                 {
@@ -497,7 +523,31 @@ namespace AxialSqlTools.IntelliSense
                     Title = "从服务器加载链接服务器缓存",
                     Completed = 0,
                     Total = total,
-                    Message = total == 0 ? "链接服务器没有可访问的库" : "服务器  0/" + total + "  开始索引"
+                    CurrentItem = "sys",
+                    Message = "服务器  0/" + total + "  sys（整机共用）"
+                });
+                try
+                {
+                    var sysCatalog = MetadataCatalogService.Instance.BuildLinkedSystemCatalogForCache(
+                        viaConn, linkedServer, BuildCommandTimeoutSeconds);
+                    if (sysCatalog != null)
+                    {
+                        MetadataCacheStore.SaveSystemCatalog(linkedServer, sysCatalog);
+                        MetadataCatalogService.Instance.PutSystemCatalog(linkedServer, sysCatalog);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn(ex, "Build linked system catalog failed {0}", linkedServer);
+                }
+                completed = 1;
+                job.Report(new IndexBuildProgress
+                {
+                    ServerName = linkedServer,
+                    CurrentItem = "sys",
+                    Completed = completed,
+                    Total = total,
+                    Message = "服务器  1/" + total + "  sys（整机共用）"
                 });
                 var options = new ParallelOptions
                 {

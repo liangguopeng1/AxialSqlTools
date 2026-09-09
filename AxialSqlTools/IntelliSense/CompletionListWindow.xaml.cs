@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -198,6 +199,11 @@ namespace AxialSqlTools.IntelliSense
                 SetBrush("PopupSelectedBgBrush", selectedColor);
                 SetBrush("PopupHoverBgBrush", hoverColor);
                 SetBrush("PopupAccentBrush", accentColor);
+                // 命中字必须和正文拉开：不用强调色（常接近正文），浅色用深橙、深色用金黄
+                Color matchColor = light
+                    ? Color.FromRgb(0xC2, 0x41, 0x0C)
+                    : Color.FromRgb(0xFB, 0xBF, 0x24);
+                SetBrush("PopupMatchFgBrush", matchColor);
             }
             catch (Exception ex)
             {
@@ -509,6 +515,69 @@ namespace AxialSqlTools.IntelliSense
         }
 
         public event EventHandler CommitClicked;
+    }
+
+    /// <summary>把 MatchIndices 画到补全项 DisplayText 上（命中字符加粗并换强调色）。</summary>
+    public static class MatchHighlight
+    {
+        public static readonly DependencyProperty ItemProperty = DependencyProperty.RegisterAttached(
+            "Item",
+            typeof(CompletionItem),
+            typeof(MatchHighlight),
+            new PropertyMetadata(null, OnItemChanged));
+
+        public static void SetItem(TextBlock element, CompletionItem value)
+        {
+            element.SetValue(ItemProperty, value);
+        }
+
+        public static CompletionItem GetItem(TextBlock element)
+        {
+            return (CompletionItem)element.GetValue(ItemProperty);
+        }
+
+        private static void OnItemChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        {
+            var tb = d as TextBlock;
+            if (tb == null) return;
+            tb.Inlines.Clear();
+            var item = e.NewValue as CompletionItem;
+            string text = item != null ? (item.DisplayText ?? string.Empty) : string.Empty;
+            if (text.Length == 0) return;
+            ApplyRuns(tb, text, item.MatchIndices);
+        }
+
+        private static void ApplyRuns(TextBlock tb, string text, int[] hits)
+        {
+            if (hits == null || hits.Length == 0)
+            {
+                tb.Inlines.Add(new Run(text));
+                return;
+            }
+            // Run 不在逻辑树上，DynamicResource 会落到正文色；从 TextBlock 取资源再赋给 Run
+            Brush matchFg = tb.TryFindResource("PopupMatchFgBrush") as Brush
+                ?? new SolidColorBrush(Color.FromRgb(0xC2, 0x41, 0x0C));
+            var mark = new bool[text.Length];
+            foreach (int i in hits)
+            {
+                if (i >= 0 && i < text.Length) mark[i] = true;
+            }
+            int start = 0;
+            while (start < text.Length)
+            {
+                bool hl = mark[start];
+                int end = start + 1;
+                while (end < text.Length && mark[end] == hl) end++;
+                var run = new Run(text.Substring(start, end - start));
+                if (hl)
+                {
+                    run.FontWeight = FontWeights.Bold;
+                    run.Foreground = matchFg;
+                }
+                tb.Inlines.Add(run);
+                start = end;
+            }
+        }
     }
 
     /// <summary>
