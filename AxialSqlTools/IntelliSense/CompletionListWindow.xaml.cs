@@ -57,6 +57,7 @@ namespace AxialSqlTools.IntelliSense
         {
             InitializeComponent();
             ItemsList.ItemsSource = _items;
+            ItemsList.PreviewMouseLeftButtonDown += ItemsList_PreviewMouseLeftButtonDown;
             ItemsList.PreviewMouseLeftButtonUp += ItemsList_PreviewMouseLeftButtonUp;
             Deactivated += (s, e) => _logger.Debug("CompletionListWindow.Deactivated (IsOpen={0})", IsOpen);
             Closed += (s, e) => _logger.Debug("CompletionListWindow.Closed");
@@ -470,11 +471,41 @@ namespace AxialSqlTools.IntelliSense
             UpdateDetail();
         }
 
+        private void ItemsList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton != MouseButton.Left) return;
+            SelectItemUnderMouse(e.OriginalSource as DependencyObject);
+        }
+
         private void ItemsList_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
         {
             if (e.ChangedButton != MouseButton.Left) return;
-            CommitClicked?.Invoke(this, EventArgs.Empty);
-            e.Handled = true;
+            SelectItemUnderMouse(e.OriginalSource as DependencyObject);
+            if (ItemsList.SelectedItem is CompletionItem)
+            {
+                CommitClicked?.Invoke(this, EventArgs.Empty);
+                e.Handled = true;
+            }
+        }
+
+        private void SelectItemUnderMouse(DependencyObject source)
+        {
+            var listItem = FindAncestor<ListBoxItem>(source);
+            if (listItem == null) return;
+            var item = listItem.DataContext as CompletionItem;
+            if (item == null) return;
+            ItemsList.SelectedItem = item;
+            UpdateDetail();
+        }
+
+        private static T FindAncestor<T>(DependencyObject current) where T : DependencyObject
+        {
+            while (current != null)
+            {
+                if (current is T match) return match;
+                current = VisualTreeHelper.GetParent(current);
+            }
+            return null;
         }
 
         public event EventHandler CommitClicked;

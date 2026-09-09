@@ -10,6 +10,9 @@ namespace AxialSqlTools
             /// <summary>弹框列表中显示的文本。</summary>
             public string DisplayText { get; set; }
 
+            /// <summary>列名后的来源提示，如 (cc) 或 (rt_kucun.dbo.kucun)。</summary>
+            public string DisplaySuffix { get; set; }
+
             /// <summary>选中后插入编辑器的文本（含 [dbo].[t] 等括号化形式）。</summary>
             public string InsertText { get; set; }
 
@@ -135,7 +138,12 @@ namespace AxialSqlTools
             AfterUse,            // USE 后
             LocalVariable,       // @ 后
             LocalMemberAccess,   // CTE.#t.@t. 后
-            DataType             // CAST/CONVERT 的类型参数位置
+            DataType,            // CAST/CONVERT 的类型参数位置
+            TableHint,           // 表名后 (nolock) / WITH (NOLOCK)
+            SelectAlias,         // SELECT 列表给列取别名，不再出字段
+            AfterTruncate,       // TRUNCATE 后，出 TABLE
+            AfterDrop,           // DROP 后，出 TABLE/VIEW/PROCEDURE…
+            DdlObjectTarget      // TRUNCATE/DROP/ALTER TABLE 后，出表名
         }
     }
 }

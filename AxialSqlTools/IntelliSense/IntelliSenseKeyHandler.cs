@@ -362,9 +362,10 @@ namespace AxialSqlTools.IntelliSense
                 char last = before[before.Length - 1];
                 if (last == '.') return false; // dbo.| / alias.|
                 if (last == ';') return true;
+                if (last == '*') return true; // cc.* / SELECT * 已完成这一列
                 if (last == ']') return true; // 方括号名已闭合
                 if (IsAutoPopupTerminatorChar(last)) return true;
-                // 空白、*、运算符、括号等：无活动前缀，不自动弹；弹框已开则保持并展示全部字段
+                // 空白、运算符、括号等：无活动前缀，不自动弹；弹框已开则保持并展示全部字段
                 if (!IsAutoTriggerPrefixChar(last))
                     return !keepOpenSession;
 
@@ -597,7 +598,8 @@ namespace AxialSqlTools.IntelliSense
             if (!isTypeChar && !isBackspace && !isDelete) return;
 
             // 分号等语句结束符：关弹框且不自动再弹（等用户开始输入下一条语句前缀）
-            if (isTypeChar && IsAutoPopupTerminatorChar(typedChar))
+            // alias.* / SELECT * 取完星号后同样关框，避免继续刷出全部字段
+            if (isTypeChar && (IsAutoPopupTerminatorChar(typedChar) || typedChar == '*'))
             {
                 _debounceTimer.Stop();
                 if (_sessionOpen) CloseSession();
@@ -863,6 +865,9 @@ namespace AxialSqlTools.IntelliSense
                 }
 
                 ReplaceRangeWith(insertText, _replaceStartOffset, _replaceEndOffset);
+
+                if (insertText == "*")
+                    _suppressAutoTriggerUntil = DateTime.UtcNow.AddMilliseconds(400);
 
                 if (item.SnippetCursorOffset >= 0)
                 {

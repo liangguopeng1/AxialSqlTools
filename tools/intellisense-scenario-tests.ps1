@@ -43,7 +43,7 @@ Add-Case '15' 'SELECT ca' @('CASE') 'SelectElements'; Add-Case '16' 'SELECT CASE
 Add-Case '17' 'SELECT CASE WHEN 1=1 t' @('THEN') 'SelectElements'; Add-Case '18' 'SELECT CASE WHEN 1=1 THEN 1 e' @('ELSE') 'SelectElements'
 Add-Case '19' 'SELECT CASE WHEN 1=1 THEN 1 ELSE 0 e' @('END') 'SelectElements'
 Add-Case '20' 'SELECT * FR' @('FROM') 'SelectElements'; Add-Case '21' 'SELECT a,b FR' @('FROM') 'SelectElements'
-Add-Case '22' 'SELECT * IN' @('INTO') 'SelectElements'; Add-Case '23' 'SELECT k_id a' @('AS') 'SelectElements'
+Add-Case '22' 'SELECT * IN' @('INTO') 'SelectElements'; Add-Case '23' 'SELECT k_id a' @('AS') 'SelectAlias' @('FROM','INTO')
 Add-Case '24' 'SELECT al' @('ALL') 'SelectElements'; Add-Case '25' 'SELECT TOP 10 pe' @('PERCENT') 'SelectElements'
 Add-Case '26' 'SELECT * FROM t wh' @('WHERE'); Add-Case '27' 'SELECT * FROM t gr' @('GROUP BY')
 Add-Case '28' 'SELECT * FROM t or' @('ORDER BY'); Add-Case '29' 'SELECT * FROM t ha' @('HAVING')
@@ -82,8 +82,9 @@ Add-Case '78' 'INSERT INTO t v' @('VALUES'); Add-Case '79' 'INSERT INTO t s' @('
 Add-Case '80' 'CREATE t' @('TABLE') 'AfterCreate'; Add-Case '81' 'CREATE p' @('PROCEDURE') 'AfterCreate'
 Add-Case '82' 'CREATE v' @('VIEW') 'AfterCreate'; Add-Case '83' 'ALTER t' @('TABLE') 'AfterAlter'
 Add-Case '84' 'ALTER p' @('PROCEDURE') 'AfterAlter'; Add-Case '85' 'DELETE' @('DELETE') 'BatchStart'
-Add-Case '86' 'WITH c' @('CREATE') 'BatchStart'; Add-Case '87' 'MERGE m' @('MERGE') 'BatchStart'
-Add-Case '88' 'TRUNCATE t' @('TRUNCATE') 'BatchStart'; Add-Case '89' 'SELECT * FROM t cc where cc.x=1 a' @('AND')
+Add-Case '86' 'WITH c' @('CREATE') 'BatchStart'; Add-Case '87' 'MERGE m' @() 'DdlObjectTarget'
+Add-Case '88' 'TRUNCATE t' @('TABLE') 'AfterTruncate' @('TRUNCATE')
+Add-Case '89' 'SELECT * FROM t cc where cc.x=1 a' @('AND')
 Add-Case '90' 'SELECT * FROM t WHERE x=1 an' @('AND'); Add-Case '91' 'SELECT * FROM t WHERE n' @('NOT')
 Add-Case '92' 'SELECT * FROM t WHERE x i' @('IS'); Add-Case '93' 'SELECT * FROM t WHERE x IS n' @('NULL')
 Add-Case '94' 'SELECT * FROM t WHERE CASE WHEN 1=1 THEN 1 e' @('ELSE')
@@ -310,6 +311,31 @@ Add-Case '272' ("SELECT max(aa.|) FROM dbo.DemoT" + [char]10 + [char]10 + "SELEC
 Add-Case '274' ("SELECT id FROM dbo.DemoT GROUP BY id HAVING max(k|" + [char]10 + [char]10 + "SELECT * FROM dbo.kucun aa") @('k_id') 'WhereClause' @('oper') -Catalog 'mock'
 # 空前缀 SELECT 列表仍出表字段（退格删光前缀时引擎侧保持候选）
 Add-Case '273' 'SELECT | FROM dbo.DemoT' @('id','k_id') 'SelectElements' -Catalog 'mock'
+# SELECT 列别名不提示字段；表提示 NOLOCK；跨库标量函数；cc.* 仍出星号
+Add-Case '285' 'SELECT 4 ope| FROM dbo.kucun cc' @() 'SelectAlias' @('oper','operid','FROM','INTO') -Catalog 'mock'
+Add-Case '286' 'SELECT cc.k_id ass| FROM dbo.kucun cc' @() 'SelectAlias' @('oper','FROM','INTO') -Catalog 'mock'
+Add-Case '287' 'SELECT 4 AS sta| FROM dbo.kucun cc' @() 'SelectAlias' @('oper','FROM','INTO') -Catalog 'mock'
+Add-Case '288' 'SELECT * FROM dbo.kucun(no' @('NOLOCK') 'TableHint'
+Add-Case '289' 'SELECT * FROM dbo.kucun(' @('NOLOCK','READUNCOMMITTED','READPAST') 'TableHint'
+Add-Case '290' 'SELECT Snow' @('SnowflakeID') 'SelectElements' -Catalog 'mock'
+Add-Case '291' 'SELECT rt_storage.dbo.Snow' @('SnowflakeID') 'SelectElements' -Catalog 'linked'
+Add-Case '292' 'SELECT k| FROM dbo.kucun cc' @('k_id') 'SelectElements' -Catalog 'mock'
+Add-Case '293' 'SELECT cc.| FROM dbo.kucun cc' @('*','k_id') 'MemberAccess' -Catalog 'mock'
+Add-Case '294' 'SELECT * FROM dbo.kucun WITH (no' @('NOLOCK') 'TableHint'
+# 无分号：函数实参不得吃到下一句 FROM 的字段；别名空位不得出 FROM/INTO
+Add-Case '295' ("SELECT dbo.SnowflakeID2(|" + [char]10 + [char]10 + "SELECT * FROM dbo.kucun cc") @() 'WhereClause' @('oper','operid','k_id') -Catalog 'mock'
+Add-Case '296' ("SELECT rt_storage..SnowflakeID2(|" + [char]10 + [char]10 + "SELECT * FROM dbo.kucun cc") @() 'WhereClause' @('oper','k_id') -Catalog 'mock'
+Add-Case '297' ("SELECT * FROM dbo.DemoT" + [char]10 + [char]10 + "SELECT dbo.SnowflakeID2(|" + [char]10 + [char]10 + "SELECT * FROM dbo.kucun cc") @() 'WhereClause' @('oper','k_id','CreateRen') -Catalog 'mock'
+Add-Case '298' 'SELECT 4 ' @() 'SelectAlias' @('FROM','INTO')
+Add-Case '299' 'SELECT a,b IN' @('INTO') 'SelectElements' @('AS')
+Add-Case '300' 'TRUNCATE TABLE k' @('kucun') 'DdlObjectTarget' -Catalog 'mock'
+Add-Case '301' 'TRUNCATE TABLE ' @('kucun','DemoT') 'DdlObjectTarget' -Catalog 'mock'
+Add-Case '302' 'DROP t' @('TABLE') 'AfterDrop'
+Add-Case '303' 'DROP TABLE k' @('kucun') 'DdlObjectTarget' -Catalog 'mock'
+Add-Case '304' 'ALTER TABLE k' @('kucun') 'DdlObjectTarget' -Catalog 'mock'
+Add-Case '305' 'co' @('COMMIT') 'BatchStart'; Add-Case '306' 'ro' @('ROLLBACK') 'BatchStart'
+Add-Case '307' 'MERGE INTO k' @('kucun') 'DdlObjectTarget' -Catalog 'mock'
+Add-Case '308' 'tr' @('TRUNCATE') 'BatchStart'
 
 Write-Host "Cases=$($cases.Count)"
 
@@ -339,6 +365,14 @@ foreach ($cn in @('oper','operid','k_id')) {
     [void]$kucun.Columns.Add($col)
 }
 [void]$mockCatalog.Tables.Add($kucun)
+$routineType = $asm.GetType('AxialSqlTools.IntelliSense.RoutineInfo')
+$kindType = $asm.GetType('AxialSqlTools.IntelliSense.RoutineKind')
+$snowFn = [Activator]::CreateInstance($routineType)
+$snowFn.Schema = 'dbo'
+$snowFn.Name = 'SnowflakeID'
+$snowFn.Kind = [Enum]::Parse($kindType, 'ScalarFunction')
+[void]$mockCatalog.ScalarFunctions.Add($snowFn)
+$mockCatalog.RoutinesLoaded = $true
 
 $linkedCatalog = [Activator]::CreateInstance($catalogType)
 $linkedCatalog.Database = 'baoxiao'
@@ -402,6 +436,12 @@ foreach ($cn in @('j_id','status','H_ID','K_ID','CeShu','Y_GHSID','Y_Cost0','isq
     [void]$tuiGhs.Columns.Add($col)
 }
 [void]$storageCatalog.Tables.Add($tuiGhs)
+$snowFn2 = [Activator]::CreateInstance($routineType)
+$snowFn2.Schema = 'dbo'
+$snowFn2.Name = 'SnowflakeID'
+$snowFn2.Kind = [Enum]::Parse($kindType, 'ScalarFunction')
+[void]$storageCatalog.ScalarFunctions.Add($snowFn2)
+$storageCatalog.RoutinesLoaded = $true
 $svc.PutCatalog('local', 'rt_storage', $storageCatalog)
 
 $masterCatalog = [Activator]::CreateInstance($catalogType)
@@ -542,11 +582,13 @@ foreach ($c in $cases) {
     $ssPiciInsert = $null
     $tProductsInsert = $null
     $tProductsDisplay = $null
+    $kucunSuffix = $null
     if ($r.Items) {
         foreach ($it in $r.Items) {
             [void]$n.Add([string]$it.DisplayText)
             [void]$kinds.Add([string]$it.Kind)
             if ([string]$it.Kind -eq 'AllColumns') { $allInsert = [string]$it.InsertText }
+            if ([string]$it.DisplayText -eq 'k_id') { $kucunSuffix = [string]$it.DisplaySuffix }
             if ([string]$it.DisplayText -eq 'kucun' -or [string]$it.DisplayText -eq 'dbo.kucun') {
                 $kucunInsert = [string]$it.InsertText
             }
@@ -578,6 +620,10 @@ foreach ($c in $cases) {
     }
     foreach ($mn in $c.MustNot) {
         if ($mn -and $n.Contains($mn)) { $ok = $false; $why = "has $mn" }
+    }
+    if ($c.Name -eq '292' -and $kucunSuffix -ne '(cc)') {
+        $ok = $false
+        $why = "suffix=$kucunSuffix want=(cc)"
     }
     if ($c.Name -in @('141','142','143')) {
         if (-not $kinds.Contains('AllColumns')) {

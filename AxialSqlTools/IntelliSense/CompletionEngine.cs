@@ -289,6 +289,7 @@ namespace AxialSqlTools
                             || !string.IsNullOrEmpty(fromName.Partial));
 
                     // JOIN ON / WHERE 多条件：and dd.| 是别名.列，不能被 FROM 限定名抢走
+                    bool selectQualifiedFn = false;
                     if (TryGetMemberAccessPrefix(tokens, localOffset, out string memberPrefix))
                     {
                         string owner = GetOwnerBeforeDot(memberPrefix);
@@ -310,7 +311,16 @@ namespace AxialSqlTools
                                 && IsLinkedServerName(connInfo, fromName.Segments[0]));
 
                         // FROM 里的 库.架构. / server.db. 不能因为 dbo 被收成别名就改走列补全
-                        if (!inDmlTargetName && !ipLinkedServer && (inExprClause || !fromQualifiedName))
+                        // SELECT 列表里 db.schema.fn 也不是别名.列
+                        bool ownerIsAlias = !string.IsNullOrEmpty(owner) && local.Aliases != null
+                            && local.Aliases.ContainsKey(owner);
+                        bool inSelectList = majorForMember == "SELECT" || majorForMember == "DISTINCT"
+                            || majorForMember == "TOP";
+                        bool ownerLooksLikeSchemaOrDb = string.Equals(owner, "dbo", StringComparison.OrdinalIgnoreCase)
+                            || IsDatabasePrefix(connInfo, catalog, owner);
+                        selectQualifiedFn = inSelectList && !ownerIsAlias && !inExprClause && ownerLooksLikeSchemaOrDb;
+                        if (!inDmlTargetName && !ipLinkedServer && !selectQualifiedFn
+                            && (inExprClause || !fromQualifiedName))
                         {
                             result.Context = CompletionContext.MemberAccess;
                             result.Prefix = memberPrefix;
@@ -337,12 +347,25 @@ namespace AxialSqlTools
                     }
 
                     var ctx = GetContext(tokens, localOffset, fromName, out prefix);
+                    if (selectQualifiedFn && ctx == CompletionContext.MemberAccess)
+                        ctx = CompletionContext.SelectElements;
                     if (string.IsNullOrEmpty(prefix) && !string.IsNullOrEmpty(rawPrefix))
                         prefix = rawPrefix;
                     // EXEC caiwu..pro → 过滤用点号后的部分
                     if (ctx == CompletionContext.AfterExec && fromName != null && fromName.AfterDot
                         && fromName.Partial != null)
                         prefix = fromName.Partial;
+                    if (ctx == CompletionContext.SelectElements)
+                    {
+                        FromObjectNameContext selectName;
+                        if (TryParseSelectObjectNameRaw(batchText, localOffset, out selectName)
+                            && selectName.InSelectList)
+                        {
+                            fromName = selectName;
+                            if (selectName.AfterDot)
+                                prefix = selectName.Partial ?? string.Empty;
+                        }
+                    }
                     result.Context = ctx;
                     result.Prefix = prefix;
 
@@ -640,12 +663,22 @@ namespace AxialSqlTools
                     char c = text[i];
                     if (c == '(') { depth++; i++; continue; }
                     if (c == ')') { if (depth > 0) depth--; i++; continue; }
-                    if (depth == 0 && KeywordAt(text, i, n, "FROM"))
-                        return i;
-                    if (depth == 0 && (KeywordAt(text, i, n, "WHERE") || KeywordAt(text, i, n, "GROUP")
-                        || KeywordAt(text, i, n, "ORDER") || KeywordAt(text, i, n, "HAVING")
-                        || KeywordAt(text, i, n, "UNION")))
-                        return -1;
+                    if (depth == 0)
+                    {
+                        if (c == ';') return -1;
+                        if (KeywordAt(text, i, n, "GO")) return -1;
+                        if (KeywordAt(text, i, n, "FROM"))
+                            return i;
+                        if (KeywordAt(text, i, n, "WHERE") || KeywordAt(text, i, n, "GROUP")
+                            || KeywordAt(text, i, n, "ORDER") || KeywordAt(text, i, n, "HAVING")
+                            || KeywordAt(text, i, n, "UNION") || KeywordAt(text, i, n, "EXCEPT")
+                            || KeywordAt(text, i, n, "INTERSECT"))
+                            return -1;
+                        // 无分号下一句 SELECT/INSERT/... 不是当前查询的 FROM
+                        if (i != selectAt && IsStmtBoundaryKeyword(text, i, n)
+                            && !IsSetOpBefore(text, i, selectAt, n))
+                            return -1;
+                    }
                     i++;
                 }
                 return -1;

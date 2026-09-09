@@ -35,6 +35,10 @@ namespace AxialSqlTools.IntelliSense
         private DateTime _lastMoveTime = DateTime.MinValue;
         private DateTime _lastTypeTime = DateTime.MinValue;
         private Point _lastMovePos = new Point(-1, -1);
+        /// <summary>指针下的文档行列/词。滚轮不改屏幕坐标，用这个判断底下的词是否换了。</summary>
+        private int _hoverDocLine = -1;
+        private int _hoverDocCol = -1;
+        private string _hoverDocWord;
         private Point _tooltipAnchorPos;
         private int _tooltipAnchorLine = -1;
         private int _tooltipAnchorCol = -1;
@@ -45,9 +49,14 @@ namespace AxialSqlTools.IntelliSense
         private bool _editorHadFocus = true;
         private string _lastLoggedWord;
         private DateTime _lastDiagLog = DateTime.MinValue;
-        /// <summary>补全提交 / Esc / 双击选词后抑制悬停，直到鼠标移开。</summary>
+        /// <summary>点击/Esc/提交后抑制悬停，直到鼠标真正移开（离开编辑器也算移开）。</summary>
         private bool _suppressHoverUntilMouseMove;
         private Point _suppressHoverAnchor = new Point(-1, -1);
+        /// <summary>本 tick 刚记下点击抑制：等客户区坐标更新后再钉锚点，避免 ScreenToClient 跳变立刻解除。</summary>
+        private bool _clickSuppressPending;
+        private bool _pointerWasAway;
+        private int _lastCaretLine = int.MinValue;
+        private int _lastCaretCol = int.MinValue;
         /// <summary>鼠标离开本编辑器的起始时间（移向弹框的短暂间隙）。</summary>
         private DateTime _awayFromEditorSince = DateTime.MinValue;
         private bool _leftButtonDown;
@@ -176,7 +185,7 @@ namespace AxialSqlTools.IntelliSense
             var dispatcher = GetUiDispatcher();
             _hoverTimer = new DispatcherTimer(DispatcherPriority.Background, dispatcher)
             {
-                Interval = TimeSpan.FromMilliseconds(Math.Max(50, Math.Min(150, delay / 4)))
+                Interval = TimeSpan.FromMilliseconds(50)
             };
             _hoverTimer.Tick += OnHoverTick;
             _hoverTimer.Start();
@@ -232,6 +241,7 @@ namespace AxialSqlTools.IntelliSense
                     // 后台标签：降噪，勿每 tick 写 diag（曾把日志刷到数十 MB）
                     if (ReferenceEquals(_hoverOwner, this))
                         _hoverOwner = null;
+                    ClearHoverDocAnchor();
                     CloseTooltip();
                     return;
                 }
@@ -239,6 +249,11 @@ namespace AxialSqlTools.IntelliSense
                 if (!TryUpdateCursorFromScreen(out string cursorReason))
                 {
                     Diag("cursor_miss", cursorReason);
+                    if (IsPointerAwayFromEditor())
+                    {
+                        _pointerWasAway = true;
+                        ClearHoverDocAnchor();
+                    }
                     // 鼠标不在本编辑器：钉住时若也不在弹框上，稍候强制关（切设置页）。
                     // 右键菜单是独立 HWND，指针不在弹框上，但不能当离开。
                     if (QuickInfoTooltip.IsOwnedBy(this) && !QuickInfoTooltip.IsPointerOverPopup())
@@ -264,7 +279,22 @@ namespace AxialSqlTools.IntelliSense
                     return;
                 }
                 _awayFromEditorSince = DateTime.MinValue;
+                if (_pointerWasAway)
+                {
+                    _pointerWasAway = false;
+                    _suppressHoverUntilMouseMove = false;
+                    _clickSuppressPending = false;
+                    _lastMoveTime = DateTime.UtcNow;
+                }
                 ClaimHoverOwnership("active_view");
+                NoteDocumentUnderPointer();
+                if (_clickSuppressPending)
+                {
+                    _suppressHoverAnchor = _lastMovePos;
+                    _suppressHoverUntilMouseMove = true;
+                    _clickSuppressPending = false;
+                }
+                NoteCaretAlignedClick();
 
                 // 点在编辑器上：即使刚复制钉住了也关，不要把第一下吃掉
                 if (_leftButtonDown && !QuickInfoTooltip.IsPointerOverPopup())
@@ -290,12 +320,12 @@ namespace AxialSqlTools.IntelliSense
                     return;
                 }
 
-                // Esc / 双击选词 / 补全提交：鼠标未移开前不弹悬停框
+                // 点击/Esc/提交：鼠标没从点击点移开前不弹。离开编辑器再回来由 _pointerWasAway 重新计时。
                 if (_suppressHoverUntilMouseMove)
                 {
                     int sdx = Math.Abs(_lastMovePos.X - _suppressHoverAnchor.X);
                     int sdy = Math.Abs(_lastMovePos.Y - _suppressHoverAnchor.Y);
-                    if (sdx <= MoveCloseThreshold && sdy <= MoveCloseThreshold)
+                    if (sdx <= HoverMoveThreshold && sdy <= HoverMoveThreshold)
                     {
                         CloseTooltip();
                         return;
@@ -343,44 +373,55 @@ namespace AxialSqlTools.IntelliSense
         {
             bool leftDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
             _leftButtonDown = leftDown;
-            if (leftDown && !_prevLeftDown)
+            NativePoint pt;
+            bool havePt = GetCursorPos(out pt);
+            if (leftDown)
             {
-                NativePoint pt;
-                if (GetCursorPos(out pt))
+                if (havePt)
                 {
                     IntPtr hwndAtPoint = WindowFromPoint(pt);
                     IntPtr tipHwnd = QuickInfoTooltip.GetWindowHandle();
                     bool onTip = tipHwnd != IntPtr.Zero && (hwndAtPoint == tipHwnd || IsChild(tipHwnd, hwndAtPoint));
                     bool onPopup = onTip || (ShouldIgnoreFocusTarget != null && ShouldIgnoreFocusTarget(hwndAtPoint));
-                    bool onEditor = _editorHwnd != IntPtr.Zero && IsRelatedHwnd(_editorHwnd, hwndAtPoint);
+                    bool onEditor = (_editorHwnd != IntPtr.Zero && IsRelatedHwnd(_editorHwnd, hwndAtPoint))
+                        || (IsSelectedTextView() && TryGetLineColumnFromScreenPoint(pt.x, pt.y, out _, out _));
                     if (onPopup)
                     {
                         _editorLeftCapture = false;
                     }
-                    else
+                    else if (onEditor)
                     {
-                        EditorPointerDown?.Invoke();
-                        if (onEditor)
+                        if (!_editorLeftCapture)
                         {
+                            EditorPointerDown?.Invoke();
                             ClaimHoverOwnership("pointer");
                             _editorLeftCapture = true;
                             NoteEditorMouseDown(pt);
                         }
-                        else
-                        {
-                            _editorLeftCapture = false;
-                        }
+                    }
+                    else if (!_prevLeftDown)
+                    {
+                        EditorPointerDown?.Invoke();
+                        _editorLeftCapture = false;
                     }
                 }
-                else
+                else if (!_prevLeftDown)
                 {
                     _editorLeftCapture = false;
                 }
             }
-            else if (!leftDown && _prevLeftDown)
+            else if (_prevLeftDown)
             {
                 if (_editorLeftCapture)
                     NoteEditorMouseUp();
+                else if (havePt && IsSelectedTextView()
+                    && TryGetLineColumnFromScreenPoint(pt.x, pt.y, out _, out _))
+                {
+                    // 按下边沿被 poll 漏掉：松手仍关掉并重计悬停，避免「一点就出」
+                    CloseTooltip();
+                    SuppressHoverUntilMouseMove();
+                    _lastMoveTime = DateTime.UtcNow;
+                }
                 _editorLeftCapture = false;
             }
             _prevLeftDown = leftDown;
@@ -399,6 +440,67 @@ namespace AxialSqlTools.IntelliSense
                 }
             }
             _editorHadFocus = editorFocused;
+        }
+
+        /// <summary>坐标映射失败时，用 HWND 判断鼠标是否真的离开了编辑器（映射抖动不当离开）。</summary>
+        private bool IsPointerAwayFromEditor()
+        {
+            NativePoint screenPt;
+            if (!GetCursorPos(out screenPt)) return true;
+            IntPtr hit = WindowFromPoint(screenPt);
+            if (hit == IntPtr.Zero) return true;
+            IntPtr tipHwnd = QuickInfoTooltip.GetWindowHandle();
+            if (tipHwnd != IntPtr.Zero && (hit == tipHwnd || IsChild(tipHwnd, hit)))
+                return false;
+            if (ShouldIgnoreFocusTarget != null && ShouldIgnoreFocusTarget(hit))
+                return false;
+            if (_editorHwnd != IntPtr.Zero && IsRelatedHwnd(_editorHwnd, hit))
+                return false;
+            IntPtr viewHwnd = GetViewHwnd();
+            if (viewHwnd != IntPtr.Zero && viewHwnd != _editorHwnd && IsRelatedHwnd(viewHwnd, hit))
+                return false;
+            return true;
+        }
+
+        private void ClearHoverDocAnchor()
+        {
+            _hoverDocLine = -1;
+            _hoverDocCol = -1;
+            _hoverDocWord = null;
+        }
+
+        /// <summary>
+        /// 滚轮只换文档不改屏幕坐标。指针下的词变了、或落到空白，都重计悬停并关框。
+        /// </summary>
+        private void NoteDocumentUnderPointer()
+        {
+            if (!TryGetHoverLineColumn(out int line, out int col)
+                || !TryGetWordSpanAtLineColumn(line, col, out int wordStart, out string word)
+                || !IsPointerOverWordGlyph(line, wordStart, wordStart + word.Length))
+            {
+                if (_hoverDocWord != null || _tooltipShowing)
+                {
+                    _lastMoveTime = DateTime.UtcNow;
+                    if (!QuickInfoTooltip.ShouldKeepOpen)
+                        CloseTooltip();
+                }
+                ClearHoverDocAnchor();
+                return;
+            }
+            bool wordChanged = _hoverDocWord != null
+                && (line != _hoverDocLine || !string.Equals(_hoverDocWord, word, StringComparison.OrdinalIgnoreCase));
+            if (wordChanged
+                || (_hoverDocLine >= 0 && (line != _hoverDocLine || Math.Abs(col - _hoverDocCol) > 2)))
+            {
+                _lastMoveTime = DateTime.UtcNow;
+                _suppressHoverUntilMouseMove = false;
+                _clickSuppressPending = false;
+                if (_tooltipShowing && !QuickInfoTooltip.ShouldKeepOpen)
+                    CloseTooltip();
+            }
+            _hoverDocLine = line;
+            _hoverDocCol = col;
+            _hoverDocWord = word;
         }
 
         private void NoteMove(Point clientPos)
@@ -747,28 +849,15 @@ namespace AxialSqlTools.IntelliSense
             try { QuickInfoTooltip.Close(); } catch { }
         }
 
-        /// <summary>编辑器内左键按下：单击只重启悬停延迟；双击视为选词/复制，抑制到鼠标移开。</summary>
+        /// <summary>编辑器内左键按下：关掉当前框，并抑制到鼠标移开后再重新计时。</summary>
         private void NoteEditorMouseDown(NativePoint screenPt)
         {
-            var now = DateTime.UtcNow;
-            int interval = 500;
-            try
-            {
-                uint t = GetDoubleClickTime();
-                if (t > 0 && t < 2000) interval = (int)t;
-            }
-            catch { }
-            int dx = Math.Abs(screenPt.x - _lastLeftClickScreen.X);
-            int dy = Math.Abs(screenPt.y - _lastLeftClickScreen.Y);
-            bool isDoubleClick = _lastLeftClickScreen.X >= 0
-                && (now - _lastLeftClickUtc).TotalMilliseconds <= interval
-                && dx <= 6 && dy <= 6;
-            _lastLeftClickUtc = now;
+            _lastLeftClickUtc = DateTime.UtcNow;
             _lastLeftClickScreen = new Point(screenPt.x, screenPt.y);
-            _lastMoveTime = now;
+            _lastMoveTime = DateTime.UtcNow;
             CloseTooltip();
-            if (isDoubleClick)
-                SuppressHoverUntilMouseMove();
+            SuppressHoverUntilMouseMove();
+            _clickSuppressPending = true;
         }
 
         /// <summary>拖选松手后若有选区，多半是要复制，鼠标没动就不要弹框。</summary>
@@ -777,6 +866,28 @@ namespace AxialSqlTools.IntelliSense
             _lastMoveTime = DateTime.UtcNow;
             if (EditorSelectionHelper.HasTextSelection(_textView))
                 SuppressHoverUntilMouseMove();
+        }
+
+        /// <summary>
+        /// 点击边沿被 timer 漏掉时：光标跳到鼠标所在词且不是打字，视为单击。
+        /// </summary>
+        private void NoteCaretAlignedClick()
+        {
+            if (_textView == null) return;
+            if (_textView.GetCaretPos(out int line, out int col) != S_OK) return;
+            if (line == _lastCaretLine && col == _lastCaretCol) return;
+            bool first = _lastCaretLine == int.MinValue;
+            _lastCaretLine = line;
+            _lastCaretCol = col;
+            if (first) return;
+            if (_editorLeftCapture || _leftButtonDown) return;
+            if ((DateTime.UtcNow - _lastTypeTime).TotalMilliseconds < 80) return;
+            if (!TryGetHoverLineColumn(out int ml, out int mc)) return;
+            if (line != ml || Math.Abs(col - mc) > 2) return;
+            CloseTooltip();
+            SuppressHoverUntilMouseMove();
+            _lastMoveTime = DateTime.UtcNow;
+            _clickSuppressPending = true;
         }
 
         /// <summary>抑制悬停直到鼠标离开锚点；锚点必须与 _lastMovePos 同为客户区坐标。</summary>
@@ -861,7 +972,7 @@ namespace AxialSqlTools.IntelliSense
 
         /// <summary>
         /// 鼠标是否落在 [wordStart, wordEnd) 的屏幕字形矩形内。
-        /// 词后若只有行尾空白（如 <c>dbo.table␠</c>），空白也算命中，否则右缘几乎点不中。
+        /// 只给词缘留 4px，不把行尾空白算进命中（划到空处不应弹出刚划过的表）。
         /// </summary>
         private bool IsPointerOverWordGlyph(int line, int wordStart, int wordEnd)
         {
@@ -869,32 +980,8 @@ namespace AxialSqlTools.IntelliSense
             NativePoint screenPt;
             if (!GetCursorPos(out screenPt)) return false;
 
-            int glyphEnd = wordEnd;
-            try
-            {
-                if (_textView.GetBuffer(out IVsTextLines buf) == S_OK)
-                {
-                    buf.GetLengthOfLine(line, out int lineLen);
-                    if (lineLen > wordEnd)
-                    {
-                        buf.GetLineText(line, 0, line, lineLen, out string lineText);
-                        if (!string.IsNullOrEmpty(lineText))
-                        {
-                            int i = wordEnd;
-                            while (i < lineLen && char.IsWhiteSpace(lineText[i])) i++;
-                            // 仅扩展「词后全是行尾空白」；词间空格不扩展，避免误吸到下一词
-                            if (i >= lineLen)
-                                glyphEnd = lineLen;
-                        }
-                    }
-                }
-            }
-            catch
-            {
-            }
-
             if (!TryGetViewPointScreen(line, wordStart, out NativePoint startScreen)) return false;
-            if (!TryGetViewPointScreen(line, glyphEnd, out NativePoint endScreen)) return false;
+            if (!TryGetViewPointScreen(line, wordEnd, out NativePoint endScreen)) return false;
 
             int top = startScreen.y;
             int bottom;

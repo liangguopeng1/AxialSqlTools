@@ -42,6 +42,19 @@ namespace AxialSqlTools
                         if (settings.includeKeywords) AddKeywords(items, AlterObjectKeywords);
                         break;
 
+                    case CompletionContext.AfterTruncate:
+                        if (settings.includeKeywords)
+                            AddKeywords(items, new[] { "TABLE" });
+                        break;
+
+                    case CompletionContext.AfterDrop:
+                        if (settings.includeKeywords) AddKeywords(items, DropObjectKeywords);
+                        break;
+
+                    case CompletionContext.DdlObjectTarget:
+                        AddFromClauseItems(items, fromName, catalog, settings, connInfo, prefix, local);
+                        break;
+
                     case CompletionContext.FromClause:
                         if (fromName != null && fromName.ExcessiveDots)
                             break;
@@ -74,11 +87,29 @@ namespace AxialSqlTools
                         break;
 
                     case CompletionContext.SelectElements:
+                        if (fromName != null && fromName.InSelectList
+                            && (fromName.AfterDot || fromName.UsesDoubleDot))
+                        {
+                            AddSelectFunctionItems(items, fromName, catalog, settings, connInfo, prefix);
+                            break;
+                        }
                         if (settings.includeKeywords)
                         {
                             AddKeywords(items, SelectClauseKeywords);
                         }
                         AddColumnsAndFunctions(items, catalog, local, settings, connInfo);
+                        AddScalarFunctionsFromCatalog(items, catalog, settings, fromName, connInfo, prefix);
+                        AddDatabases(items, connInfo, settings);
+                        break;
+
+                    case CompletionContext.SelectAlias:
+                        if (settings.includeKeywords)
+                            AddKeywords(items, new[] { "AS" });
+                        break;
+
+                    case CompletionContext.TableHint:
+                        if (settings.includeKeywords)
+                            AddKeywords(items, TableHintKeywords);
                         break;
 
                     case CompletionContext.WhereClause:
@@ -377,6 +408,13 @@ namespace AxialSqlTools
                         if (!string.IsNullOrEmpty(v.Schema)) schemas.Add(v.Schema);
                     }
                 }
+                if (catalog.ScalarFunctions != null)
+                {
+                    foreach (var f in catalog.ScalarFunctions)
+                    {
+                        if (!string.IsNullOrEmpty(f.Schema)) schemas.Add(f.Schema);
+                    }
+                }
                 string filter = GetLastSegment(namePrefix);
                 string dbLabel = catalog.Database ?? string.Empty;
                 foreach (var s in schemas
@@ -455,7 +493,7 @@ namespace AxialSqlTools
 
             private TableInsertMode ResolveTableInsertMode(FromObjectNameContext fromName, ScriptFactoryAccess.ConnectionInfo connInfo, MetadataCatalog catalog = null)
             {
-                if (fromName == null || !fromName.InFromClause)
+                if (fromName == null || (!fromName.InFromClause && !fromName.InSelectList))
                     return TableInsertMode.FullQualified;
                 int segCount = fromName.Segments?.Count ?? 0;
                 bool linkedServerContext = segCount > 0 && IsLinkedServerName(connInfo, fromName.Segments[0]);
@@ -768,13 +806,14 @@ namespace AxialSqlTools
                     if (tcol == null) continue;
                     string alias;
                     preferredAlias.TryGetValue(kv.Key, out alias);
+                    string sourceHint = BuildColumnSourceHint(alias, kv.Value, tcol, catalog, connInfo);
                     foreach (var col in tcol.Columns)
                     {
                         string colInsert = FormatColumnInsert(col.Name, settings);
                         string insert = string.IsNullOrEmpty(alias)
                             ? colInsert
                             : FormatIdentifier(alias, settings) + "." + colInsert;
-                        items.Add(CreateColumnItem(col.Name, insert, col, kv.Value, tcol, catalog, connInfo));
+                        items.Add(CreateColumnItem(col.Name, insert, col, kv.Value, tcol, catalog, connInfo, sourceHint));
                     }
                 }
             }
@@ -864,7 +903,9 @@ namespace AxialSqlTools
                 {
                     foreach (var col in cte.ColumnNames)
                     {
-                        items.Add(new CompletionItem(col, FormatColumnInsert(col, settings), CompletionKind.Column, "CTE 列: " + cte.Name));
+                        var item = new CompletionItem(col, FormatColumnInsert(col, settings), CompletionKind.Column, "CTE 列: " + cte.Name);
+                        item.DisplaySuffix = "(" + cte.Name + ")";
+                        items.Add(item);
                     }
                     if (cte.ColumnNames.Count == 0)
                     {
@@ -877,7 +918,9 @@ namespace AxialSqlTools
                     {
                         foreach (var col in tt.ColumnNames)
                         {
-                            items.Add(new CompletionItem(col, FormatColumnInsert(col, settings), CompletionKind.Column, "临时表列: " + tt.Name));
+                            var item = new CompletionItem(col, FormatColumnInsert(col, settings), CompletionKind.Column, "临时表列: " + tt.Name);
+                            item.DisplaySuffix = "(" + tt.Name + ")";
+                            items.Add(item);
                         }
                     }
                 }
@@ -887,7 +930,9 @@ namespace AxialSqlTools
                     {
                         foreach (var col in tv.ColumnNames)
                         {
-                            items.Add(new CompletionItem(col, FormatColumnInsert(col, settings), CompletionKind.Column, "表变量列: " + tv.Name));
+                            var item = new CompletionItem(col, FormatColumnInsert(col, settings), CompletionKind.Column, "表变量列: " + tv.Name);
+                            item.DisplaySuffix = "(" + tv.Name + ")";
+                            items.Add(item);
                         }
                     }
                 }
@@ -1049,12 +1094,125 @@ namespace AxialSqlTools
             private void AddProceduresAndScalarFunctions(List<CompletionItem> items, MetadataCatalog catalog, IntelliSenseSettings settings)
             {
                 AddProceduresFromCatalog(items, catalog, settings, null, false);
-                if (catalog == null) return;
+                AddScalarFunctionsFromCatalog(items, catalog, settings, null, null, null);
+            }
+
+            private void AddSelectFunctionItems(
+                List<CompletionItem> items,
+                FromObjectNameContext fromName,
+                MetadataCatalog catalog,
+                IntelliSenseSettings settings,
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string namePrefix)
+            {
+                if (fromName == null) return;
+                int segCount = fromName.Segments?.Count ?? 0;
+                if (fromName.AfterDot)
+                {
+                    if (segCount == 1 && fromName.UsesDoubleDot)
+                    {
+                        var remote = ResolveDatabaseCatalog(connInfo, catalog, fromName.Segments[0]);
+                        AddScalarFunctionsInSchema(items, remote, "dbo", settings, fromName, connInfo, namePrefix);
+                        return;
+                    }
+                    if (segCount == 1 && IsDatabasePrefix(connInfo, catalog, fromName.Segments[0]))
+                    {
+                        var remote = ResolveDatabaseCatalog(connInfo, catalog, fromName.Segments[0]);
+                        AddSchemasFromCatalog(items, remote, settings, namePrefix ?? fromName.Partial);
+                        AddScalarFunctionsInSchema(items, remote, null, settings, fromName, connInfo, namePrefix);
+                        return;
+                    }
+                    if (segCount == 1)
+                    {
+                        AddScalarFunctionsInSchema(items, catalog, fromName.Segments[0], settings, fromName, connInfo, namePrefix);
+                        return;
+                    }
+                    if (segCount == 2)
+                    {
+                        var remote = ResolveDatabaseCatalog(connInfo, catalog, fromName.Segments[0]);
+                        if (remote != null)
+                        {
+                            AddScalarFunctionsInSchema(items, remote, fromName.Segments[1], settings, fromName, connInfo, namePrefix);
+                            return;
+                        }
+                        AddScalarFunctionsInSchema(items, catalog, fromName.Segments[0], settings, fromName, connInfo, namePrefix);
+                    }
+                    return;
+                }
+                if (segCount == 1 && fromName.UsesDoubleDot)
+                {
+                    var remote = ResolveDatabaseCatalog(connInfo, catalog, fromName.Segments[0]);
+                    AddScalarFunctionsInSchema(items, remote, "dbo", settings, fromName, connInfo, namePrefix);
+                    return;
+                }
+                if (segCount == 1 && IsDatabasePrefix(connInfo, catalog, fromName.Segments[0]))
+                {
+                    var remote = ResolveDatabaseCatalog(connInfo, catalog, fromName.Segments[0]);
+                    AddSchemasFromCatalog(items, remote, settings, namePrefix ?? fromName.Partial);
+                    AddScalarFunctionsInSchema(items, remote, null, settings, fromName, connInfo, namePrefix);
+                }
+            }
+
+            private void AddScalarFunctionsFromCatalog(
+                List<CompletionItem> items,
+                MetadataCatalog catalog,
+                IntelliSenseSettings settings,
+                FromObjectNameContext fromName,
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string namePrefix)
+            {
+                AddScalarFunctionsInSchema(items, catalog, null, settings, fromName, connInfo, namePrefix);
+            }
+
+            private void AddScalarFunctionsInSchema(
+                List<CompletionItem> items,
+                MetadataCatalog catalog,
+                string schema,
+                IntelliSenseSettings settings,
+                FromObjectNameContext fromName,
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string namePrefix)
+            {
+                if (catalog?.ScalarFunctions == null) return;
+                string filter = GetLastSegment(namePrefix ?? fromName?.Partial);
+                var insertMode = ResolveTableInsertMode(fromName, connInfo, catalog);
+                bool nameOnly = fromName != null && fromName.InSelectList && (fromName.AfterDot || fromName.UsesDoubleDot)
+                    && (fromName.Segments?.Count ?? 0) >= 2;
+                int cap = Math.Max(PreSortCandidateFloor, settings.maxCompletionItems * PreSortCandidateMultiplier);
+                int added = 0;
                 foreach (var f in catalog.ScalarFunctions)
                 {
-                    items.Add(new CompletionItem(f.Name, FormatObjectInsert(f, settings), CompletionKind.ScalarFunction,
-                        BuildRoutineDescription(f)));
+                    if (!string.IsNullOrEmpty(schema)
+                        && !string.Equals(f.Schema, schema, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (!ObjectNameMatchesFilter(f.Name, filter)
+                        && !ObjectNameMatchesFilter(f.QualifiedName, filter))
+                        continue;
+                    string insert;
+                    if (fromName != null && fromName.InSelectList)
+                        insert = BuildTableInsertText(fromName, f, connInfo, settings, insertMode);
+                    else
+                        insert = FormatObjectInsert(f, settings);
+                    if (nameOnly)
+                        insert = FormatIdentifier(f.Name, settings);
+                    insert = AppendFunctionCallParens(insert, out int cursor);
+                    string display = nameOnly || (fromName != null && fromName.AfterDot) ? f.Name : f.QualifiedName;
+                    var item = new CompletionItem(display, insert, CompletionKind.ScalarFunction, BuildRoutineDescription(f));
+                    item.SnippetCursorOffset = cursor;
+                    item.SourceDatabase = catalog.Database;
+                    item.SourceTable = f.QualifiedName;
+                    items.Add(item);
+                    if (++added >= cap) return;
                 }
+            }
+
+            private static string AppendFunctionCallParens(string insert, out int cursorOffset)
+            {
+                cursorOffset = -1;
+                if (string.IsNullOrEmpty(insert)) return insert;
+                if (insert.EndsWith(")", StringComparison.Ordinal)) return insert;
+                cursorOffset = insert.Length + 1;
+                return insert + "()";
             }
 
             private void AddMemberColumns(List<CompletionItem> items, string prefix, MetadataCatalog catalog, LocalSymbols local, IntelliSenseSettings settings, ScriptFactoryAccess.ConnectionInfo connInfo)
@@ -1078,9 +1236,11 @@ namespace AxialSqlTools
                     var tcol = ResolveTableRef(connInfo, catalog, tref);
                     if (tcol != null)
                     {
+                        items.Add(new CompletionItem("*", "*", CompletionKind.Column, "所有列"));
+                        string sourceHint = BuildColumnSourceHint(owner, tref, tcol, catalog, connInfo);
                         foreach (var col in tcol.Columns)
                         {
-                            items.Add(CreateColumnItem(col.Name, FormatColumnInsert(col.Name, settings), col, tref, tcol, catalog, connInfo));
+                            items.Add(CreateColumnItem(col.Name, FormatColumnInsert(col.Name, settings), col, tref, tcol, catalog, connInfo, sourceHint));
                         }
                     }
                     return;
@@ -1117,9 +1277,12 @@ namespace AxialSqlTools
                 var cte = local.Ctes.FirstOrDefault(c => string.Equals(c.Name, owner, StringComparison.OrdinalIgnoreCase));
                 if (cte != null)
                 {
+                    items.Add(new CompletionItem("*", "*", CompletionKind.Column, "所有列"));
                     foreach (var col in cte.ColumnNames)
                     {
-                        items.Add(new CompletionItem(col, FormatColumnInsert(col, settings), CompletionKind.Column, "CTE 列: " + cte.Name));
+                        var item = new CompletionItem(col, FormatColumnInsert(col, settings), CompletionKind.Column, "CTE 列: " + cte.Name);
+                        item.DisplaySuffix = "(" + cte.Name + ")";
+                        items.Add(item);
                     }
                     return true;
                 }
@@ -1550,12 +1713,38 @@ namespace AxialSqlTools
                 TableRef tref,
                 TableColumnInfo table,
                 MetadataCatalog catalog,
-                ScriptFactoryAccess.ConnectionInfo connInfo)
+                ScriptFactoryAccess.ConnectionInfo connInfo,
+                string sourceHint = null)
             {
                 var item = new CompletionItem(display, insert, CompletionKind.Column, BuildColumnDescription(col));
                 item.SourceDatabase = ResolveSourceDatabase(tref, catalog, connInfo);
                 item.SourceTable = FormatSourceTable(table, tref);
+                item.DisplaySuffix = sourceHint ?? BuildColumnSourceHint(null, tref, table, catalog, connInfo);
                 return item;
+            }
+
+            private static string BuildColumnSourceHint(
+                string alias,
+                TableRef tref,
+                TableColumnInfo table,
+                MetadataCatalog catalog,
+                ScriptFactoryAccess.ConnectionInfo connInfo)
+            {
+                if (!string.IsNullOrEmpty(alias)
+                    && (tref == null || !string.Equals(alias, tref.Name, StringComparison.OrdinalIgnoreCase)))
+                    return "(" + alias + ")";
+                string db = ResolveSourceDatabase(tref, catalog, connInfo);
+                string schema = table != null && !string.IsNullOrEmpty(table.Schema)
+                    ? table.Schema
+                    : (tref != null && !string.IsNullOrEmpty(tref.Schema) ? tref.Schema : "dbo");
+                string name = table != null && !string.IsNullOrEmpty(table.Name)
+                    ? table.Name
+                    : tref?.Name;
+                if (string.IsNullOrEmpty(name)) return null;
+                if (string.IsNullOrEmpty(schema)) schema = "dbo";
+                if (string.IsNullOrEmpty(db))
+                    return "(" + schema + "." + name + ")";
+                return "(" + db + "." + schema + "." + name + ")";
             }
 
             private static void ApplyObjectSource(CompletionItem item, string database, TableColumnInfo obj)
@@ -1672,12 +1861,16 @@ namespace AxialSqlTools
             /// <summary>INSERT 后常见关键字。</summary>
             public static readonly string[] InsertKeywords = { "INTO", "SELECT", "VALUES", "DEFAULT" };
 
+            /// <summary>表名后 ( 或 WITH ( 的表提示。</summary>
+            public static readonly string[] TableHintKeywords = { "NOLOCK", "READUNCOMMITTED", "READPAST" };
+
             public static readonly string[] TopLevelKeywords =
             {
                 "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP",
                 "EXEC", "EXECUTE", "USE", "DECLARE", "SET", "IF", "BEGIN", "END", "TRUNCATE", "MERGE", "GO",
                 "THROW", "PRINT", "RAISERROR", "WAITFOR", "DBCC", "BACKUP", "RESTORE", "BULK",
-                "GRANT", "REVOKE", "DENY", "WHILE", "RETURN"
+                "GRANT", "REVOKE", "DENY", "WHILE", "RETURN",
+                "COMMIT", "ROLLBACK", "BREAK", "CONTINUE", "CHECKPOINT", "SAVE"
             };
 
             /// <summary>FROM 表之后常见子句/连接关键字。</summary>
@@ -1716,6 +1909,12 @@ namespace AxialSqlTools
             {
                 "TABLE", "VIEW", "PROCEDURE", "FUNCTION", "INDEX", "SCHEMA", "TRIGGER",
                 "SEQUENCE", "DATABASE", "USER", "ROLE", "LOGIN"
+            };
+
+            public static readonly string[] DropObjectKeywords =
+            {
+                "TABLE", "VIEW", "PROCEDURE", "FUNCTION", "INDEX", "SCHEMA", "TYPE", "TRIGGER",
+                "SEQUENCE", "SYNONYM", "DATABASE", "USER", "ROLE", "LOGIN", "STATISTICS", "CONSTRAINT"
             };
 
             public static readonly string[] OperatorKeywords =

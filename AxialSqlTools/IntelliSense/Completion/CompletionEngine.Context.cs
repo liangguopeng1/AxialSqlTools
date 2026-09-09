@@ -14,6 +14,8 @@ namespace AxialSqlTools
             private sealed class FromObjectNameContext
             {
                 public bool InFromClause;
+                /// <summary>SELECT 列表中的库.架构.函数限定名。</summary>
+                public bool InSelectList;
                 public List<string> Segments = new List<string>();
                 public string Partial = string.Empty;
                 public bool AfterDot;
@@ -31,7 +33,7 @@ namespace AxialSqlTools
             /// </summary>
             private static bool TryParseExecObjectName(string text, int caretOffset, out FromObjectNameContext ctx)
             {
-                return TryParseQualifiedObjectNameRaw(text, caretOffset, isExec: true, out ctx);
+                return TryParseQualifiedObjectNameRaw(text, caretOffset, isExec: true, isSelect: false, out ctx);
             }
 
             /// <summary>
@@ -39,15 +41,21 @@ namespace AxialSqlTools
             /// </summary>
             private static bool TryParseFromObjectNameRaw(string text, int caretOffset, out FromObjectNameContext ctx)
             {
-                return TryParseQualifiedObjectNameRaw(text, caretOffset, isExec: false, out ctx);
+                return TryParseQualifiedObjectNameRaw(text, caretOffset, isExec: false, isSelect: false, out ctx);
+            }
+
+            /// <summary>原文解析 SELECT 列表中的库.架构.函数名。</summary>
+            private static bool TryParseSelectObjectNameRaw(string text, int caretOffset, out FromObjectNameContext ctx)
+            {
+                return TryParseQualifiedObjectNameRaw(text, caretOffset, isExec: false, isSelect: true, out ctx);
             }
 
             /// <summary>
             /// 从光标向前扫 库.架构.对象 / [quoted] 片段。
-            /// isExec=true 锚定 EXEC/EXECUTE；false 锚定 FROM/JOIN/APPLY。
+            /// isExec 锚定 EXEC/EXECUTE；isSelect 锚定 SELECT；否则锚定 FROM/JOIN/APPLY。
             /// </summary>
             private static bool TryParseQualifiedObjectNameRaw(
-                string text, int caretOffset, bool isExec, out FromObjectNameContext ctx)
+                string text, int caretOffset, bool isExec, bool isSelect, out FromObjectNameContext ctx)
             {
                 ctx = new FromObjectNameContext();
                 if (string.IsNullOrEmpty(text) || caretOffset <= 0) return false;
@@ -122,13 +130,17 @@ namespace AxialSqlTools
                     if (segStart >= segEnd)
                         continue;
                     string seg = UnbracketIdentifier(text.Substring(segStart, segEnd - segStart));
-                    if (IsRawObjectNameAnchorKeyword(seg, isExec))
+                    if (IsRawObjectNameAnchorKeyword(seg, isExec, isSelect))
                     {
                         i = segEnd - 1;
                         break;
                     }
+                    if (!isExec && !isSelect && IsDdlTableFillerKeyword(seg))
+                        continue;
+                    if (isSelect && IsSelectObjectNameTerminatorKeyword(seg))
+                        return false;
                     // FROM 目标名区域已结束（WHERE/ORDER/...）：不能再当 FROM 补全
-                    if (!isExec && IsFromObjectNameTerminatorKeyword(seg))
+                    if (!isExec && !isSelect && IsFromObjectNameTerminatorKeyword(seg))
                         return false;
                     if (!string.IsNullOrEmpty(seg))
                     {
@@ -140,12 +152,15 @@ namespace AxialSqlTools
                 while (i >= 0 && (text[i] == ' ' || text[i] == '\t' || text[i] == '\n' || text[i] == '\r')) i--;
                 if (i < 0) return false;
 
-                // 逗号分隔的下一张表：FROM a, [b
+                // 逗号分隔的下一张表：FROM a, [b；SELECT 列表逗号后的下一列/函数
                 if (!isExec && text[i] == ',')
                 {
-                    if (!HasFromKeywordInStatementRaw(text, i))
+                    if (!isSelect && !HasFromKeywordInStatementRaw(text, i))
                         return false;
-                    ctx.InFromClause = true;
+                    if (isSelect)
+                        ctx.InSelectList = true;
+                    else
+                        ctx.InFromClause = true;
                     ctx.Segments = segments;
                     ctx.AfterDot = afterDot;
                     ctx.UsesDoubleDot = doubleDot;
@@ -157,17 +172,19 @@ namespace AxialSqlTools
                 int kwEnd = i + 1;
                 while (i >= 0 && IsIdentChar(text[i])) i--;
                 string kw = text.Substring(i + 1, kwEnd - (i + 1));
-                if (!IsRawObjectNameAnchorKeyword(kw, isExec))
+                if (!IsRawObjectNameAnchorKeyword(kw, isExec, isSelect))
                     return false;
 
                 // 「FROM t where|」：partial 本身是子句关键字，且前面已有表名 → 不是在输表名
                 // in/le/ri 等可能是 INNER/LEFT/RIGHT JOIN 前缀，仍算 FROM 子句
-                if (!isExec && segments.Count > 0
+                if (!isExec && !isSelect && segments.Count > 0
                     && IsFromObjectNameTerminatorKeyword(ctx.Partial)
                     && !IsFromJoinOrClausePrefix(ctx.Partial))
                     return false;
 
-                if (!isExec)
+                if (isSelect)
+                    ctx.InSelectList = true;
+                else if (!isExec)
                     ctx.InFromClause = true;
                 ctx.Segments = segments;
                 ctx.AfterDot = afterDot;
@@ -265,7 +282,7 @@ namespace AxialSqlTools
                 return false;
             }
 
-            private static bool IsRawObjectNameAnchorKeyword(string kw, bool isExec)
+            private static bool IsRawObjectNameAnchorKeyword(string kw, bool isExec, bool isSelect = false)
             {
                 if (string.IsNullOrEmpty(kw)) return false;
                 if (isExec)
@@ -273,13 +290,52 @@ namespace AxialSqlTools
                     return string.Equals(kw, "EXEC", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(kw, "EXECUTE", StringComparison.OrdinalIgnoreCase);
                 }
+                if (isSelect)
+                {
+                    return string.Equals(kw, "SELECT", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(kw, "DISTINCT", StringComparison.OrdinalIgnoreCase);
+                }
                 return string.Equals(kw, "FROM", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(kw, "JOIN", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(kw, "APPLY", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(kw, "UPDATE", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(kw, "DELETE", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(kw, "INSERT", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(kw, "INTO", StringComparison.OrdinalIgnoreCase);
+                    || string.Equals(kw, "INTO", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(kw, "TRUNCATE", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(kw, "DROP", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(kw, "MERGE", StringComparison.OrdinalIgnoreCase);
+            }
+
+            /// <summary>SELECT 列表限定名向后扫到这些词则不是在输函数名。</summary>
+            private static bool IsSelectObjectNameTerminatorKeyword(string kw)
+            {
+                if (string.IsNullOrEmpty(kw)) return false;
+                switch (kw.ToUpperInvariant())
+                {
+                    case "FROM":
+                    case "WHERE":
+                    case "GROUP":
+                    case "ORDER":
+                    case "HAVING":
+                    case "AS":
+                    case "JOIN":
+                    case "INNER":
+                    case "LEFT":
+                    case "RIGHT":
+                    case "FULL":
+                    case "CROSS":
+                    case "APPLY":
+                    case "UNION":
+                    case "EXCEPT":
+                    case "INTO":
+                    case "ON":
+                    case "AND":
+                    case "OR":
+                        return true;
+                    default:
+                        return false;
+                }
             }
 
             /// <summary>出现在 FROM 表名之后的子句关键字：原文扫到这些则不是在输表名。</summary>
@@ -521,6 +577,9 @@ namespace AxialSqlTools
                 if (TryParseInsertColumnList(tokens, localOffset, out _))
                     return CompletionContext.InsertColumnList;
 
+                if (IsTableHintContext(tokens, localOffset))
+                    return CompletionContext.TableHint;
+
                 // FROM 目标名（含未闭合 [）优先；但若已越过 WHERE/GROUP/ORDER，不能再锁死 FromClause
                 // JOIN ON 仍属 FROM 区域（可继续 INNER JOIN）——不含 alias. 列访问
                 if (fromName != null && fromName.InFromClause)
@@ -541,7 +600,35 @@ namespace AxialSqlTools
                     if (majorKw == "INSERT" || majorKw == "INTO")
                     {
                         prefix = fromName.Partial ?? string.Empty;
+                        if (HasPrecedingKeyword(tokens, localOffset, "MERGE"))
+                            return CompletionContext.DdlObjectTarget;
                         return CompletionContext.InsertTarget;
+                    }
+                    if (majorKw == "TRUNCATE")
+                    {
+                        prefix = fromName.Partial ?? string.Empty;
+                        if (HasObjectTypeAfterDdl(tokens, localOffset, "TABLE"))
+                            return CompletionContext.DdlObjectTarget;
+                        return CompletionContext.AfterTruncate;
+                    }
+                    if (majorKw == "DROP")
+                    {
+                        prefix = fromName.Partial ?? string.Empty;
+                        return GetDropCompletionContext(tokens, localOffset);
+                    }
+                    if (majorKw == "ALTER")
+                    {
+                        prefix = fromName.Partial ?? string.Empty;
+                        if (HasObjectTypeAfterDdl(tokens, localOffset, "TABLE")
+                            || HasObjectTypeAfterDdl(tokens, localOffset, "VIEW")
+                            || HasObjectTypeAfterDdl(tokens, localOffset, "INDEX"))
+                            return CompletionContext.DdlObjectTarget;
+                        return CompletionContext.AfterAlter;
+                    }
+                    if (majorKw == "MERGE")
+                    {
+                        prefix = fromName.Partial ?? string.Empty;
+                        return CompletionContext.DdlObjectTarget;
                     }
                     if (majorKw == "ON")
                     {
@@ -606,6 +693,8 @@ namespace AxialSqlTools
                         // 仅看「当前 SELECT」之后是否已有 FROM，勿扫上一句
                         if (!SeenFromAfterCurrentSelect(tokens, caretTokenIndex, localOffset))
                         {
+                            if (IsSelectListAliasPosition(tokens, localOffset))
+                                return CompletionContext.SelectAlias;
                             return CompletionContext.SelectElements;
                         }
                         return CompletionContext.WhereClause; // 简化
@@ -625,7 +714,11 @@ namespace AxialSqlTools
                                 return CompletionContext.WhereClause;
                             var commaCtx = TryGetSelectBeforeFromContext(tokens, localOffset);
                             if (commaCtx == CompletionContext.SelectElements)
+                            {
+                                if (IsSelectListAliasPosition(tokens, localOffset))
+                                    return CompletionContext.SelectAlias;
                                 return CompletionContext.SelectElements;
+                            }
                             return CompletionContext.FromClause;
                         }
                     case "WHERE":
@@ -669,6 +762,10 @@ namespace AxialSqlTools
                         return CompletionContext.AfterExec;
                     case "INSERT":
                         return CompletionContext.InsertTarget;
+                    case "INTO":
+                        if (HasPrecedingKeyword(tokens, localOffset, "MERGE"))
+                            return CompletionContext.DdlObjectTarget;
+                        return CompletionContext.InsertTarget;
                     case "UPDATE":
                         return CompletionContext.UpdateTarget;
                     case "DELETE":
@@ -680,14 +777,23 @@ namespace AxialSqlTools
                     case "CREATE":
                         return CompletionContext.AfterCreate;
                     case "ALTER":
+                        if (HasObjectTypeAfterDdl(tokens, localOffset, "TABLE")
+                            || HasObjectTypeAfterDdl(tokens, localOffset, "VIEW")
+                            || HasObjectTypeAfterDdl(tokens, localOffset, "INDEX"))
+                            return CompletionContext.DdlObjectTarget;
                         return CompletionContext.AfterAlter;
-                    case "WITH":
-                    case "MERGE":
                     case "TRUNCATE":
+                        if (HasObjectTypeAfterDdl(tokens, localOffset, "TABLE"))
+                            return CompletionContext.DdlObjectTarget;
+                        return CompletionContext.AfterTruncate;
+                    case "DROP":
+                        return GetDropCompletionContext(tokens, localOffset);
+                    case "MERGE":
+                        return CompletionContext.DdlObjectTarget;
+                    case "WITH":
                     case "DECLARE":
                     case "IF":
                     case "BEGIN":
-                    case "DROP":
                         return CompletionContext.BatchStart;
                 }
 
@@ -695,6 +801,9 @@ namespace AxialSqlTools
                 var selectCtx = TryGetSelectBeforeFromContext(tokens, localOffset);
                 if (selectCtx.HasValue)
                 {
+                    if (selectCtx.Value == CompletionContext.SelectElements
+                        && IsSelectListAliasPosition(tokens, localOffset))
+                        return CompletionContext.SelectAlias;
                     return selectCtx.Value;
                 }
 
@@ -1092,6 +1201,74 @@ namespace AxialSqlTools
                 return char.IsLetterOrDigit(c) || c == '_' || c == '@' || c == '#';
             }
 
+            private static bool IsDdlTableFillerKeyword(string kw)
+            {
+                if (string.IsNullOrEmpty(kw)) return false;
+                string u = kw.ToUpperInvariant();
+                return u == "TABLE" || u == "IF" || u == "EXISTS";
+            }
+
+            private static CompletionContext GetDropCompletionContext(List<TSqlParserToken> tokens, int localOffset)
+            {
+                if (HasObjectTypeAfterDdl(tokens, localOffset, "TABLE")
+                    || HasObjectTypeAfterDdl(tokens, localOffset, "VIEW")
+                    || HasObjectTypeAfterDdl(tokens, localOffset, "SYNONYM"))
+                    return CompletionContext.DdlObjectTarget;
+                return CompletionContext.AfterDrop;
+            }
+
+            /// <summary>TRUNCATE/DROP/ALTER 后是否已出现 TABLE/VIEW 等对象类型（其后应出对象名）。</summary>
+            private static bool HasObjectTypeAfterDdl(List<TSqlParserToken> tokens, int localOffset, string objectType)
+            {
+                if (tokens == null || string.IsNullOrEmpty(objectType)) return false;
+                int i = FindTokenIndexBefore(tokens, localOffset);
+                if (i < 0) return false;
+                var t = tokens[i];
+                if (t != null && IsWordLikeToken(t)
+                    && t.Offset < localOffset
+                    && t.Offset + t.Text.Length >= localOffset)
+                {
+                    i--;
+                    while (i >= 0 && tokens[i] != null && IsInsignificantToken(tokens[i])) i--;
+                }
+                string want = objectType.ToUpperInvariant();
+                int hops = 0;
+                while (i >= 0 && hops++ < 16)
+                {
+                    t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) { i--; continue; }
+                    if (t.TokenType == TSqlTokenType.Dot) { i--; continue; }
+                    string w = t.Text?.ToUpperInvariant();
+                    if (w == want) return true;
+                    if (w == "IF" || w == "EXISTS") { i--; continue; }
+                    if (IsPartialObjectNameToken(t) || IsIdentifierLike(t) || IsWordLikeToken(t))
+                    {
+                        i--;
+                        continue;
+                    }
+                    return false;
+                }
+                return false;
+            }
+
+            private static bool HasPrecedingKeyword(List<TSqlParserToken> tokens, int localOffset, string keyword)
+            {
+                if (tokens == null || string.IsNullOrEmpty(keyword)) return false;
+                int i = FindTokenIndexBefore(tokens, localOffset);
+                string want = keyword.ToUpperInvariant();
+                int hops = 0;
+                while (i >= 0 && hops++ < 24)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) { i--; continue; }
+                    string w = t.Text?.ToUpperInvariant();
+                    if (w == ";" || w == "GO") return false;
+                    if (w == want) return true;
+                    i--;
+                }
+                return false;
+            }
+
             private static bool HasFromKeywordBefore(List<TSqlParserToken> tokens, int localOffset)
             {
                 if (tokens == null) return false;
@@ -1339,6 +1516,11 @@ namespace AxialSqlTools
                             ctx.InFromClause = true;
                             break;
                         }
+                        if (parenDepth == 0 && IsDdlTableFillerKeyword(text))
+                        {
+                            i--;
+                            continue;
+                        }
                         // ON 条件仍属 FROM：清空 ON 右侧表达式误收的标识符，继续找 JOIN 表
                         if (parenDepth == 0 && text == "ON")
                         {
@@ -1397,7 +1579,8 @@ namespace AxialSqlTools
             private static bool IsFromClauseAnchorKeyword(string text)
             {
                 return text == "FROM" || text == "JOIN" || text == "APPLY"
-                    || text == "UPDATE" || text == "DELETE" || text == "INSERT" || text == "INTO";
+                    || text == "UPDATE" || text == "DELETE" || text == "INSERT" || text == "INTO"
+                    || text == "TRUNCATE" || text == "DROP" || text == "MERGE";
             }
 
             private static bool IsFromScanStopKeyword(string text)
@@ -1510,7 +1693,9 @@ namespace AxialSqlTools
             {
                 string inner = FormatObjectInsert(obj, settings);
                 string tableOnly = FormatIdentifier(obj.Name, settings);
-                if (fromName == null || !fromName.InFromClause || obj == null)
+                if (fromName == null || obj == null)
+                    return inner;
+                if (!fromName.InFromClause && !fromName.InSelectList)
                     return inner;
                 var insertMode = mode ?? ResolveTableInsertMode(fromName, connInfo);
                 switch (insertMode)
@@ -1600,6 +1785,212 @@ namespace AxialSqlTools
                 return t.TokenType == TSqlTokenType.RightParenthesis
                     || t.Text == ")"
                     || t.Text == "]";
+            }
+
+            /// <summary>FROM 表名后 (nolock) / WITH ( 提示表提示关键字。</summary>
+            private bool IsTableHintContext(List<TSqlParserToken> tokens, int localOffset)
+            {
+                int idx = FindTokenIndexBefore(tokens, localOffset);
+                if (idx < 0) return false;
+                string major = FindNearestMajorClauseKeyword(tokens, idx, localOffset);
+                if (major != "FROM" && major != "JOIN" && major != "APPLY"
+                    && major != "INNER" && major != "LEFT" && major != "RIGHT"
+                    && major != "FULL" && major != "CROSS" && major != "OUTER"
+                    && major != "UPDATE" && major != "DELETE" && major != "INTO"
+                    && major != "WITH")
+                    return false;
+
+                int parenIdx = idx;
+                var t = tokens[idx];
+                if (t != null && IsWordLikeToken(t)
+                    && t.Offset < localOffset
+                    && t.Offset + t.Text.Length >= localOffset)
+                {
+                    var beforeWord = PreviousSignificantToken(tokens, idx);
+                    if (beforeWord == null) return false;
+                    t = beforeWord;
+                    parenIdx = FindTokenIndexBefore(tokens, t.Offset + 1);
+                }
+                if (t == null) return false;
+                if (t.TokenType != TSqlTokenType.LeftParenthesis && t.Text != "(")
+                    return false;
+                int openIdx = parenIdx;
+                if (openIdx < 0 || tokens[openIdx] != t)
+                {
+                    openIdx = -1;
+                    for (int i = idx; i >= 0; i--)
+                    {
+                        var tok = tokens[i];
+                        if (tok == t) { openIdx = i; break; }
+                    }
+                }
+                if (openIdx < 0) return false;
+                var before = PreviousSignificantToken(tokens, openIdx);
+                if (before == null || string.IsNullOrEmpty(before.Text)) return false;
+                string b = before.Text.ToUpperInvariant();
+                if (b == "WITH") return true;
+                if (b == "FROM" || b == "JOIN" || b == "APPLY" || b == "SELECT"
+                    || b == "INNER" || b == "LEFT" || b == "RIGHT" || b == "FULL"
+                    || b == "CROSS" || b == "OUTER" || b == "PIVOT" || b == "UNPIVOT"
+                    || b == "AS" || b == "ON" || b == "SET" || b == "WHERE")
+                    return false;
+                return IsWordLikeToken(before) || IsIdentifierLike(before) || IsPartialObjectNameToken(before);
+            }
+
+            /// <summary>SELECT 列表中正在给表达式取别名（4 assignType / col alias），不应再出字段。</summary>
+            private bool IsSelectListAliasPosition(List<TSqlParserToken> tokens, int localOffset)
+            {
+                int idx = FindTokenIndexBefore(tokens, localOffset);
+                if (idx < 0) return false;
+                var t = tokens[idx];
+                TSqlParserToken current = null;
+                if (t != null && IsWordLikeToken(t)
+                    && t.Offset < localOffset
+                    && t.Offset + t.Text.Length >= localOffset)
+                {
+                    current = t;
+                    t = PreviousSignificantToken(tokens, idx);
+                }
+                if (t == null || string.IsNullOrEmpty(t.Text)) return false;
+                string tw = t.Text.ToUpperInvariant();
+                if (tw == "AS") return true;
+                if (IsSelectListKeywordNotAliasPredecessor(tw)) return false;
+                if (IsInsideOpenCase(tokens, localOffset)) return false;
+                if (IsLiteralToken(t) && IsImmediatelyAfterTop(tokens, t, idx))
+                    return false;
+                if (t.Text == "*")
+                    return false;
+                if (IsLiteralToken(t) || t.TokenType == TSqlTokenType.RightParenthesis || t.Text == ")")
+                {
+                    if (CurrentLooksLikeSelectListClauseKeyword(current))
+                        return false;
+                    return true;
+                }
+                if (IsWordLikeToken(t) || IsIdentifierLike(t) || IsPartialObjectNameToken(t))
+                {
+                    if (CurrentLooksLikeSelectListClauseKeyword(current))
+                        return false;
+                    return current != null;
+                }
+                return false;
+            }
+
+            /// <summary>标识后正在敲 FROM/INTO 时仍走 SELECT 列表，不要当成列别名。</summary>
+            private static bool CurrentLooksLikeSelectListClauseKeyword(TSqlParserToken current)
+            {
+                if (current == null || string.IsNullOrEmpty(current.Text)) return false;
+                string u = current.Text.ToUpperInvariant();
+                if (u.Length < 2) return false;
+                return "FROM".StartsWith(u, StringComparison.Ordinal)
+                    || "INTO".StartsWith(u, StringComparison.Ordinal);
+            }
+
+            private static bool IsSelectListKeywordNotAliasPredecessor(string kw)
+            {
+                if (string.IsNullOrEmpty(kw)) return false;
+                switch (kw)
+                {
+                    case "SELECT":
+                    case "DISTINCT":
+                    case "ALL":
+                    case "TOP":
+                    case "PERCENT":
+                    case "CASE":
+                    case "WHEN":
+                    case "THEN":
+                    case "ELSE":
+                    case "END":
+                    case "OVER":
+                    case "FROM":
+                    case "INTO":
+                    case "AND":
+                    case "OR":
+                    case "NOT":
+                    case "IN":
+                    case "LIKE":
+                    case "BETWEEN":
+                    case "IS":
+                    case "BY":
+                    case "AS":
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+
+            private static bool IsLiteralToken(TSqlParserToken t)
+            {
+                if (t == null) return false;
+                switch (t.TokenType)
+                {
+                    case TSqlTokenType.Integer:
+                    case TSqlTokenType.Numeric:
+                    case TSqlTokenType.Real:
+                    case TSqlTokenType.Money:
+                    case TSqlTokenType.AsciiStringLiteral:
+                    case TSqlTokenType.UnicodeStringLiteral:
+                    case TSqlTokenType.HexLiteral:
+                        return true;
+                    default:
+                        return string.Equals(t.Text, "NULL", StringComparison.OrdinalIgnoreCase);
+                }
+            }
+
+            private bool IsImmediatelyAfterTop(List<TSqlParserToken> tokens, TSqlParserToken literal, int literalIdx)
+            {
+                if (literal == null) return false;
+                int idx = literalIdx;
+                if (idx < 0 || idx >= tokens.Count || tokens[idx] != literal)
+                {
+                    idx = -1;
+                    for (int i = tokens.Count - 1; i >= 0; i--)
+                    {
+                        if (tokens[i] == literal) { idx = i; break; }
+                    }
+                }
+                if (idx < 0) return false;
+                var before = PreviousSignificantToken(tokens, idx);
+                return before != null && string.Equals(before.Text, "TOP", StringComparison.OrdinalIgnoreCase);
+            }
+
+            private static bool IsInsideOpenCase(List<TSqlParserToken> tokens, int localOffset)
+            {
+                if (tokens == null) return false;
+                int caseDepth = 0;
+                int parenDepth = 0;
+                for (int i = tokens.Count - 1; i >= 0; i--)
+                {
+                    var t = tokens[i];
+                    if (t == null || IsInsignificantToken(t)) continue;
+                    if (t.Offset >= localOffset) continue;
+                    if (t.TokenType == TSqlTokenType.RightParenthesis)
+                    {
+                        parenDepth++;
+                        continue;
+                    }
+                    if (t.TokenType == TSqlTokenType.LeftParenthesis)
+                    {
+                        if (parenDepth > 0) parenDepth--;
+                        continue;
+                    }
+                    if (parenDepth > 0) continue;
+                    string w = t.Text;
+                    if (string.IsNullOrEmpty(w)) continue;
+                    if (w.Equals("END", StringComparison.OrdinalIgnoreCase))
+                    {
+                        caseDepth++;
+                        continue;
+                    }
+                    if (w.Equals("CASE", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (caseDepth > 0) caseDepth--;
+                        else return true;
+                    }
+                    if (w.Equals("SELECT", StringComparison.OrdinalIgnoreCase)
+                        || w == ";" || w.Equals("GO", StringComparison.OrdinalIgnoreCase))
+                        return false;
+                }
+                return false;
             }
 
             private static readonly HashSet<string> DataTypeFunctionNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
