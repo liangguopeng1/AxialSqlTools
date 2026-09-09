@@ -221,7 +221,6 @@ namespace AxialSqlTools.IntelliSense
         {
             try
             {
-                IntelliSenseManager.ProbeSqlEditorForeground();
                 if (!IntelliSenseManager.SqlEditorIsForeground)
                 {
                     if (QuickInfoTooltip.IsOpen)

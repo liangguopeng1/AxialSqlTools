@@ -65,21 +65,18 @@ namespace AxialSqlTools.IntelliSense
                     bool needPull = ShouldSilentRefresh(server);
                     Logger.Info("EnsureServerCache {0} loaded={1} needPull={2} source={3}",
                         server, loaded, needPull, needPull ? "server" : "disk");
-                    if (loaded && !needPull)
-                        return;
-                    await RunWithProgressWindowAsync(server, async progress =>
+                    if (!loaded || needPull)
                     {
-                        if (!MetadataCatalogService.Instance.IsServerLoadedInMemory(server))
+                        await RunWithProgressWindowAsync(server, async progress =>
                         {
-                            Logger.Info("IntelliSense cache load from disk {0}", server);
-                            MetadataCatalogService.Instance.LoadServerFromDisk(server, progress);
-                        }
-                        if (ShouldSilentRefresh(server))
-                        {
+                            if (!MetadataCatalogService.Instance.IsServerLoadedInMemory(server))
+                                MetadataCatalogService.Instance.LoadServerFromDisk(server, progress, captured.Database);
+                            if (!needPull)
+                                return;
                             Logger.Info("IntelliSense cache load from server {0}", server);
                             await StartOrAttach(captured, progress).ConfigureAwait(false);
-                        }
-                    }).ConfigureAwait(false);
+                        }).ConfigureAwait(false);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -113,21 +110,18 @@ namespace AxialSqlTools.IntelliSense
                     bool needPull = ShouldSilentRefresh(name);
                     Logger.Info("EnsureLinkedServerCache {0} loaded={1} needPull={2} source={3}",
                         name, loaded, needPull, needPull ? "server" : "disk");
-                    if (loaded && !needPull)
-                        return;
-                    await RunWithProgressWindowAsync(name, async progress =>
+                    if (!loaded || needPull)
                     {
-                        if (!MetadataCatalogService.Instance.IsServerLoadedInMemory(name))
+                        await RunWithProgressWindowAsync(name, async progress =>
                         {
-                            Logger.Info("IntelliSense cache load from disk {0}", name);
-                            MetadataCatalogService.Instance.LoadServerFromDisk(name, progress);
-                        }
-                        if (ShouldSilentRefresh(name))
-                        {
+                            if (!MetadataCatalogService.Instance.IsServerLoadedInMemory(name))
+                                MetadataCatalogService.Instance.LoadServerFromDisk(name, progress);
+                            if (!needPull)
+                                return;
                             Logger.Info("IntelliSense cache load from server {0}", name);
                             await StartLinkedOrAttach(captured, name, progress).ConfigureAwait(false);
-                        }
-                    }).ConfigureAwait(false);
+                        }).ConfigureAwait(false);
+                    }
                 }
                 catch (Exception ex)
                 {

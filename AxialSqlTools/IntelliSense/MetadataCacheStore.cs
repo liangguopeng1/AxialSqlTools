@@ -71,16 +71,21 @@ namespace AxialSqlTools.IntelliSense
                 return null;
             try
             {
-                var catalog = JsonConvert.DeserializeObject<MetadataCatalog>(File.ReadAllText(path));
-                if (catalog == null)
-                    return null;
-                if (catalog.IsEmpty && !catalog.IsIndexed)
-                    return null;
-                if (string.IsNullOrEmpty(catalog.Database))
-                    catalog.Database = database;
-                if (string.IsNullOrEmpty(catalog.Server))
-                    catalog.Server = serverName;
-                return catalog;
+                using (var stream = File.OpenRead(path))
+                using (var reader = new StreamReader(stream))
+                using (var json = new JsonTextReader(reader))
+                {
+                    var catalog = JsonSerializer.Create(JsonSettings).Deserialize<MetadataCatalog>(json);
+                    if (catalog == null)
+                        return null;
+                    if (catalog.IsEmpty && !catalog.IsIndexed)
+                        return null;
+                    if (string.IsNullOrEmpty(catalog.Database))
+                        catalog.Database = database;
+                    if (string.IsNullOrEmpty(catalog.Server))
+                        catalog.Server = serverName;
+                    return catalog;
+                }
             }
             catch
             {

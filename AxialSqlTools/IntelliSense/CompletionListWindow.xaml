@@ -98,7 +98,8 @@
                                         Margin="-6,0,0,0"
                                         CornerRadius="2"
                                         Background="Transparent"/>
-                                <ContentPresenter Margin="4,0,0,0"/>
+                                <ContentPresenter Margin="4,0,0,0"
+                                                  HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"/>
                             </Grid>
                         </Border>
                         <ControlTemplate.Triggers>
@@ -159,13 +160,8 @@
                          SelectionChanged="ItemsList_SelectionChanged">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
-                            <Grid HorizontalAlignment="Stretch">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <Border Grid.Column="0" Style="{StaticResource KindGlyphBorder}" VerticalAlignment="Center">
+                            <DockPanel LastChildFill="True" HorizontalAlignment="Stretch">
+                                <Border DockPanel.Dock="Left" Style="{StaticResource KindGlyphBorder}" VerticalAlignment="Center">
                                     <TextBlock Text="{Binding Glyph}"
                                                Foreground="White"
                                                FontFamily="Segoe UI Semibold, Segoe UI, Consolas"
@@ -174,25 +170,22 @@
                                                HorizontalAlignment="Center"
                                                VerticalAlignment="Center"/>
                                 </Border>
-                                <TextBlock Grid.Column="1"
+                                <TextBlock DockPanel.Dock="Left"
                                            Text="{Binding DisplayText}"
                                            Margin="8,0,0,0"
                                            VerticalAlignment="Center"
                                            FontFamily="Segoe UI, Microsoft YaHei UI"
                                            FontSize="12.5"
                                            Foreground="{DynamicResource PopupFgBrush}"
-                                           TextWrapping="NoWrap"
-                                           TextTrimming="CharacterEllipsis"/>
-                                <TextBlock Grid.Column="2"
-                                           Text="{Binding DisplaySuffix}"
-                                           Margin="6,0,0,0"
+                                           TextWrapping="NoWrap"/>
+                                <TextBlock Text="{Binding DisplaySuffix}"
+                                           Margin="4,0,0,0"
                                            VerticalAlignment="Center"
                                            FontFamily="Segoe UI, Microsoft YaHei UI"
                                            FontSize="11"
                                            Foreground="{DynamicResource PopupMutedFgBrush}"
                                            TextWrapping="NoWrap"
-                                           TextTrimming="CharacterEllipsis"
-                                           MaxWidth="150">
+                                           TextTrimming="CharacterEllipsis">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">
                                             <Setter Property="Visibility" Value="Visible"/>
@@ -207,7 +200,7 @@
                                         </Style>
                                     </TextBlock.Style>
                                 </TextBlock>
-                            </Grid>
+                            </DockPanel>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>

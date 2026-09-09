@@ -300,8 +300,8 @@ namespace AxialSqlTools
         }
 
         public Dictionary<string, string> globalSnippets = new Dictionary<string, string>();
-        private readonly List<KeypressCommandFilter> _commandFilters = new List<KeypressCommandFilter>();
-        private readonly HashSet<IVsTextView> _registeredTextViews = new HashSet<IVsTextView>();
+        private readonly Dictionary<IVsTextView, KeypressCommandFilter> _intelliSenseFilters =
+            new Dictionary<IVsTextView, KeypressCommandFilter>();
 
         public static AxialSqlToolsPackage PackageInstance { get; private set; }
 
@@ -719,6 +719,7 @@ namespace AxialSqlTools
                     {
                         try
                         {
+                            DisposeOrphanedIntelliSenseFilters();
                             TryRegisterIntelliSenseOnActivated(activated);
                         }
                         catch (Exception ex)
@@ -763,6 +764,91 @@ namespace AxialSqlTools
 
         }
 
+        private static IVsTextView TryGetTextViewFromWindow(EnvDTE.Window window)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (window == null) return null;
+            object winObj = null;
+            try { winObj = window.Object; } catch { return null; }
+            if (winObj == null) return null;
+            var DocData = GridAccess.GetProperty(winObj, "DocData");
+            if (DocData == null) return null;
+            var txtMgr = (IVsTextManager)GridAccess.GetProperty(DocData, "TextManager");
+            if (txtMgr == null) return null;
+            IVsTextView textView;
+            if (txtMgr.GetActiveView(0, null, out textView) != VSConstants.S_OK)
+                return null;
+            return textView;
+        }
+
+        private void TryDisposeIntelliSenseForWindow(EnvDTE.Window window)
+        {
+            try
+            {
+                IntPtr hwnd = IntPtr.Zero;
+                try { hwnd = window.HWnd; } catch { }
+                if (hwnd == IntPtr.Zero) return;
+                IVsTextView match = null;
+                foreach (var kv in _intelliSenseFilters)
+                {
+                    try
+                    {
+                        if (kv.Key.GetWindowHandle() == hwnd)
+                        {
+                            match = kv.Key;
+                            break;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+                if (match == null) return;
+                KeypressCommandFilter filter;
+                if (!_intelliSenseFilters.TryGetValue(match, out filter))
+                    return;
+                _intelliSenseFilters.Remove(match);
+                filter.Dispose();
+            }
+            catch (Exception ex)
+            {
+                _logger?.Warn(ex, "TryDisposeIntelliSenseForWindow failed");
+            }
+        }
+
+        private void DisposeOrphanedIntelliSenseFilters()
+        {
+            var dead = new List<IVsTextView>();
+            foreach (var kv in _intelliSenseFilters)
+            {
+                if (IsTextViewGone(kv.Key))
+                    dead.Add(kv.Key);
+            }
+            for (int i = 0; i < dead.Count; i++)
+            {
+                var tv = dead[i];
+                KeypressCommandFilter filter;
+                if (!_intelliSenseFilters.TryGetValue(tv, out filter))
+                    continue;
+                _intelliSenseFilters.Remove(tv);
+                try { filter.Dispose(); } catch { }
+            }
+        }
+
+        private static bool IsTextViewGone(IVsTextView textView)
+        {
+            if (textView == null) return true;
+            try
+            {
+                IntPtr hwnd = textView.GetWindowHandle();
+                return hwnd == IntPtr.Zero;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
         private void TryRegisterIntelliSenseOnActivated(EnvDTE.Window gotFocus)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
@@ -770,21 +856,13 @@ namespace AxialSqlTools
             if (!SettingsManager.GetUseSnippets() && !UiSettingsStore.GetIntelliSenseEnabled()) return;
             try
             {
-                object winObj = null;
-                try { winObj = gotFocus.Object; } catch { return; }
-                if (winObj == null) return;
-                var DocData = GridAccess.GetProperty(winObj, "DocData");
-                if (DocData == null) return;
-                var txtMgr = (IVsTextManager)GridAccess.GetProperty(DocData, "TextManager");
-                if (txtMgr == null) return;
-                IVsTextView textView;
-                if (txtMgr.GetActiveView(0, null, out textView) != VSConstants.S_OK || textView == null)
+                var textView = TryGetTextViewFromWindow(gotFocus);
+                if (textView == null) return;
+                if (_intelliSenseFilters.ContainsKey(textView))
                     return;
-                if (_registeredTextViews.Contains(textView))
-                    return;
-                _registeredTextViews.Add(textView);
                 var CommandFilter = new KeypressCommandFilter(this, textView);
                 CommandFilter.AddToChain();
+                _intelliSenseFilters[textView] = CommandFilter;
             }
             catch (Exception ex)
             {
@@ -801,6 +879,18 @@ namespace AxialSqlTools
                 // 关闭回调里 Document 可能已拆，先尽量抓一次全文进缓存
                 TabHistoryRecorder.RememberWindowContent(Window);
                 TabHistoryRecorder.RecordWindowEvent(TabHistoryEventType.Closed, Window);
+                TryDisposeIntelliSenseForWindow(Window);
+                try
+                {
+                    var dispatcher = System.Windows.Application.Current?.Dispatcher
+                        ?? Dispatcher.CurrentDispatcher;
+                    dispatcher.BeginInvoke(new Action(DisposeOrphanedIntelliSenseFilters),
+                        DispatcherPriority.ApplicationIdle);
+                }
+                catch
+                {
+                    DisposeOrphanedIntelliSenseFilters();
+                }
                 GridAccess.ScheduleReapplyAllTabColors();
             }
             catch (Exception ex)

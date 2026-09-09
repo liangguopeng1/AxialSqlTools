@@ -327,67 +327,75 @@ namespace AxialSqlTools
                 return !string.IsNullOrWhiteSpace(serverName) && _memoryLoadedServers.ContainsKey(serverName);
             }
 
-            public void LoadServerFromDisk(string serverName, IProgress<IndexBuildProgress> progress = null)
+            public void LoadServerFromDisk(string serverName, IProgress<IndexBuildProgress> progress = null, string preferDatabase = null)
             {
                 if (string.IsNullOrWhiteSpace(serverName))
                     return;
                 if (_memoryLoadedServers.ContainsKey(serverName))
                     return;
-                List<string> databases = null;
+                var toLoad = new List<string>();
                 if (MetadataCacheStore.TryGetMeta(serverName, out var meta) && meta?.Databases != null)
                 {
-                    databases = new List<string>(meta.Databases);
-                    _databaseListCache[serverName] = databases;
+                    toLoad.AddRange(meta.Databases);
+                    _databaseListCache[serverName] = new List<string>(meta.Databases);
                     if (meta.LinkedServers != null)
                         _linkedServerCache[serverName] = new List<string>(meta.LinkedServers);
                 }
-                if (databases != null)
+                if (toLoad.Count == 0)
                 {
-                    int total = databases.Count;
-                    Logger.Info("IntelliSense cache load from disk {0} databases={1}", serverName, total);
-                    int done = 0;
-                    foreach (string db in databases)
-                    {
-                        var catalog = MetadataCacheStore.TryLoadCatalog(serverName, db);
-                        if (catalog != null)
-                            _cache[Key(serverName, catalog.Database ?? db)] = catalog;
-                        done++;
-                        progress?.Report(new IndexBuildProgress
-                        {
-                            ServerName = serverName,
-                            Title = "从磁盘加载 IntelliSense 缓存",
-                            CurrentItem = db,
-                            Completed = done,
-                            Total = total,
-                            Message = "磁盘  " + done + "/" + total + "  " + db
-                        });
-                    }
-                    _memoryLoadedServers[serverName] = 0;
-                    return;
+                    foreach (string path in MetadataCacheStore.ListCatalogFiles(serverName))
+                        toLoad.Add(System.IO.Path.GetFileNameWithoutExtension(path));
                 }
-                int fileTotal = 0;
-                foreach (string path in MetadataCacheStore.ListCatalogFiles(serverName))
-                    fileTotal++;
-                Logger.Info("IntelliSense cache load from disk {0} files={1}", serverName, fileTotal);
-                int fileDone = 0;
-                foreach (string path in MetadataCacheStore.ListCatalogFiles(serverName))
+                if (!string.IsNullOrWhiteSpace(preferDatabase))
                 {
-                    string db = System.IO.Path.GetFileNameWithoutExtension(path);
-                    var catalog = MetadataCacheStore.TryLoadCatalog(serverName, db);
-                    if (catalog != null)
-                        _cache[Key(serverName, catalog.Database ?? db)] = catalog;
-                    fileDone++;
+                    int idx = -1;
+                    for (int i = 0; i < toLoad.Count; i++)
+                    {
+                        if (string.Equals(toLoad[i], preferDatabase, StringComparison.OrdinalIgnoreCase))
+                        {
+                            idx = i;
+                            break;
+                        }
+                    }
+                    if (idx > 0)
+                    {
+                        string first = toLoad[idx];
+                        toLoad.RemoveAt(idx);
+                        toLoad.Insert(0, first);
+                    }
+                }
+                int total = toLoad.Count;
+                Logger.Info("IntelliSense cache load from disk {0} databases={1}", serverName, total);
+                int done = 0;
+                for (int i = 0; i < toLoad.Count; i++)
+                {
+                    string db = toLoad[i];
+                    TryLoadCatalogIntoMemory(serverName, db);
+                    done++;
                     progress?.Report(new IndexBuildProgress
                     {
                         ServerName = serverName,
                         Title = "从磁盘加载 IntelliSense 缓存",
                         CurrentItem = db,
-                        Completed = fileDone,
-                        Total = fileTotal,
-                        Message = "磁盘  " + fileDone + "/" + fileTotal + "  " + db
+                        Completed = done,
+                        Total = total,
+                        Message = "磁盘  " + done + "/" + total + "  " + db
                     });
                 }
                 _memoryLoadedServers[serverName] = 0;
+            }
+
+            private void TryLoadCatalogIntoMemory(string serverName, string database)
+            {
+                if (string.IsNullOrWhiteSpace(serverName) || string.IsNullOrWhiteSpace(database))
+                    return;
+                string key = Key(serverName, database);
+                if (_cache.TryGetValue(key, out var existing) && existing != null
+                    && (existing.IsIndexed || !existing.IsEmpty))
+                    return;
+                var catalog = MetadataCacheStore.TryLoadCatalog(serverName, database);
+                if (catalog != null)
+                    PutCatalog(serverName, catalog.Database ?? database, catalog);
             }
 
             internal MetadataCatalog BuildCatalogForCache(
@@ -622,7 +630,6 @@ ORDER BY c.column_id;";
                 {
                     var list = new List<string>(meta.Databases);
                     _databaseListCache[linkedServer] = list;
-                    LoadServerFromDisk(linkedServer);
                     return new List<string>(list);
                 }
                 return empty;

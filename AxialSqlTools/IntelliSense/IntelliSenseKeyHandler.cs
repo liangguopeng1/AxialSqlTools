@@ -1012,6 +1012,18 @@ namespace AxialSqlTools.IntelliSense
             _window?.HidePopup();
         }
 
+        public void Dispose()
+        {
+            CloseSession();
+            ActiveHandlers.Remove(this);
+            try { _textViewExtension?.Dispose(); } catch { }
+            if (_window != null)
+            {
+                try { _window.Close(); } catch { }
+                _window = null;
+            }
+        }
+
         private void UpdateSessionCaretAnchor()
         {
             if (_textView.GetCaretPos(out int line, out int col) == VSConstants.S_OK)

@@ -672,5 +672,36 @@ namespace AxialSqlTools
 
             return nextCommandTarget?.QueryStatus(ref cmdGroup, cCmds, prgCmds, pCmdText) ?? VSConstants.S_OK;
         }
+
+        public void Dispose()
+        {
+            try
+            {
+                if (_bufferWatch != null)
+                {
+                    _bufferWatch.Stop();
+                    _bufferWatch = null;
+                }
+            }
+            catch { }
+            UnadviseBufferEvents();
+            try { _intelliSense?.Dispose(); } catch { }
+            _intelliSense = null;
+            try
+            {
+                if (textView != null)
+                    textView.RemoveCommandFilter(this);
+            }
+            catch { }
+        }
+
+        private void UnadviseBufferEvents()
+        {
+            if (_textEventsCookie == 0 || _textEventsCp == null) return;
+            try { _textEventsCp.Unadvise(_textEventsCookie); } catch { }
+            _textEventsCookie = 0;
+            _textEventsCp = null;
+            _bufferEvents = null;
+        }
     }
 }

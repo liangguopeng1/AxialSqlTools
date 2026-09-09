@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using Microsoft.VisualStudio.Shell;
 using NLog;
 
 namespace AxialSqlTools.IntelliSense
@@ -13,7 +12,6 @@ namespace AxialSqlTools.IntelliSense
     public static class IntelliSenseManager
     {
         private static readonly ILogger _logger = LogManager.GetCurrentClassLogger();
-        private static DateTime _lastForegroundProbeUtc = DateTime.MinValue;
 
         public static bool IsEnabled => UiSettingsStore.GetIntelliSenseEnabled();
 
@@ -140,28 +138,6 @@ namespace AxialSqlTools.IntelliSense
             }
             if (resetHover)
                 IntelliSenseTextViewExtension.OnSqlEditorActivated();
-        }
-
-        /// <summary>悬停 tick 兜底：有的工具窗不发 WindowActivated，仍靠 ActiveWindow 判断。</summary>
-        public static void ProbeSqlEditorForeground()
-        {
-            if ((DateTime.UtcNow - _lastForegroundProbeUtc).TotalMilliseconds < 250)
-                return;
-            _lastForegroundProbeUtc = DateTime.UtcNow;
-            try
-            {
-                ThreadHelper.ThrowIfNotOnUIThread();
-                var dte = Package.GetGlobalService(typeof(EnvDTE.DTE)) as EnvDTE.DTE;
-                if (dte == null) return;
-                EnvDTE.Window active = null;
-                try { active = dte.ActiveWindow; } catch { return; }
-                bool sql = IsSqlQueryDocument(active);
-                if (sql != SqlEditorIsForeground)
-                    SetSqlEditorForeground(sql, resetHover: sql);
-            }
-            catch
-            {
-            }
         }
 
         /// <summary>SQL 查询文档：Kind=Document 且 Object.DocData 存在。工具窗口没有 DocData。</summary>
