@@ -81,6 +81,25 @@ namespace AxialSqlTools.IntelliSense
             return false;
         }
 
+        /// <summary>命中补全列表或 QuickInfo 弹框 HWND（含子控件）。</summary>
+        public static bool IsAnyPopupHwnd(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return false;
+            if (IsQuickInfoPopupFocus(hwnd)) return true;
+            for (int i = ActiveHandlers.Count - 1; i >= 0; i--)
+            {
+                try
+                {
+                    if (ActiveHandlers[i]?.IsCompletionPopupFocus(hwnd) == true)
+                        return true;
+                }
+                catch
+                {
+                }
+            }
+            return false;
+        }
+
         public void EnsureHoverTimer()
         {
             // 勿每次调用 Attach：按键路径会反复进来，重绑 HWND 易导致 SSMS 卡死

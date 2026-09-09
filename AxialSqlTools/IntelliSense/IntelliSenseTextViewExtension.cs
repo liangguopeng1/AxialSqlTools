@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Threading;
 using static Microsoft.VisualStudio.VSConstants;
 
@@ -31,7 +32,9 @@ namespace AxialSqlTools.IntelliSense
 
         private readonly IVsTextView _textView;
         private readonly QuickInfoProvider _provider = new QuickInfoProvider();
-        private DispatcherTimer _hoverTimer;
+        private static DispatcherTimer _globalHoverTimer;
+        /// <summary>切到新标签/工具窗回来后必须先移动鼠标才允许悬停，避免打开即弹。</summary>
+        private bool _hoverArmed;
         private DateTime _lastMoveTime = DateTime.MinValue;
         private DateTime _lastTypeTime = DateTime.MinValue;
         private Point _lastMovePos = new Point(-1, -1);
@@ -85,6 +88,17 @@ namespace AxialSqlTools.IntelliSense
 
         [DllImport("user32.dll")]
         private static extern IntPtr GetParent(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+
+        private const uint GA_ROOT = 2;
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
 
         [DllImport("user32.dll")]
         private static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
@@ -172,24 +186,91 @@ namespace AxialSqlTools.IntelliSense
 
         public void EnsureHoverTimer()
         {
-            if (_hoverTimer != null)
-            {
-                if (_editorHwnd == IntPtr.Zero)
-                    TryResolveEditorHwnd();
-                return;
-            }
+            if (_editorHwnd == IntPtr.Zero)
+                TryResolveEditorHwnd();
+            EnsureGlobalHoverTimer();
+        }
+
+        /// <summary>所有查询标签共用一个定时器，只驱动当前前台 SQL 编辑器。</summary>
+        private static void EnsureGlobalHoverTimer()
+        {
+            if (_globalHoverTimer != null) return;
             var settings = UiSettingsStore.GetIntelliSenseSettings();
             if (!settings.enabled) return;
-            TryResolveEditorHwnd();
-            int delay = settings.hoverTooltipDelayMs > 0 ? settings.hoverTooltipDelayMs : 500;
             var dispatcher = GetUiDispatcher();
-            _hoverTimer = new DispatcherTimer(DispatcherPriority.Background, dispatcher)
+            _globalHoverTimer = new DispatcherTimer(DispatcherPriority.Background, dispatcher)
             {
                 Interval = TimeSpan.FromMilliseconds(50)
             };
-            _hoverTimer.Tick += OnHoverTick;
-            _hoverTimer.Start();
-            _logger.Info("QuickInfo hover timer started delay={0}ms interval={1}ms", delay, _hoverTimer.Interval.TotalMilliseconds);
+            _globalHoverTimer.Tick += OnGlobalHoverTick;
+            _globalHoverTimer.Start();
+            _logger.Info("QuickInfo global hover timer started interval={0}ms",
+                _globalHoverTimer.Interval.TotalMilliseconds);
+        }
+
+        private static void StopGlobalHoverTimerIfIdle()
+        {
+            if (ActiveExtensions.Count > 0) return;
+            if (_globalHoverTimer == null) return;
+            _globalHoverTimer.Stop();
+            _globalHoverTimer.Tick -= OnGlobalHoverTick;
+            _globalHoverTimer = null;
+        }
+
+        private static void OnGlobalHoverTick(object sender, EventArgs e)
+        {
+            try
+            {
+                IntelliSenseManager.ProbeSqlEditorForeground();
+                if (!IntelliSenseManager.SqlEditorIsForeground)
+                {
+                    if (QuickInfoTooltip.IsOpen)
+                        QuickInfoTooltip.Close();
+                    return;
+                }
+                var ext = FindForegroundExtension();
+                if (ext == null)
+                {
+                    if (QuickInfoTooltip.IsOpen)
+                        QuickInfoTooltip.Close();
+                    return;
+                }
+                ext.OnHoverTick(sender, e);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "QuickInfo global hover tick failed");
+            }
+        }
+
+        private static IntelliSenseTextViewExtension FindForegroundExtension()
+        {
+            IntelliSenseTextViewExtension selected = null;
+            for (int i = 0; i < ActiveExtensions.Count; i++)
+            {
+                var ext = ActiveExtensions[i];
+                if (ext == null || !ext.IsSelectedTextView()) continue;
+                if (ReferenceEquals(_hoverOwner, ext))
+                    return ext;
+                if (selected == null)
+                    selected = ext;
+            }
+            return selected;
+        }
+
+        /// <summary>切到 SQL 查询页：关掉旧框，并要求鼠标再动一下才悬停。</summary>
+        public static void OnSqlEditorActivated()
+        {
+            for (int i = 0; i < ActiveExtensions.Count; i++)
+            {
+                var ext = ActiveExtensions[i];
+                if (ext == null) continue;
+                ext._hoverArmed = false;
+                ext._lastMovePos = new Point(-1, -1);
+                ext._lastMoveTime = DateTime.UtcNow;
+                ext.ClearHoverDocAnchor();
+                ext.CloseTooltip();
+            }
         }
 
         private static Dispatcher GetUiDispatcher()
@@ -211,6 +292,11 @@ namespace AxialSqlTools.IntelliSense
             {
                 if (_editorHwnd == IntPtr.Zero)
                     TryResolveEditorHwnd();
+                if (!IntelliSenseManager.SqlEditorIsForeground)
+                {
+                    CloseTooltip();
+                    return;
+                }
 
                 // 切到其他应用：强制关弹框（忽略钉住）；timer 可能仍跑，或 Application.Deactivated 已关
                 if (QuickInfoTooltip.IsOpen && !QuickInfoTooltip.IsSsmsForeground())
@@ -249,18 +335,26 @@ namespace AxialSqlTools.IntelliSense
                 if (!TryUpdateCursorFromScreen(out string cursorReason))
                 {
                     Diag("cursor_miss", cursorReason);
-                    if (IsPointerAwayFromEditor())
+                    bool foreignUi = IsForeignUiReason(cursorReason) || IsPointerOverForeignUi();
+                    if (IsPointerAwayFromEditor() || foreignUi)
                     {
                         _pointerWasAway = true;
                         ClearHoverDocAnchor();
                     }
-                    // 鼠标不在本编辑器：钉住时若也不在弹框上，稍候强制关（切设置页）。
+                    // 设置页/选项框盖住编辑器：坐标仍能映射到底下的 SQL，必须立刻关，不能等 400ms。
                     // 右键菜单是独立 HWND，指针不在弹框上，但不能当离开。
                     if (QuickInfoTooltip.IsOwnedBy(this) && !QuickInfoTooltip.IsPointerOverPopup())
                     {
                         if (QuickInfoTooltip.ShouldIgnoreOutsideClose())
                         {
                             _awayFromEditorSince = DateTime.MinValue;
+                            return;
+                        }
+                        if (foreignUi)
+                        {
+                            _awayFromEditorSince = DateTime.MinValue;
+                            _tooltipShowing = false;
+                            QuickInfoTooltip.CloseIfOwnedBy(this);
                             return;
                         }
                         if (_awayFromEditorSince == DateTime.MinValue)
@@ -295,6 +389,11 @@ namespace AxialSqlTools.IntelliSense
                     _clickSuppressPending = false;
                 }
                 NoteCaretAlignedClick();
+                if (!_hoverArmed)
+                {
+                    CloseTooltip();
+                    return;
+                }
 
                 // 点在编辑器上：即使刚复制钉住了也关，不要把第一下吃掉
                 if (_leftButtonDown && !QuickInfoTooltip.IsPointerOverPopup())
@@ -380,11 +479,11 @@ namespace AxialSqlTools.IntelliSense
                 if (havePt)
                 {
                     IntPtr hwndAtPoint = WindowFromPoint(pt);
-                    IntPtr tipHwnd = QuickInfoTooltip.GetWindowHandle();
-                    bool onTip = tipHwnd != IntPtr.Zero && (hwndAtPoint == tipHwnd || IsChild(tipHwnd, hwndAtPoint));
-                    bool onPopup = onTip || (ShouldIgnoreFocusTarget != null && ShouldIgnoreFocusTarget(hwndAtPoint));
-                    bool onEditor = (_editorHwnd != IntPtr.Zero && IsRelatedHwnd(_editorHwnd, hwndAtPoint))
-                        || (IsSelectedTextView() && TryGetLineColumnFromScreenPoint(pt.x, pt.y, out _, out _));
+                    bool onPopup = IntelliSenseKeyHandler.IsAnyPopupHwnd(hwndAtPoint)
+                        || (ShouldIgnoreFocusTarget != null && ShouldIgnoreFocusTarget(hwndAtPoint));
+                    bool onEditor = !IsDefinitelyForeignShell(hwndAtPoint)
+                        && ((_editorHwnd != IntPtr.Zero && IsRelatedHwnd(_editorHwnd, hwndAtPoint))
+                            || (IsSelectedTextView() && TryGetLineColumnFromScreenPoint(pt.x, pt.y, out _, out _)));
                     if (onPopup)
                     {
                         _editorLeftCapture = false;
@@ -452,6 +551,7 @@ namespace AxialSqlTools.IntelliSense
             IntPtr tipHwnd = QuickInfoTooltip.GetWindowHandle();
             if (tipHwnd != IntPtr.Zero && (hit == tipHwnd || IsChild(tipHwnd, hit)))
                 return false;
+            if (IsDefinitelyForeignShell(hit)) return true;
             if (ShouldIgnoreFocusTarget != null && ShouldIgnoreFocusTarget(hit))
                 return false;
             if (_editorHwnd != IntPtr.Zero && IsRelatedHwnd(_editorHwnd, hit))
@@ -505,9 +605,16 @@ namespace AxialSqlTools.IntelliSense
 
         private void NoteMove(Point clientPos)
         {
+            if (_lastMovePos.X < 0)
+            {
+                _lastMovePos = clientPos;
+                _lastMoveTime = DateTime.UtcNow;
+                return;
+            }
             int dx = Math.Abs(clientPos.X - _lastMovePos.X);
             int dy = Math.Abs(clientPos.Y - _lastMovePos.Y);
             if (dx <= HoverMoveThreshold && dy <= HoverMoveThreshold) return;
+            _hoverArmed = true;
             _lastMovePos = clientPos;
             _lastMoveTime = DateTime.UtcNow;
             if (_tooltipShowing)
@@ -540,14 +647,27 @@ namespace AxialSqlTools.IntelliSense
                 return false;
             }
 
-            IntPtr hwndAtPoint = WindowFromPoint(screenPt);
+                IntPtr hwndAtPoint = WindowFromPoint(screenPt);
             if (hwndAtPoint != IntPtr.Zero)
             {
-                IntPtr tipHwnd = QuickInfoTooltip.GetWindowHandle();
-                if (tipHwnd != IntPtr.Zero && (hwndAtPoint == tipHwnd || IsChild(tipHwnd, hwndAtPoint)))
+                if (IntelliSenseKeyHandler.IsAnyPopupHwnd(hwndAtPoint))
                 {
                     reason = "on_tip";
                     return true;
+                }
+                // 查询画布 HWND 经常对不上 GetWindowHandle，不能按父子/顶层根拦截。
+                // 挡模态对话框，以及本扩展的 WPF 工具窗口（查询历史/设置等）。
+                if (IsDefinitelyForeignShell(hwndAtPoint))
+                {
+                    reason = string.Format("foreign_shell hit=0x{0:X}", hwndAtPoint.ToInt64());
+                    if ((DateTime.UtcNow - _lastDiagLog).TotalSeconds >= 2)
+                    {
+                        _lastDiagLog = DateTime.UtcNow;
+                        DescribeWindow(hwndAtPoint, out string cls, out string title);
+                        _logger.Info("QuickInfo skip hover foreign hwnd=0x{0:X} class={1} title={2}",
+                            hwndAtPoint.ToInt64(), cls, title);
+                    }
+                    return false;
                 }
             }
 
@@ -615,9 +735,9 @@ namespace AxialSqlTools.IntelliSense
             try
             {
                 var tm = Package.GetGlobalService(typeof(SVsTextManager)) as IVsTextManager;
-                if (tm == null) return true;
+                if (tm == null) return ActiveExtensions.Count <= 1;
                 if (tm.GetActiveView(0, null, out IVsTextView active) != S_OK || active == null)
-                    return true;
+                    return ActiveExtensions.Count <= 1 || ReferenceEquals(_hoverOwner, this);
                 if (ReferenceEquals(active, _textView))
                     return true;
                 IntPtr activeHwnd = IntPtr.Zero;
@@ -662,6 +782,106 @@ namespace AxialSqlTools.IntelliSense
                 p = GetParent(p);
             }
             return false;
+        }
+
+        private static bool IsForeignUiReason(string reason)
+        {
+            return reason != null && (reason.StartsWith("foreign_hwnd", StringComparison.Ordinal)
+                || reason.StartsWith("foreign_shell", StringComparison.Ordinal));
+        }
+
+        /// <summary>指针下是否是设置页/选项框。查询画布 HWND 对不上编辑器时不得当外来。</summary>
+        private bool IsHoverHwndAllowed(IntPtr hit)
+        {
+            if (hit == IntPtr.Zero) return true;
+            IntPtr tipHwnd = QuickInfoTooltip.GetWindowHandle();
+            if (tipHwnd != IntPtr.Zero && (hit == tipHwnd || IsChild(tipHwnd, hit)))
+                return true;
+            if (ShouldIgnoreFocusTarget != null && ShouldIgnoreFocusTarget(hit))
+                return true;
+            return !IsDefinitelyForeignShell(hit);
+        }
+
+        /// <summary>
+        /// 从命中窗口向上认设置页/选项对话框。SSMS 查询画布是独立 HWND（日志里 hit≠editor），
+        /// 不能用父子或 GA_ROOT 判断，否则编辑器里也不弹。
+        /// </summary>
+        internal static bool IsDefinitelyForeignShell(IntPtr hit)
+        {
+            if (hit == IntPtr.Zero) return false;
+            if (IntelliSenseKeyHandler.IsAnyPopupHwnd(hit)) return false;
+            IntPtr p = hit;
+            for (int i = 0; i < 16 && p != IntPtr.Zero; i++)
+            {
+                if (WindowLooksLikeForeignUi(p)) return true;
+                p = GetParent(p);
+            }
+            IntPtr root = GetAncestorSafe(hit);
+            if (root != IntPtr.Zero && WindowLooksLikeForeignUi(root))
+                return true;
+            return false;
+        }
+
+        internal static bool IsHitOnEditorSurface(IntPtr editorHwnd, IntPtr hit)
+        {
+            if (hit == IntPtr.Zero) return editorHwnd == IntPtr.Zero;
+            if (IsDefinitelyForeignShell(hit)) return false;
+            return true;
+        }
+
+        private static bool WindowLooksLikeForeignUi(IntPtr hwnd)
+        {
+            DescribeWindow(hwnd, out string cls, out _);
+            if (string.IsNullOrEmpty(cls)) return false;
+            if (string.Equals(cls, "#32770", StringComparison.Ordinal))
+                return true;
+            // 本扩展工具窗口都是 WPF HwndWrapper[AxialSqlTools;...]；补全/QuickInfo 已在上层排除
+            if (cls.IndexOf("HwndWrapper", StringComparison.OrdinalIgnoreCase) >= 0
+                && cls.IndexOf("AxialSqlTools", StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+            return false;
+        }
+
+        private static void DescribeWindow(IntPtr hwnd, out string cls, out string title)
+        {
+            cls = string.Empty;
+            title = string.Empty;
+            if (hwnd == IntPtr.Zero) return;
+            try
+            {
+                var clsBuf = new StringBuilder(256);
+                if (GetClassName(hwnd, clsBuf, clsBuf.Capacity) > 0)
+                    cls = clsBuf.ToString();
+                var titleBuf = new StringBuilder(512);
+                if (GetWindowText(hwnd, titleBuf, titleBuf.Capacity) > 0)
+                    title = titleBuf.ToString();
+            }
+            catch
+            {
+            }
+        }
+
+        private static IntPtr GetAncestorSafe(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return IntPtr.Zero;
+            try
+            {
+                IntPtr root = GetAncestor(hwnd, GA_ROOT);
+                return root != IntPtr.Zero ? root : hwnd;
+            }
+            catch
+            {
+                return hwnd;
+            }
+        }
+
+        private bool IsPointerOverForeignUi()
+        {
+            NativePoint screenPt;
+            if (!GetCursorPos(out screenPt)) return false;
+            IntPtr hit = WindowFromPoint(screenPt);
+            if (hit == IntPtr.Zero) return false;
+            return !IsHoverHwndAllowed(hit);
         }
 
 
@@ -929,6 +1149,9 @@ namespace AxialSqlTools.IntelliSense
             col = 0;
             NativePoint screenPt;
             if (!GetCursorPos(out screenPt)) return false;
+            IntPtr hit = WindowFromPoint(screenPt);
+            if (hit != IntPtr.Zero && IsDefinitelyForeignShell(hit))
+                return false;
             // 全程用屏幕坐标：GetPointOfLineColumn 是视图客户区坐标，经 ClientToScreen 对齐
             if (TryGetLineColumnFromScreenPoint(screenPt.x, screenPt.y, out line, out col))
                 return true;
@@ -1165,11 +1388,7 @@ namespace AxialSqlTools.IntelliSense
             ActiveExtensions.Remove(this);
             if (ReferenceEquals(_hoverOwner, this))
                 _hoverOwner = null;
-            if (_hoverTimer != null)
-            {
-                _hoverTimer.Stop();
-                _hoverTimer = null;
-            }
+            StopGlobalHoverTimerIfIdle();
             QuickInfoTooltip.CloseIfOwnedBy(this);
         }
 

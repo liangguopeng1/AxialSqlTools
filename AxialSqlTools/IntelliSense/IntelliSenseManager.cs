@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using Microsoft.VisualStudio.Shell;
+using NLog;
 
 namespace AxialSqlTools.IntelliSense
 {
@@ -10,7 +12,16 @@ namespace AxialSqlTools.IntelliSense
     /// </summary>
     public static class IntelliSenseManager
     {
+        private static readonly ILogger _logger = LogManager.GetCurrentClassLogger();
+        private static DateTime _lastForegroundProbeUtc = DateTime.MinValue;
+
         public static bool IsEnabled => UiSettingsStore.GetIntelliSenseEnabled();
+
+        /// <summary>
+        /// 当前 DTE 活动窗口是否是 SQL 查询编辑器。
+        /// 工具窗口 / 设置页 / 非 SQL 文档为 false，全局悬停定时器直接停手，不必给每个功能窗口单独黑名单。
+        /// </summary>
+        public static bool SqlEditorIsForeground { get; private set; } = true;
 
         /// <summary>
         /// 本次会话是否抑制自动触发。
@@ -83,6 +94,95 @@ namespace AxialSqlTools.IntelliSense
             IntelliSenseKeyHandler.CloseAllSessions();
             IntelliSenseKeyHandler.SuppressAutoTriggerBriefly();
             QuickInfoTooltip.Close();
+        }
+
+        /// <summary>DTE WindowActivated：用活动窗口类型做总闸，而不是给每个工具窗口单独挂钩。</summary>
+        public static void NotifyWindowActivated(EnvDTE.Window gotFocus, EnvDTE.Window lostFocus)
+        {
+            try
+            {
+                if (gotFocus != null && lostFocus != null && gotFocus == lostFocus)
+                    return;
+                bool sql = IsSqlQueryDocument(gotFocus);
+                if (sql)
+                {
+                    // lostFocus 为空多半是补全/QuickInfo 焦点抖动，不能关弹框、也不能重计悬停
+                    SetSqlEditorForeground(true, resetHover: lostFocus != null);
+                    if (lostFocus != null)
+                        CloseAllPopups();
+                    return;
+                }
+                if (gotFocus == null)
+                    return;
+                string kind = null;
+                try { kind = gotFocus.Kind; } catch { }
+                if (string.IsNullOrEmpty(kind))
+                    return;
+                SetSqlEditorForeground(false);
+                CloseAllPopups();
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "IntelliSense NotifyWindowActivated failed");
+            }
+        }
+
+        public static void SetSqlEditorForeground(bool value, bool resetHover = false)
+        {
+            bool changed = SqlEditorIsForeground != value;
+            SqlEditorIsForeground = value;
+            if (changed)
+                _logger.Info("IntelliSense sql-editor-foreground={0}", value);
+            if (!value)
+            {
+                CloseAllPopups();
+                return;
+            }
+            if (resetHover)
+                IntelliSenseTextViewExtension.OnSqlEditorActivated();
+        }
+
+        /// <summary>悬停 tick 兜底：有的工具窗不发 WindowActivated，仍靠 ActiveWindow 判断。</summary>
+        public static void ProbeSqlEditorForeground()
+        {
+            if ((DateTime.UtcNow - _lastForegroundProbeUtc).TotalMilliseconds < 250)
+                return;
+            _lastForegroundProbeUtc = DateTime.UtcNow;
+            try
+            {
+                ThreadHelper.ThrowIfNotOnUIThread();
+                var dte = Package.GetGlobalService(typeof(EnvDTE.DTE)) as EnvDTE.DTE;
+                if (dte == null) return;
+                EnvDTE.Window active = null;
+                try { active = dte.ActiveWindow; } catch { return; }
+                bool sql = IsSqlQueryDocument(active);
+                if (sql != SqlEditorIsForeground)
+                    SetSqlEditorForeground(sql, resetHover: sql);
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>SQL 查询文档：Kind=Document 且 Object.DocData 存在。工具窗口没有 DocData。</summary>
+        public static bool IsSqlQueryDocument(EnvDTE.Window window)
+        {
+            if (window == null) return false;
+            try
+            {
+                string kind = null;
+                try { kind = window.Kind; } catch { }
+                if (!string.Equals(kind, "Document", StringComparison.OrdinalIgnoreCase))
+                    return false;
+                object winObj = null;
+                try { winObj = window.Object; } catch { return false; }
+                if (winObj == null) return false;
+                return GridAccess.GetProperty(winObj, "DocData") != null;
+            }
+            catch
+            {
+                return false;
+            }
         }
     }
 }

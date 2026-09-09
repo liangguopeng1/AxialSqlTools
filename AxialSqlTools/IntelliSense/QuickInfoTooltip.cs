@@ -312,6 +312,7 @@ namespace AxialSqlTools.IntelliSense
                 WindowStyle = WindowStyle.None,
                 AllowsTransparency = true,
                 ShowInTaskbar = false,
+                // 盖住编辑器即可；弹出前必须先确认光标在编辑器上，否则会压过设置页/选项框
                 Topmost = true,
                 ShowActivated = false,
                 Focusable = true,
@@ -765,6 +766,13 @@ namespace AxialSqlTools.IntelliSense
             EnsureWindowShell();
             if (_window == null) return false;
             if (!IsSsmsForeground()) return false;
+            if (!IntelliSenseManager.SqlEditorIsForeground) { if (_isOpen) Close(); return false; }
+            // 设置页 / 选项框盖住编辑器时，禁止弹出（Topmost 会压过对话框）
+            if (ownerHwnd != IntPtr.Zero && !IsCursorOverEditorSurface(ownerHwnd))
+            {
+                if (_isOpen) Close();
+                return false;
+            }
             // 钉住时仍允许换内容（列→表），仅相同内容时跳过
             string key = BuildContentKey(data);
             bool sameContent = _isOpen && string.Equals(_lastContentKey, key, StringComparison.Ordinal);
@@ -1026,6 +1034,29 @@ namespace AxialSqlTools.IntelliSense
                 if (text[i] == '\n') n++;
             }
             return n;
+        }
+
+        /// <summary>
+        /// 光标下的窗口是否属于编辑器表面。设置页、SSMS 选项等独立 HWND 返回 false。
+        /// </summary>
+        public static bool IsCursorOverEditorSurface(IntPtr editorHwnd)
+        {
+            if (editorHwnd == IntPtr.Zero) return true;
+            try
+            {
+                POINT pt;
+                if (!GetCursorPos(out pt)) return false;
+                IntPtr hit = WindowFromPoint(pt);
+                if (hit == IntPtr.Zero) return true;
+                IntPtr tip = GetWindowHandle();
+                if (tip != IntPtr.Zero && (hit == tip || IsChild(tip, hit)))
+                    return true;
+                return !IntelliSenseTextViewExtension.IsDefinitelyForeignShell(hit);
+            }
+            catch
+            {
+                return true;
+            }
         }
 
         public static IntPtr GetWindowHandle()
