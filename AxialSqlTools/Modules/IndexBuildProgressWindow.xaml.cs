@@ -59,6 +59,8 @@ namespace AxialSqlTools
             }
             if (!string.IsNullOrEmpty(progress.Title))
                 TitleText.Text = progress.Title;
+            if (!string.IsNullOrWhiteSpace(progress.ServerName))
+                ServerText.Text = progress.ServerName;
             string item = progress.CurrentItem;
             if (!string.IsNullOrEmpty(progress.Message))
                 StatusText.Text = progress.Message;

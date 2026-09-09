@@ -15,6 +15,7 @@ namespace AxialSqlTools
             public bool enabled = true;
             /// <summary>已合并到 enabled；保存时与 enabled 同步，仅作 JSON 向后兼容。</summary>
             public bool disableSsmsIntelliSense = true;
+            /// <summary>已合并到 enabled；启用 Axial 即输入时自动补全。仅作 JSON 向后兼容。</summary>
             public bool autoTrigger = true;
             public int autoTriggerDelayMs = 200;
             public bool hoverTooltipEnabled = true;

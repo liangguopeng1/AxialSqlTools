@@ -602,7 +602,7 @@ namespace AxialSqlTools.IntelliSense
                 _textViewExtension?.NotifyTyping();
 
             var settings = UiSettingsStore.GetIntelliSenseSettings();
-            if (!settings.enabled || !settings.autoTrigger) return;
+            if (!settings.enabled) return;
             if (EditorSelectionHelper.HasTextSelection(_textView))
             {
                 _debounceTimer.Stop();

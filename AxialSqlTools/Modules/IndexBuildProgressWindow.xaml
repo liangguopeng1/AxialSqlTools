@@ -7,8 +7,8 @@
         ResizeMode="NoResize"
         ShowInTaskbar="False"
         ShowActivated="False"
-        Width="340"
-        Height="118"
+        Width="360"
+        Height="136"
         Background="Transparent"
         Focusable="False">
     <Window.Resources>
@@ -28,20 +28,29 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <TextBlock x:Name="TitleText"
                        Grid.Row="0"
                        FontWeight="SemiBold"
                        Text="加载 IntelliSense 缓存"
                        TextWrapping="Wrap"/>
+            <TextBlock x:Name="ServerText"
+                       Grid.Row="1"
+                       Margin="0,2,0,0"
+                       Opacity="0.85"
+                       FontSize="11"
+                       TextWrapping="NoWrap"
+                       TextTrimming="CharacterEllipsis"
+                       Text=""/>
             <ProgressBar x:Name="Bar"
-                         Grid.Row="1"
+                         Grid.Row="2"
                          Height="14"
                          Margin="0,8,0,6"
                          Minimum="0"
                          Maximum="100"
                          Value="0"/>
-            <Grid Grid.Row="2">
+            <Grid Grid.Row="3">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>

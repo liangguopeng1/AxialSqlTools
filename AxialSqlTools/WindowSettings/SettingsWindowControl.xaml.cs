@@ -502,7 +502,6 @@ as select 1;
             {
                 var isettings = UiSettingsStore.GetIntelliSenseSettings();
                 IntelliSenseEnabled.IsChecked = isettings.enabled;
-                IntelliSenseAutoTrigger.IsChecked = isettings.autoTrigger;
                 IntelliSenseHoverTooltip.IsChecked = isettings.hoverTooltipEnabled;
                 IntelliSenseIncludeKeywords.IsChecked = isettings.includeKeywords;
                 IntelliSenseIncludeSystemObjects.IsChecked = isettings.includeSystemObjects;
@@ -540,7 +539,7 @@ as select 1;
             var current = UiSettingsStore.GetIntelliSenseSettings() ?? new AxialSqlTools.IntelliSense.IntelliSenseSettings();
             current.enabled = axialEnabled;
             current.disableSsmsIntelliSense = axialEnabled;
-            current.autoTrigger = IntelliSenseAutoTrigger.IsChecked.GetValueOrDefault();
+            current.autoTrigger = axialEnabled;
             current.hoverTooltipEnabled = IntelliSenseHoverTooltip.IsChecked.GetValueOrDefault();
             current.includeKeywords = IntelliSenseIncludeKeywords.IsChecked.GetValueOrDefault();
             current.includeSystemObjects = IntelliSenseIncludeSystemObjects.IsChecked.GetValueOrDefault();
@@ -579,26 +578,14 @@ as select 1;
             ScriptFactoryAccess.ConnectionInfo conn = null;
             try
             {
-                conn = ScriptFactoryAccess.GetCurrentConnectionInfo();
+                conn = ScriptFactoryAccess.GetConnectionInfoForCacheRefresh();
             }
             catch
             {
             }
             if (conn == null || string.IsNullOrWhiteSpace(conn.ServerName))
             {
-                try
-                {
-                    var sessions = ScriptFactoryAccess.GetConnectedObjectExplorerSessions();
-                    if (sessions != null && sessions.Count > 0)
-                        conn = sessions[0];
-                }
-                catch
-                {
-                }
-            }
-            if (conn == null || string.IsNullOrWhiteSpace(conn.ServerName))
-            {
-                MessageBox.Show("请先连接到 SQL Server。", UiStrings.Common_Error, MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show("请先在对象资源管理器中选中服务器，或打开已连接的查询标签页。", UiStrings.Common_Error, MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
             var button = sender as Button;

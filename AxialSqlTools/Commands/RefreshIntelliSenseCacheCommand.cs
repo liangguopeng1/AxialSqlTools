@@ -42,11 +42,11 @@ namespace AxialSqlTools
             ScriptFactoryAccess.ConnectionInfo conn = null;
             try
             {
-                conn = ScriptFactoryAccess.GetCurrentConnectionInfo();
+                conn = ScriptFactoryAccess.GetConnectionInfoForTabCacheRefresh();
             }
             catch (Exception ex)
             {
-                Logger.Warn(ex, "RefreshIntelliSenseCache: GetCurrentConnectionInfo failed");
+                Logger.Warn(ex, "RefreshIntelliSenseCache: GetConnectionInfoForTabCacheRefresh failed");
             }
             if (conn == null || string.IsNullOrWhiteSpace(conn.ServerName))
             {
@@ -55,7 +55,7 @@ namespace AxialSqlTools
                 return;
             }
             var captured = conn;
-            Logger.Info("Refresh IntelliSense cache from Tools menu server={0} database={1}",
+            Logger.Info("Refresh IntelliSense cache from Tools menu (tab) server={0} database={1}",
                 captured.ServerName, captured.Database);
             _ = package.JoinableTaskFactory.RunAsync(async () =>
             {

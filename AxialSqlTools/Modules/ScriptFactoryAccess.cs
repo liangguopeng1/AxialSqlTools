@@ -534,6 +534,57 @@ ORDER BY [name];";
             return GetCurrentConnectionInfoForEditor(null, inMaster);
         }
 
+        /// <summary>设置窗口「立即刷新缓存」：优先对象资源管理器当前选中的服务器，其次查询窗口。</summary>
+        public static ConnectionInfo GetConnectionInfoForCacheRefresh()
+        {
+            InvalidateEditorConnectionCache();
+            try
+            {
+                var oe = GetCurrentConnectionInfoFromObjectExplorer();
+                if (oe != null && !string.IsNullOrWhiteSpace(oe.ServerName))
+                    return oe;
+            }
+            catch { }
+            try
+            {
+                var editor = GetCurrentConnectionInfo();
+                if (editor != null && !string.IsNullOrWhiteSpace(editor.ServerName))
+                    return editor;
+            }
+            catch { }
+            try
+            {
+                var sessions = GetConnectedObjectExplorerSessions();
+                if (sessions != null && sessions.Count > 0)
+                    return sessions[0];
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>工具菜单「刷新缓存」：只用当前查询标签页的连接，不跟对象资源管理器选中项。</summary>
+        public static ConnectionInfo GetConnectionInfoForTabCacheRefresh()
+        {
+            InvalidateEditorConnectionCache();
+            try
+            {
+                var editor = GetCurrentConnectionInfo();
+                if (editor != null && !string.IsNullOrWhiteSpace(editor.ServerName))
+                    return editor;
+            }
+            catch { }
+            return null;
+        }
+
+        public static void InvalidateEditorConnectionCache()
+        {
+            lock (EditorConnCacheLock)
+            {
+                _cachedEditorConn = null;
+                _cachedAtUtc = DateTime.MinValue;
+            }
+        }
+
         /// <summary>优先读取查询编辑器工具栏当前库（m_connection.Database），避免 AdvancedOptions 滞后。</summary>
         public static ConnectionInfo GetCurrentConnectionInfoForEditor(Microsoft.VisualStudio.TextManager.Interop.IVsTextView textView = null, bool inMaster = false)
         {

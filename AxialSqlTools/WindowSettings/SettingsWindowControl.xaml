@@ -182,12 +182,6 @@
                         </StackPanel>
                         <StackPanel Margin="5,0,5,4"
                                     IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
-                            <CheckBox x:Name="IntelliSenseAutoTrigger"
-                                      Content="输入时自动触发补全"/>
-                            <TextBlock Margin="22,2,0,0" Opacity="0.75" FontSize="11" Text="生效：实时"/>
-                        </StackPanel>
-                        <StackPanel Margin="5,0,5,4"
-                                    IsEnabled="{Binding IsChecked, ElementName=IntelliSenseEnabled}">
                             <CheckBox x:Name="IntelliSenseHoverTooltip"
                                       Content="悬停 ToolTip（表/列/存储过程详情）"/>
                             <TextBlock Margin="22,2,0,0" Opacity="0.75" FontSize="11" Text="生效：实时（保存后立即生效）"/>
@@ -250,7 +244,8 @@
                                     Click="Button_RefreshIntelliSenseCache_Click"
                                     Width="120" Height="24" HorizontalAlignment="Left"
                                     Content="立即刷新缓存"/>
-                            <TextBlock Margin="0,2,0,0" Opacity="0.75" FontSize="11" Text="右下角显示进度；可取消。需已连接服务器。"/>
+                            <TextBlock Margin="0,2,0,0" Opacity="0.75" FontSize="11" TextWrapping="Wrap"
+                                       Text="右下角显示进度；可取消。优先用对象资源管理器当前选中的服务器，否则用查询窗口连接。"/>
                         </StackPanel>
                         <Button x:Name="button_SaveIntelliSenseSettings"
                                 Click="Button_SaveIntelliSenseSettings_Click"

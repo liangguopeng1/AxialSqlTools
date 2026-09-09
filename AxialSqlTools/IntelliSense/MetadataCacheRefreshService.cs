@@ -190,6 +190,12 @@ namespace AxialSqlTools.IntelliSense
             {
                 window = new IndexBuildProgressWindow();
                 window.CancelRequested += () => Cancel(serverName);
+                window.Update(new IndexBuildProgress
+                {
+                    ServerName = serverName,
+                    Title = "加载 IntelliSense 缓存",
+                    Message = "准备中..."
+                });
                 window.ShowAtBottomRight();
             });
             var progress = new Progress<IndexBuildProgress>(p =>
