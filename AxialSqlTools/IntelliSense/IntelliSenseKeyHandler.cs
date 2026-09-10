@@ -864,8 +864,13 @@ namespace AxialSqlTools.IntelliSense
         public void CommitSelected()
         {
             var item = _window?.GetSelected();
+            _logger.Info("CommitSelected item={0} kind={1}", item?.DisplayText, item?.Kind);
             CloseSession();
-            if (item == null) return;
+            if (item == null)
+            {
+                _logger.Warn("CommitSelected: 无可提交项（弹框未开或未选中）");
+                return;
+            }
             try
             {
                 RefreshReplaceEndFromCaret();
@@ -901,9 +906,11 @@ namespace AxialSqlTools.IntelliSense
                     TriggerCompletion(true);
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // 插入失败不阻塞编辑
+                // 插入失败不阻塞编辑，但必须留痕：此前静默 catch 导致卡死/未插入无法定位
+                _logger.Error(ex, "CommitSelected insert failed item={0}", item.DisplayText);
+                AxialSqlToolsPackage.FlushLogsAsync();
             }
             finally
             {

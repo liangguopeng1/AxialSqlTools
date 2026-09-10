@@ -51,6 +51,7 @@ namespace AxialSqlTools.IntelliSense
 
         private readonly ObservableCollection<CompletionItem> _items = new ObservableCollection<CompletionItem>();
         private const int PageSize = 8;
+        private bool _mouseCommitScheduled;
 
         public bool IsOpen { get; private set; }
 
@@ -407,10 +408,24 @@ namespace AxialSqlTools.IntelliSense
             IsOpen = false;
             try
             {
+                // WS_EX_NOACTIVATE 窗口不会走激活/失活路径，隐藏时可能仍持有 OS 鼠标捕获，
+                // 宿主编辑器将收不到后续鼠标消息（表现为编辑器卡死）。隐藏前显式释放本窗口的捕获，
+                // Capture(null) 幂等；捕获在别的窗口时不碰。
+                var captured = System.Windows.Input.Mouse.Captured as DependencyObject;
+                if (captured != null && this.IsAncestorOf(captured))
+                    System.Windows.Input.Mouse.Capture(null);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "CompletionListWindow.HidePopup: release mouse capture failed");
+            }
+            try
+            {
                 this.Hide();
             }
-            catch
+            catch (Exception ex)
             {
+                _logger.Error(ex, "CompletionListWindow.HidePopup: Hide failed");
             }
         }
 
@@ -489,29 +504,60 @@ namespace AxialSqlTools.IntelliSense
             SelectItemUnderMouse(e.OriginalSource as DependencyObject);
             if (ItemsList.SelectedItem is CompletionItem)
             {
-                CommitClicked?.Invoke(this, EventArgs.Empty);
+                // 先吞掉本次点击，提交推迟到路由事件返回之后（见 ScheduleMouseCommit）。
+                // 不能在 WPF 鼠标路由/捕获尚未结束时同步提交：提交会 Hide() 本窗口并调用
+                // IVsTextLines.ReplaceLines 改写 SSMS 缓冲，两套输入状态互相重入 → 偶发卡死。
                 e.Handled = true;
+                ScheduleMouseCommit();
             }
+        }
+
+        private void ScheduleMouseCommit()
+        {
+            // 把鼠标选中的补全推迟到当前 WPF 输入路由事件返回后再提交。
+            // 直接在被点击控件的路由事件里 Hide() 弹框 + 改写编辑器缓冲，会因鼠标捕获/HWND 焦点
+            // 切换与宿主编辑器的同步重入导致间歇性卡死；异步化后宿主可先完成输入处理再插入。
+            // 同一时刻只保留一次待提交，避免连点重复插入。
+            if (_mouseCommitScheduled) return;
+            _mouseCommitScheduled = true;
+            var dispatcher = Dispatcher;
+            if (dispatcher == null || dispatcher.HasShutdownStarted)
+            {
+                _mouseCommitScheduled = false;
+                return;
+            }
+            dispatcher.BeginInvoke(new Action(() =>
+            {
+                _mouseCommitScheduled = false;
+                // 延迟期间可能已失焦关闭、或被新的候选刷新替换，校验后再提交
+                if (!IsOpen) return;
+                if (!(ItemsList.SelectedItem is CompletionItem selected)) return;
+                _logger.Info("CompletionListWindow: mouse commit (deferred) item={0}", selected.DisplayText);
+                CommitClicked?.Invoke(this, EventArgs.Empty);
+            }), DispatcherPriority.Input);
         }
 
         private void SelectItemUnderMouse(DependencyObject source)
         {
-            var listItem = FindAncestor<ListBoxItem>(source);
-            if (listItem == null) return;
-            var item = listItem.DataContext as CompletionItem;
-            if (item == null) return;
-            ItemsList.SelectedItem = item;
-            UpdateDetail();
-        }
-
-        private static T FindAncestor<T>(DependencyObject current) where T : DependencyObject
-        {
-            while (current != null)
+            try
             {
-                if (current is T match) return match;
-                current = VisualTreeHelper.GetParent(current);
+                // 必须走 WpfTreeWalk：项名称文本由 Run 内联组成，鼠标事件的 OriginalSource 就是 Run，
+                // 而 Run 不是 Visual —— 直接用 VisualTreeHelper.GetParent 会抛
+                // "…不是 Visual 或 Visual3D"，异常发生在 WPF 输入分派里会中断鼠标路由，
+                // 宿主编辑器随即失去响应（编辑器卡死）；命中文字才触发 → 症状间歇。
+                var listItem = WpfTreeWalk.FindAncestor<ListBoxItem>(source);
+                if (listItem == null) return;
+                var item = listItem.DataContext as CompletionItem;
+                if (item == null) return;
+                ItemsList.SelectedItem = item;
+                UpdateDetail();
             }
-            return null;
+            catch (Exception ex)
+            {
+                // 输入事件路径：绝不能让异常逃出 WPF 路由，否则会破坏宿主输入分派（表现为编辑器卡死）
+                _logger.Error(ex, "CompletionListWindow.SelectItemUnderMouse failed; source={0}",
+                    source == null ? "<null>" : source.GetType().FullName);
+            }
         }
 
         public event EventHandler CommitClicked;
