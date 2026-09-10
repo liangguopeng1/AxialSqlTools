@@ -358,10 +358,14 @@ namespace AxialSqlTools
             /// <summary>
             /// db.schema.. / server.db.schema..：架构已经写出后再打 .. 不是合法省略，不应再出对象补全。
             /// db.. / server.db.. 仍是省略 dbo，保持提示。
+            /// db..table 后的别名/WHERE 前缀：对象名已写完（AfterDot=false），不要当成 schema..。
             /// </summary>
             private bool IsDoubleDotAfterSchema(FromObjectNameContext fromName, ScriptFactoryAccess.ConnectionInfo connInfo)
             {
                 if (fromName == null || !fromName.UsesDoubleDot) return false;
+                // 仅「点后还在继续写」时才算 schema..（dbo.| 后的 ..）。
+                // db..FJ_Daitui_Items w 的 Segments 也是 [库, 表]，但 AfterDot=false。
+                if (!fromName.AfterDot) return false;
                 var segs = fromName.Segments;
                 int n = segs == null ? 0 : segs.Count;
                 if (n <= 1) return false;

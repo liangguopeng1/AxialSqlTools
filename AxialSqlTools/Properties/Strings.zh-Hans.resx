@@ -454,6 +454,8 @@
   <data name="Msg_Update_Available" xml:space="preserve"><value>Axial SQL Tools v{0} 有可用更新。  </value></data>
   <data name="Msg_Update_UpdateOnClose" xml:space="preserve"><value>关闭时更新</value></data>
   <data name="Msg_Update_ReleaseNotes" xml:space="preserve"><value>发行说明</value></data>
+  <data name="Msg_Update_UpToDate" xml:space="preserve"><value>Axial SQL Tools 已是最新版本（{0}）。</value></data>
+  <data name="Common_Information" xml:space="preserve"><value>提示</value></data>
   <data name="Msg_GridCopy_AllAsPopup" xml:space="preserve"><value>全部复制为 ...</value></data>
   <data name="Msg_GridCopy_SelectedAsPopup" xml:space="preserve"><value>复制所选为 ...</value></data>
   <data name="Msg_GridCopy_ValuesAsInClause" xml:space="preserve"><value>值作为 IN (...) - 按住 Shift 生成紧凑列表</value></data>
@@ -519,6 +521,26 @@
   <data name="Settings_SmtpServer" xml:space="preserve"><value>SMTP 服务器:</value></data>
   <data name="Settings_SmtpUserName" xml:space="preserve"><value>SMTP 用户名:</value></data>
   <data name="Settings_UpdateStatus" xml:space="preserve"><value>更新状态</value></data>
+  <data name="Settings_CurrentVersion" xml:space="preserve"><value>当前版本：{0}</value></data>
+  <data name="Settings_Updates_CurrentLabel" xml:space="preserve"><value>当前版本</value></data>
+  <data name="Settings_Updates_ViewReleases" xml:space="preserve"><value>在 GitHub 查看发行版</value></data>
+  <data name="Settings_Updates_StatusTitle" xml:space="preserve"><value>状态</value></data>
+  <data name="Settings_Updates_PrefsTitle" xml:space="preserve"><value>自动检查</value></data>
+  <data name="Settings_Updates_CheckOnStartup" xml:space="preserve"><value>启动 SSMS 时检查更新</value></data>
+  <data name="Settings_Updates_CheckOnStartupHint" xml:space="preserve"><value>发现新版本会在窗口顶部提示。点「关闭时更新」后，退出 SSMS 才会安装。安装包版本号必须比当前更高，同版本无法覆盖。</value></data>
+  <data name="Settings_Updates_HowTitle" xml:space="preserve"><value>更新说明</value></data>
+  <data name="Settings_Updates_How1" xml:space="preserve"><value>只读取 GitHub 上已发布的正式 Release；草稿或私有仓库检查不到。</value></data>
+  <data name="Settings_Updates_How2" xml:space="preserve"><value>只有 VSIX 里的版本号更高时才会覆盖安装。</value></data>
+  <data name="Settings_Updates_How3" xml:space="preserve"><value>安装包在后台下载，关闭 SSMS 后由安装向导完成安装。</value></data>
+  <data name="Settings_Updates_Idle" xml:space="preserve"><value>尚未检查。点击「检查更新」开始。</value></data>
+  <data name="Settings_Updates_Checking" xml:space="preserve"><value>正在向 GitHub 查询新版本…</value></data>
+  <data name="Settings_Updates_UpToDate" xml:space="preserve"><value>已是最新版本</value></data>
+  <data name="Settings_Updates_Available" xml:space="preserve"><value>发现新版本</value></data>
+  <data name="Settings_Updates_Failed" xml:space="preserve"><value>无法读取 GitHub Release。若仓库是私有的，请先改为公开后再检查。</value></data>
+  <data name="Settings_Updates_Downloading" xml:space="preserve"><value>正在下载更新包…</value></data>
+  <data name="Settings_Updates_ReadyOnClose" xml:space="preserve"><value>已准备安装，关闭 SSMS 后开始</value></data>
+  <data name="Settings_Updates_DownloadFailed" xml:space="preserve"><value>下载或安装未完成，可能已改为打开 GitHub 发行页。</value></data>
+  <data name="Settings_Updates_Unknown" xml:space="preserve"><value>检查未完成，请再试一次。</value></data>
   <data name="Settings_UsefulTsqlScripts" xml:space="preserve"><value>实用 TSQL 脚本</value></data>
   <data name="Menu_TabHistory" xml:space="preserve"><value>标签页历史</value></data>
   <data name="Settings_TabHistoryEnabled" xml:space="preserve"><value>记录标签页历史（Tab History）</value></data>

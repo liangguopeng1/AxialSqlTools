@@ -13,6 +13,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using AxialSqlTools.Properties;
 
 namespace AxialSqlTools
 {
@@ -450,8 +451,8 @@ namespace AxialSqlTools
                 ThreadHelper.ThrowIfNotOnUIThread();
                 VsShellUtilities.ShowMessageBox(
                     package,
-                    $"{DisplayName} is up to date ({FormatVersion(currentVersion)}).",
-                    "Information",
+                    string.Format(Strings.Get("Msg_Update_UpToDate"), FormatVersion(currentVersion)),
+                    Strings.Get("Common_Information"),
                     OLEMSGICON.OLEMSGICON_INFO,
                     OLEMSGBUTTON.OLEMSGBUTTON_OK,
                     OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);

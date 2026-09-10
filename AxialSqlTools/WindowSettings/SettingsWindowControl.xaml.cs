@@ -106,6 +106,10 @@ as select 1;
             ApplyQueryHistoryStorageComboItems();
             ApplyConnectionColorGridHeaders();
             RefreshGoogleSheetsStatusText();
+            if (UpdateReleasesLinkRun != null)
+                UpdateReleasesLinkRun.Text = UiStrings.Get("Settings_Updates_ViewReleases");
+            ShowBuildTime();
+            UpdateUpdateStatus();
         }
 
         private void LocalizeWikiDescriptions()
@@ -244,16 +248,7 @@ as select 1;
                 TextBlock_BuildTime.Text = UiStrings.Get("Settings_BuildTimeUnknown");
                 return;
             }
-
-            string version = BuildInfo.AssemblyVersion;
-            if (!string.IsNullOrWhiteSpace(version) && version != "unknown")
-            {
-                TextBlock_BuildTime.Text = string.Format(UiStrings.Get("Settings_BuildTimeWithVersion"), raw, version);
-            }
-            else
-            {
-                TextBlock_BuildTime.Text = raw;
-            }
+            TextBlock_BuildTime.Text = raw;
         }
 
         private void LoadLanguageCombo()
@@ -800,16 +795,17 @@ as select 1;
             SavedMessage();
         }
 
-        private void button_SaveUpdateSettings_Click(object sender, RoutedEventArgs e)
+        private void EnableUpdateChecks_Click(object sender, RoutedEventArgs e)
         {
             SettingsManager.SaveEnableUpdateChecks(EnableUpdateChecks.IsChecked.GetValueOrDefault(true));
-            SavedMessage();
         }
 
         private void button_CheckUpdates_Click(object sender, RoutedEventArgs e)
         {
+            if (button_CheckUpdates != null)
+                button_CheckUpdates.IsEnabled = false;
+            ApplyUpdateStatusUi("checking", UiStrings.Get("Settings_Updates_Checking"), null, null);
             UpdateChecker.CheckNow(AxialSqlToolsPackage.PackageInstance, ignoreSettings: true);
-            UpdateUpdateStatus();
         }
 
         private void UpdateChecker_LastUpdateResultChanged()
@@ -825,10 +821,144 @@ as select 1;
 
         private void UpdateUpdateStatus()
         {
+            if (UpdateCurrentVersion != null)
+                UpdateCurrentVersion.Text = FormatInstalledVersion();
+            string raw = UpdateChecker.LastUpdateResult ?? string.Empty;
+            string time = null;
+            string message = raw;
+            int split = raw.IndexOf(" - ", StringComparison.Ordinal);
+            if (split > 0)
+            {
+                time = raw.Substring(0, split);
+                message = raw.Substring(split + 3);
+            }
+            string kind;
+            string headline;
+            string detail;
+            ClassifyUpdateStatus(message, out kind, out headline, out detail);
+            ApplyUpdateStatusUi(kind, headline, detail, time);
+            if (button_CheckUpdates != null)
+                button_CheckUpdates.IsEnabled = kind != "checking";
+        }
+
+        private static void ClassifyUpdateStatus(string message, out string kind, out string headline, out string detail)
+        {
+            string text = message ?? string.Empty;
+            if (ContainsAny(text, "No update check has run", "has not run"))
+            {
+                kind = "idle";
+                headline = UiStrings.Get("Settings_Updates_Idle");
+                detail = null;
+                return;
+            }
+            if (ContainsAny(text, "Manual update check started", "Startup update check scheduled", "Running startup update check"))
+            {
+                kind = "checking";
+                headline = UiStrings.Get("Settings_Updates_Checking");
+                detail = null;
+                return;
+            }
+            if (ContainsAny(text, "release info was unavailable", "current version could not", "version could not be parsed", "fetch failed"))
+            {
+                kind = "error";
+                headline = UiStrings.Get("Settings_Updates_Failed");
+                detail = null;
+                return;
+            }
+            if (ContainsAny(text, "Up to date"))
+            {
+                kind = "ok";
+                headline = UiStrings.Get("Settings_Updates_UpToDate");
+                detail = null;
+                return;
+            }
+            if (ContainsAny(text, "Update available"))
+            {
+                kind = "available";
+                headline = UiStrings.Get("Settings_Updates_Available");
+                int colon = text.IndexOf(':');
+                detail = colon >= 0 ? text.Substring(colon + 1).Trim() : null;
+                return;
+            }
+            if (ContainsAny(text, "Downloading update package"))
+            {
+                kind = "checking";
+                headline = UiStrings.Get("Settings_Updates_Downloading");
+                detail = null;
+                return;
+            }
+            if (ContainsAny(text, "will install when SSMS closes", "Ready to install on close", "downloaded and verified", "downloaded without checksum"))
+            {
+                kind = "ok";
+                headline = UiStrings.Get("Settings_Updates_ReadyOnClose");
+                detail = null;
+                return;
+            }
+            if (ContainsAny(text, "download failed", "Update download failed", "Opened release page", "could not launch VSIXInstaller", "Deferred update skipped"))
+            {
+                kind = "error";
+                headline = UiStrings.Get("Settings_Updates_DownloadFailed");
+                detail = null;
+                return;
+            }
+            if (ContainsAny(text, "Startup update check failed", "Manual update check failed", "Update check failed", "Update check skipped"))
+            {
+                kind = "error";
+                headline = UiStrings.Get("Settings_Updates_Failed");
+                detail = null;
+                return;
+            }
+            kind = "idle";
+            headline = UiStrings.Get(string.IsNullOrWhiteSpace(text) ? "Settings_Updates_Idle" : "Settings_Updates_Unknown");
+            detail = null;
+        }
+
+        private static bool ContainsAny(string text, params string[] parts)
+        {
+            foreach (string part in parts)
+            {
+                if (text.IndexOf(part, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+            }
+            return false;
+        }
+
+        private void ApplyUpdateStatusUi(string kind, string headline, string detail, string time)
+        {
+            if (UpdateStatusHeadline != null)
+                UpdateStatusHeadline.Text = headline ?? string.Empty;
             if (UpdateCheckStatus != null)
             {
-                UpdateCheckStatus.Text = UpdateChecker.LastUpdateResult;
+                UpdateCheckStatus.Text = detail ?? string.Empty;
+                UpdateCheckStatus.Visibility = string.IsNullOrWhiteSpace(detail) ? Visibility.Collapsed : Visibility.Visible;
             }
+            if (UpdateStatusTime != null)
+            {
+                UpdateStatusTime.Text = time ?? string.Empty;
+                UpdateStatusTime.Visibility = string.IsNullOrWhiteSpace(time) ? Visibility.Collapsed : Visibility.Visible;
+            }
+            if (UpdateStatusAccent == null)
+                return;
+            string brushKey = "AxialThemeSubtleBorderBrush";
+            if (kind == "ok")
+                brushKey = "AxialThemeStatusSuccessBrush";
+            else if (kind == "error")
+                brushKey = "AxialThemeStatusErrorBrush";
+            else if (kind == "available" || kind == "checking")
+                brushKey = "AxialThemeAccentBrush";
+            var brush = TryFindResource(brushKey) as Brush;
+            if (brush != null)
+                UpdateStatusAccent.Background = brush;
+        }
+
+        private static string FormatInstalledVersion()
+        {
+            Version v = UpdateChecker.GetCurrentVersion();
+            if (v == null)
+                return "—";
+            if (v.Revision > 0)
+                return v.ToString(4);
+            return v.ToString(3);
         }
 
         private async void button_AuthorizeGoogleSheets_Click(object sender, RoutedEventArgs e)

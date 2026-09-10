@@ -452,6 +452,8 @@
   <data name="Msg_Update_Available" xml:space="preserve"><value>Axial SQL Tools v{0} update available.  </value></data>
   <data name="Msg_Update_UpdateOnClose" xml:space="preserve"><value>Update on Close</value></data>
   <data name="Msg_Update_ReleaseNotes" xml:space="preserve"><value>Release Notes</value></data>
+  <data name="Msg_Update_UpToDate" xml:space="preserve"><value>Axial SQL Tools is up to date ({0}).</value></data>
+  <data name="Common_Information" xml:space="preserve"><value>Information</value></data>
   <data name="Msg_GridCopy_AllAsPopup" xml:space="preserve"><value>Copy All As ...</value></data>
   <data name="Msg_GridCopy_SelectedAsPopup" xml:space="preserve"><value>Copy Selected As ...</value></data>
   <data name="Msg_GridCopy_ValuesAsInClause" xml:space="preserve"><value>Values as IN (...) - hold Shift for compact list</value></data>
@@ -517,6 +519,26 @@ InnerException: {1}</value></data>
   <data name="Settings_SmtpServer" xml:space="preserve"><value>SMTP server:</value></data>
   <data name="Settings_SmtpUserName" xml:space="preserve"><value>SMTP user name:</value></data>
   <data name="Settings_UpdateStatus" xml:space="preserve"><value>Update status</value></data>
+  <data name="Settings_CurrentVersion" xml:space="preserve"><value>Current version: {0}</value></data>
+  <data name="Settings_Updates_CurrentLabel" xml:space="preserve"><value>Current version</value></data>
+  <data name="Settings_Updates_ViewReleases" xml:space="preserve"><value>View releases on GitHub</value></data>
+  <data name="Settings_Updates_StatusTitle" xml:space="preserve"><value>Status</value></data>
+  <data name="Settings_Updates_PrefsTitle" xml:space="preserve"><value>Automatic checks</value></data>
+  <data name="Settings_Updates_CheckOnStartup" xml:space="preserve"><value>Check for updates when SSMS starts</value></data>
+  <data name="Settings_Updates_CheckOnStartupHint" xml:space="preserve"><value>If a newer release is found, SSMS shows a banner. Choose Update on Close, then quit SSMS to install. The package version must be higher than the one already installed.</value></data>
+  <data name="Settings_Updates_HowTitle" xml:space="preserve"><value>How updates work</value></data>
+  <data name="Settings_Updates_How1" xml:space="preserve"><value>Checks the latest published GitHub Release. Drafts and private repositories cannot be seen.</value></data>
+  <data name="Settings_Updates_How2" xml:space="preserve"><value>Installing overwrites the add-in only when the VSIX version number is higher.</value></data>
+  <data name="Settings_Updates_How3" xml:space="preserve"><value>The package downloads in the background. Installation starts after SSMS closes.</value></data>
+  <data name="Settings_Updates_Idle" xml:space="preserve"><value>No check has run yet. Click Check for updates to start.</value></data>
+  <data name="Settings_Updates_Checking" xml:space="preserve"><value>Checking GitHub for a newer release…</value></data>
+  <data name="Settings_Updates_UpToDate" xml:space="preserve"><value>You're on the latest version</value></data>
+  <data name="Settings_Updates_Available" xml:space="preserve"><value>A newer version is available</value></data>
+  <data name="Settings_Updates_Failed" xml:space="preserve"><value>Could not read GitHub Releases. If the repository is private, make it public and try again.</value></data>
+  <data name="Settings_Updates_Downloading" xml:space="preserve"><value>Downloading the update package…</value></data>
+  <data name="Settings_Updates_ReadyOnClose" xml:space="preserve"><value>Ready to install when SSMS closes</value></data>
+  <data name="Settings_Updates_DownloadFailed" xml:space="preserve"><value>Download or install didn't finish. The GitHub release page may have been opened instead.</value></data>
+  <data name="Settings_Updates_Unknown" xml:space="preserve"><value>Update check did not finish. Try again.</value></data>
   <data name="Settings_UsefulTsqlScripts" xml:space="preserve"><value>Useful TSQL scripts</value></data>
   <data name="Menu_TabHistory" xml:space="preserve"><value>Tab History</value></data>
   <data name="Settings_TabHistoryEnabled" xml:space="preserve"><value>Record tab history (Tab History)</value></data>

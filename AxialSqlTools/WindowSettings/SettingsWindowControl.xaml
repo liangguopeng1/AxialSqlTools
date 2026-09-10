@@ -21,6 +21,15 @@
                 <Setter Property="Stretch" Value="Fill" />
                 <Setter Property="SnapsToDevicePixels" Value="True" />
             </Style>
+            <Style x:Key="AxialSettingsCardStyle" TargetType="Border">
+                <Setter Property="Background" Value="{DynamicResource AxialThemeBackgroundBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource AxialThemeSubtleBorderBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="8" />
+                <Setter Property="Padding" Value="16" />
+                <Setter Property="Margin" Value="0,0,0,12" />
+                <Setter Property="SnapsToDevicePixels" Value="True" />
+            </Style>
 
             <Style x:Key="AxialSettingsGridViewHeaderStyle" TargetType="GridViewColumnHeader">
                 <Setter Property="Background" Value="{DynamicResource AxialThemeGridHeaderBackgroundBrush}" />
@@ -1142,72 +1151,133 @@
             </TabItem>
 
             <TabItem x:Name="TabUpdates" Header="Updates">
-                <Grid Margin="5">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
-
-                    <CheckBox Grid.Row="0"
-                              x:Name="EnableUpdateChecks"
-                              Content="Check for Axial SQL Tools updates on startup"
-                              Tag="loc:Settings_CheckUpdatesOnStartup"
-                              Margin="5"/>
-
-                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="5">
-                        <Button x:Name="button_SaveUpdateSettings"
-                                Click="button_SaveUpdateSettings_Click"
-                                Width="80"
-                                Height="24"
-                                Margin="0,0,10,0"
-                                FontWeight="Bold">
-                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                <Viewbox Width="16" Height="16" Margin="0,0,4,0">
-                                    <Path Style="{StaticResource AxialSaveIconPathStyle}" Data="{StaticResource SaveIconGeometry}"/>
-                                </Viewbox>
-                                <TextBlock Text="Save" Tag="loc:Common_Save" VerticalAlignment="Center"/>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16">
+                    <StackPanel>
+                        <Border Style="{StaticResource AxialSettingsCardStyle}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                    <TextBlock Text="Current version"
+                                               Tag="loc:Settings_Updates_CurrentLabel"
+                                               FontSize="12"
+                                               Opacity="0.7"/>
+                                    <TextBlock x:Name="UpdateCurrentVersion"
+                                               Text="—"
+                                               FontSize="28"
+                                               FontWeight="SemiBold"
+                                               Margin="0,2,0,6"/>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock x:Name="Label_BuildTime"
+                                                   Text="Build time:"
+                                                   Tag="loc:Settings_BuildTimeLabel"
+                                                   Opacity="0.7"
+                                                   FontSize="12"
+                                                   VerticalAlignment="Center"
+                                                   Margin="0,0,6,0"/>
+                                        <TextBlock x:Name="TextBlock_BuildTime"
+                                                   Text="(unknown)"
+                                                   FontSize="12"
+                                                   Opacity="0.7"
+                                                   VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                    <TextBlock Margin="0,8,0,0" FontSize="12">
+                                        <Hyperlink NavigateUri="https://github.com/liangguopeng1/AxialSqlTools/releases"
+                                                   RequestNavigate="buttonWikiPage_Click">
+                                            <Run x:Name="UpdateReleasesLinkRun" Text="View releases on GitHub"/>
+                                        </Hyperlink>
+                                    </TextBlock>
+                                </StackPanel>
+                                <Button x:Name="button_CheckUpdates"
+                                        Grid.Column="1"
+                                        Click="button_CheckUpdates_Click"
+                                        Style="{StaticResource AxialPrimaryButtonStyle}"
+                                        Tag="loc:Settings_CheckForUpdates"
+                                        Content="Check for updates"
+                                        MinWidth="128"
+                                        MinHeight="32"
+                                        Padding="16,6"
+                                        VerticalAlignment="Center"
+                                        Margin="16,0,0,0"/>
+                            </Grid>
+                        </Border>
+                        <Border BorderBrush="{DynamicResource AxialThemeSubtleBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Margin="0,0,0,12"
+                                SnapsToDevicePixels="True">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="4"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Border x:Name="UpdateStatusAccent"
+                                        Grid.Column="0"
+                                        CornerRadius="8,0,0,8"
+                                        Background="{DynamicResource AxialThemeSubtleBorderBrush}"/>
+                                <StackPanel Grid.Column="1" Margin="14,14,16,14">
+                                    <TextBlock Text="Status"
+                                               Tag="loc:Settings_Updates_StatusTitle"
+                                               FontSize="12"
+                                               Opacity="0.7"/>
+                                    <TextBlock x:Name="UpdateStatusHeadline"
+                                               Tag="loc:Settings_Updates_Idle"
+                                               Text="尚未检查。点击「检查更新」开始。"
+                                               FontSize="15"
+                                               FontWeight="SemiBold"
+                                               TextWrapping="Wrap"
+                                               Margin="0,4,0,0"/>
+                                    <TextBlock x:Name="UpdateCheckStatus"
+                                               TextWrapping="Wrap"
+                                               Opacity="0.8"
+                                               FontSize="12"
+                                               Margin="0,6,0,0"/>
+                                    <TextBlock x:Name="UpdateStatusTime"
+                                               Opacity="0.55"
+                                               FontSize="11"
+                                               Margin="0,8,0,0"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                        <Border Style="{StaticResource AxialSettingsCardStyle}">
+                            <StackPanel>
+                                <TextBlock Text="Automatic checks"
+                                           Tag="loc:Settings_Updates_PrefsTitle"
+                                           FontWeight="SemiBold"
+                                           Margin="0,0,0,8"/>
+                                <CheckBox x:Name="EnableUpdateChecks"
+                                          Content="Check for updates when SSMS starts"
+                                          Tag="loc:Settings_Updates_CheckOnStartup"
+                                          Click="EnableUpdateChecks_Click"/>
+                                <TextBlock TextWrapping="Wrap"
+                                           Opacity="0.75"
+                                           FontSize="12"
+                                           Margin="22,6,0,0"
+                                           Tag="loc:Settings_Updates_CheckOnStartupHint"
+                                           Text="If a newer release is found, SSMS shows a banner. Choose Update on Close, then quit SSMS to install. The package version must be higher than the installed version."/>
                             </StackPanel>
-                        </Button>
-
-                        <Button x:Name="button_CheckUpdates"
-                                Click="button_CheckUpdates_Click"
-                                Width="130"
-                                Height="24"
-                                FontWeight="Bold">
-                            <TextBlock Text="Check for updates" Tag="loc:Settings_CheckForUpdates" VerticalAlignment="Center"/>
-                        </Button>
+                        </Border>
+                        <Border Style="{StaticResource AxialSettingsCardStyle}" Padding="16,14">
+                            <StackPanel>
+                                <TextBlock Text="How updates work"
+                                           Tag="loc:Settings_Updates_HowTitle"
+                                           FontWeight="SemiBold"
+                                           Margin="0,0,0,8"/>
+                                <TextBlock TextWrapping="Wrap" Opacity="0.8" FontSize="12" Margin="0,0,0,6"
+                                           Tag="loc:Settings_Updates_How1"
+                                           Text="Checks the latest published GitHub Release. Drafts and private repositories are not visible."/>
+                                <TextBlock TextWrapping="Wrap" Opacity="0.8" FontSize="12" Margin="0,0,0,6"
+                                           Tag="loc:Settings_Updates_How2"
+                                           Text="Installing replaces the add-in only when the VSIX version number is higher."/>
+                                <TextBlock TextWrapping="Wrap" Opacity="0.8" FontSize="12"
+                                           Tag="loc:Settings_Updates_How3"
+                                           Text="The package downloads in the background. Installation starts after SSMS closes."/>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
-
-                    <GroupBox Grid.Row="2" Header="Update status" Tag="loc:Settings_UpdateStatus" Margin="5">
-                        <TextBlock x:Name="UpdateCheckStatus"
-                                   TextWrapping="Wrap"
-                                   Margin="5"/>
-                    </GroupBox>
-
-                    <Border Grid.Row="4"
-                            Margin="5"
-                            Padding="8"
-                            BorderBrush="{DynamicResource AxialThemeBorderBrush}"
-                            BorderThickness="1"
-                            CornerRadius="2"
-                            HorizontalAlignment="Stretch">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock x:Name="Label_BuildTime"
-                                       Text="Build time:"
-                                       Tag="loc:Settings_BuildTimeLabel"
-                                       VerticalAlignment="Center"
-                                       Margin="0,0,6,0"
-                                       Opacity="0.85"/>
-                            <TextBlock x:Name="TextBlock_BuildTime"
-                                       Text="(unknown)"
-                                       VerticalAlignment="Center"
-                                       FontFamily="Consolas"/>
-                        </StackPanel>
-                    </Border>
-                </Grid>
+                </ScrollViewer>
             </TabItem>
 
             <TabItem Header="GitHub Integration" Visibility="Collapsed">

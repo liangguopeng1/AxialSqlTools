@@ -169,6 +169,11 @@ Add-Case '159' 'SELECT * FROM RtBase....' @() 'FromClause' @('kucun','dbo.kucun'
 Add-Case '321' 'SELECT * FROM RtBase.dbo..' @() 'FromClause' @('kucun','dbo.kucun') -Catalog 'mock'
 Add-Case '322' 'SELECT * FROM rt_fenjian.dbo..' @() 'FromClause' @('SS_PiCi') -Catalog 'use'
 Add-Case '323' 'SELECT * FROM [192.168.1.108].jichushuju.dbo..' @() 'FromClause' @('t_products') -Catalog 'use'
+# db..table 后的 WHERE 前缀（省略 dbo）应与 db.dbo.table 一样出关键字
+Add-Case '332' 'SELECT * FROM rt_fenjian..FJ_Daitui_Items w' @('WHERE') 'FromClause'
+Add-Case '333' 'SELECT * FROM rt_fenjian..FJ_Daitui_Items wh' @('WHERE') 'FromClause'
+Add-Case '334' 'SELECT * FROM rt_fenjian.dbo.FJ_Daitui_Items w' @('WHERE') 'FromClause'
+Add-Case '335' 'SELECT * FROM RtBase..kucun w' @('WHERE') 'FromClause' -Catalog 'mock'
 Add-Case '324' 'SELECT * FROM RtBase.dbo.' @('kucun') 'FromClause' @('dbo.kucun') -Catalog 'mock'
 # 跨服务器 server.db..table：列补全走链接服务器缓存，勿在当前库找表
 Add-Case '160' 'SELECT * FROM [192.168.1.23].baoxiao..BaoXiao aa where aa.|' @('id') 'MemberAccess' -Catalog 'linked'
