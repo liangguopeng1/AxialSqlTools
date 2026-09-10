@@ -837,6 +837,7 @@ as select 1;
             string detail;
             ClassifyUpdateStatus(message, out kind, out headline, out detail);
             ApplyUpdateStatusUi(kind, headline, detail, time);
+            ApplyUpdateDownloadProgress();
             if (button_CheckUpdates != null)
                 button_CheckUpdates.IsEnabled = kind != "checking";
         }
@@ -862,7 +863,7 @@ as select 1;
             {
                 kind = "error";
                 headline = UiStrings.Get("Settings_Updates_Failed");
-                detail = null;
+                detail = UiStrings.Get("Settings_Updates_FailedHint");
                 return;
             }
             if (ContainsAny(text, "Up to date"))
@@ -884,7 +885,7 @@ as select 1;
             {
                 kind = "checking";
                 headline = UiStrings.Get("Settings_Updates_Downloading");
-                detail = null;
+                detail = FormatDownloadProgressDetail();
                 return;
             }
             if (ContainsAny(text, "will install when SSMS closes", "Ready to install on close", "downloaded and verified", "downloaded without checksum"))
@@ -905,7 +906,7 @@ as select 1;
             {
                 kind = "error";
                 headline = UiStrings.Get("Settings_Updates_Failed");
-                detail = null;
+                detail = UiStrings.Get("Settings_Updates_FailedHint");
                 return;
             }
             kind = "idle";
@@ -949,6 +950,53 @@ as select 1;
             var brush = TryFindResource(brushKey) as Brush;
             if (brush != null)
                 UpdateStatusAccent.Background = brush;
+        }
+
+        private void ApplyUpdateDownloadProgress()
+        {
+            if (UpdateDownloadProgress == null)
+                return;
+            long received;
+            long total;
+            int percent;
+            if (!UpdateChecker.TryGetDownloadProgress(out received, out total, out percent))
+            {
+                UpdateDownloadProgress.Visibility = Visibility.Collapsed;
+                UpdateDownloadProgress.IsIndeterminate = false;
+                UpdateDownloadProgress.Value = 0;
+                return;
+            }
+            UpdateDownloadProgress.Visibility = Visibility.Visible;
+            if (total > 0 && percent >= 0)
+            {
+                UpdateDownloadProgress.IsIndeterminate = false;
+                UpdateDownloadProgress.Maximum = 100;
+                UpdateDownloadProgress.Value = percent;
+            }
+            else
+            {
+                UpdateDownloadProgress.IsIndeterminate = true;
+            }
+        }
+
+        private static string FormatDownloadProgressDetail()
+        {
+            long received;
+            long total;
+            int percent;
+            if (!UpdateChecker.TryGetDownloadProgress(out received, out total, out percent))
+                return null;
+            if (total > 0 && percent >= 0)
+            {
+                return string.Format(
+                    UiStrings.Get("Settings_Updates_DownloadProgressDetail"),
+                    percent,
+                    UpdateChecker.FormatDownloadSize(received),
+                    UpdateChecker.FormatDownloadSize(total));
+            }
+            return string.Format(
+                UiStrings.Get("Settings_Updates_DownloadProgressIndeterminate"),
+                UpdateChecker.FormatDownloadSize(received));
         }
 
         private static string FormatInstalledVersion()

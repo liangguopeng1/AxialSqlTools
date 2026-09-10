@@ -1186,7 +1186,7 @@
                                     <TextBlock Margin="0,8,0,0" FontSize="12">
                                         <Hyperlink NavigateUri="https://github.com/liangguopeng1/AxialSqlTools/releases"
                                                    RequestNavigate="buttonWikiPage_Click">
-                                            <Run x:Name="UpdateReleasesLinkRun" Text="View releases on GitHub"/>
+                                            <Run x:Name="UpdateReleasesLinkRun" Text="Open the download page"/>
                                         </Hyperlink>
                                     </TextBlock>
                                 </StackPanel>
@@ -1234,6 +1234,12 @@
                                                Opacity="0.8"
                                                FontSize="12"
                                                Margin="0,6,0,0"/>
+                                    <ProgressBar x:Name="UpdateDownloadProgress"
+                                                 Height="8"
+                                                 Minimum="0"
+                                                 Maximum="100"
+                                                 Margin="0,10,0,0"
+                                                 Visibility="Collapsed"/>
                                     <TextBlock x:Name="UpdateStatusTime"
                                                Opacity="0.55"
                                                FontSize="11"
@@ -1256,7 +1262,7 @@
                                            FontSize="12"
                                            Margin="22,6,0,0"
                                            Tag="loc:Settings_Updates_CheckOnStartupHint"
-                                           Text="If a newer release is found, SSMS shows a banner. Choose Update on Close, then quit SSMS to install. The package version must be higher than the installed version."/>
+                                           Text="If a newer version is found, SSMS shows a banner at the top. Choose Update on Close, then quit SSMS to install."/>
                             </StackPanel>
                         </Border>
                         <Border Style="{StaticResource AxialSettingsCardStyle}" Padding="16,14">
@@ -1267,13 +1273,13 @@
                                            Margin="0,0,0,8"/>
                                 <TextBlock TextWrapping="Wrap" Opacity="0.8" FontSize="12" Margin="0,0,0,6"
                                            Tag="loc:Settings_Updates_How1"
-                                           Text="Checks the latest published GitHub Release. Drafts and private repositories are not visible."/>
+                                           Text="Looks up the latest published version online."/>
                                 <TextBlock TextWrapping="Wrap" Opacity="0.8" FontSize="12" Margin="0,0,0,6"
                                            Tag="loc:Settings_Updates_How2"
-                                           Text="Installing replaces the add-in only when the VSIX version number is higher."/>
+                                           Text="A newer version replaces the current one after you close SSMS."/>
                                 <TextBlock TextWrapping="Wrap" Opacity="0.8" FontSize="12"
                                            Tag="loc:Settings_Updates_How3"
-                                           Text="The package downloads in the background. Installation starts after SSMS closes."/>
+                                           Text="The package downloads in the background. The installer starts after SSMS closes."/>
                             </StackPanel>
                         </Border>
                     </StackPanel>

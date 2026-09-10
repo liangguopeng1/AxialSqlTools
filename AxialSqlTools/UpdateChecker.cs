@@ -42,6 +42,11 @@ namespace AxialSqlTools
         private static bool pendingUpdateOnClose;
         private static bool stageDownloadInProgress;
         private static bool stageDownloadFailed;
+        private static bool downloadProgressActive;
+        private static long downloadReceived;
+        private static long downloadTotal;
+        private static int lastNotifiedDownloadPercent = -1;
+        private static int lastDownloadNotifyTick;
         private static Task stageDownloadTask = Task.CompletedTask;
         private static Task cleanupDownloadedVsixFilesTask = Task.CompletedTask;
         private static UpdateInfoBar activeInfoBar;
@@ -522,7 +527,7 @@ namespace AxialSqlTools
                     bool isZip = asset.Name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
                     string downloadExtension = isZip ? ".zip" : ".vsix";
                     downloadedPath = Path.Combine(Path.GetTempPath(), $"AxialSqlTools-{Guid.NewGuid():N}{downloadExtension}");
-                    await DownloadFileAsync(asset.DownloadUrl, downloadedPath, CancellationToken.None);
+                    await DownloadFileAsync(asset.DownloadUrl, downloadedPath, asset.Size, CancellationToken.None);
 
                     if (!string.IsNullOrWhiteSpace(expectedSha256))
                     {
@@ -573,6 +578,7 @@ namespace AxialSqlTools
                 }
                 finally
                 {
+                    EndDownloadProgress();
                     lock (updateStateLock)
                     {
                         stageDownloadInProgress = false;
@@ -827,20 +833,123 @@ namespace AxialSqlTools
             }
         }
 
-        private static async Task DownloadFileAsync(string url, string path, CancellationToken token)
+        private static async Task DownloadFileAsync(string url, string path, long fallbackTotal, CancellationToken token)
         {
             using (var client = new HttpClient())
             {
+                client.Timeout = TimeSpan.FromMinutes(15);
                 client.DefaultRequestHeaders.UserAgent.ParseAdd(ProductName);
                 using (var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, token))
                 {
                     response.EnsureSuccessStatusCode();
+                    long total = response.Content.Headers.ContentLength ?? 0;
+                    if (total <= 0 && fallbackTotal > 0)
+                        total = fallbackTotal;
+                    BeginDownloadProgress(total);
                     using (Stream source = await response.Content.ReadAsStreamAsync())
                     using (Stream target = File.Create(path))
                     {
-                        await source.CopyToAsync(target);
+                        var buffer = new byte[81920];
+                        long received = 0;
+                        int read;
+                        while ((read = await source.ReadAsync(buffer, 0, buffer.Length, token)) > 0)
+                        {
+                            await target.WriteAsync(buffer, 0, read, token);
+                            received += read;
+                            ReportDownloadProgress(received, total);
+                        }
+                        ReportDownloadProgress(received, total > 0 ? total : received);
                     }
                 }
+            }
+        }
+
+        internal static bool TryGetDownloadProgress(out long received, out long total, out int percent)
+        {
+            lock (updateStateLock)
+            {
+                received = downloadReceived;
+                total = downloadTotal;
+                if (!downloadProgressActive)
+                {
+                    percent = -1;
+                    return false;
+                }
+                percent = total > 0
+                    ? (int)Math.Min(100, (received * 100) / total)
+                    : -1;
+                return true;
+            }
+        }
+
+        internal static string FormatDownloadSize(long bytes)
+        {
+            if (bytes < 1024)
+                return bytes + " B";
+            double kb = bytes / 1024.0;
+            if (kb < 1024)
+                return kb.ToString("0.#") + " KB";
+            return (kb / 1024.0).ToString("0.0") + " MB";
+        }
+
+        private static void BeginDownloadProgress(long total)
+        {
+            lock (updateStateLock)
+            {
+                downloadProgressActive = true;
+                downloadReceived = 0;
+                downloadTotal = total > 0 ? total : 0;
+                lastNotifiedDownloadPercent = -1;
+                lastDownloadNotifyTick = 0;
+            }
+            NotifyDownloadProgress();
+        }
+
+        private static void ReportDownloadProgress(long received, long total)
+        {
+            bool notify;
+            lock (updateStateLock)
+            {
+                downloadProgressActive = true;
+                downloadReceived = received;
+                downloadTotal = total > 0 ? total : 0;
+                int percent = downloadTotal > 0
+                    ? (int)Math.Min(100, (received * 100) / downloadTotal)
+                    : -1;
+                int now = Environment.TickCount;
+                bool percentChanged = percent >= 0 && percent != lastNotifiedDownloadPercent;
+                bool timeElapsed = unchecked(now - lastDownloadNotifyTick) >= 250;
+                notify = percentChanged || timeElapsed || (downloadTotal > 0 && received >= downloadTotal);
+                if (notify)
+                {
+                    lastNotifiedDownloadPercent = percent;
+                    lastDownloadNotifyTick = now;
+                }
+            }
+            if (notify)
+                NotifyDownloadProgress();
+        }
+
+        private static void EndDownloadProgress()
+        {
+            lock (updateStateLock)
+            {
+                downloadProgressActive = false;
+                downloadReceived = 0;
+                downloadTotal = 0;
+                lastNotifiedDownloadPercent = -1;
+            }
+            NotifyDownloadProgress();
+        }
+
+        private static void NotifyDownloadProgress()
+        {
+            try
+            {
+                LastUpdateResultChanged?.Invoke();
+            }
+            catch
+            {
             }
         }
 
@@ -995,6 +1104,9 @@ namespace AxialSqlTools
         {
             [JsonProperty("name")]
             public string Name { get; set; }
+
+            [JsonProperty("size")]
+            public long Size { get; set; }
 
             [JsonProperty("digest")]
             public string Digest { get; set; }
