@@ -1726,11 +1726,8 @@ namespace AxialSqlTools
                 }
             }
 
-            private static string UnbracketIdentifier(string text)
-            {
-                if (string.IsNullOrEmpty(text)) return string.Empty;
-                return text.Trim('[', ']', '"');
-            }
+            /// <summary>实现见 CompletionMatcher（纯函数，可独立测试）。</summary>
+            private static string UnbracketIdentifier(string text) => CompletionMatcher.UnbracketIdentifier(text);
 
             private bool IsDatabaseName(ScriptFactoryAccess.ConnectionInfo connInfo, string name)
             {
@@ -2370,17 +2367,6 @@ namespace AxialSqlTools
                 }
             }
 
-            private static bool IsNumericOrIpPrefix(string prefix)
-            {
-                if (string.IsNullOrEmpty(prefix) || !char.IsDigit(prefix[0])) return false;
-                for (int i = 0; i < prefix.Length; i++)
-                {
-                    char c = prefix[i];
-                    if (!char.IsDigit(c) && c != '.') return false;
-                }
-                return true;
-            }
-
             /// <summary>把 FROM 里被点拆开的数字段拼回 192.168.1.148；含非数字段则不是 IP。</summary>
             private static string JoinNumericFromSegments(FromObjectNameContext fromName)
             {
@@ -2391,7 +2377,7 @@ namespace AxialSqlTools
                     for (int i = 0; i < fromName.Segments.Count; i++)
                     {
                         string s = StripNumericDots(fromName.Segments[i]);
-                        if (string.IsNullOrEmpty(s) || !IsNumericOrIpPrefix(s))
+                        if (string.IsNullOrEmpty(s) || !CompletionMatcher.IsNumericOrIpPrefix(s))
                             return null;
                         parts.Add(s);
                     }
@@ -2399,7 +2385,7 @@ namespace AxialSqlTools
                 if (!string.IsNullOrEmpty(fromName.Partial))
                 {
                     string p = StripNumericDots(fromName.Partial);
-                    if (string.IsNullOrEmpty(p) || !IsNumericOrIpPrefix(p))
+                    if (string.IsNullOrEmpty(p) || !CompletionMatcher.IsNumericOrIpPrefix(p))
                         return null;
                     parts.Add(p);
                 }

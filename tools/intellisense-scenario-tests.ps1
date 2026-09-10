@@ -286,11 +286,15 @@ Add-Case '233' 'SELECT nth|' @('NTH_VALUE') 'SelectElements'
 Add-Case '234' 'SELECT approx|' @('APPROX_COUNT_DISTINCT') 'SelectElements'
 Add-Case '235' 'SELECT string_sp|' @('STRING_SPLIT') 'SelectElements'
 Add-Case '236' 'SELECT ov|' @('OVER') 'SelectElements'
-Add-Case '237' 'SELECT ROW_NUMBER() OVER (PARTITION BY i|) FROM dbo.DemoT' @('id') 'OrderByGroupBy' -Catalog 'mock'
+# 单字符段首匹配（2026-09-10 起）：i 除前缀命中 id 外，还命中 k_id / h_id 的 id 段
+Add-Case '237' 'SELECT ROW_NUMBER() OVER (PARTITION BY i|) FROM dbo.DemoT' @('id','k_id','h_id') 'OrderByGroupBy' -Catalog 'mock'
 # HAVING only suggests GROUP BY columns + aggregate functions
 Add-Case '239' 'SELECT id, k_id FROM dbo.DemoT GROUP BY id HAVING |' @('id','COUNT') 'HavingClause' @('k_id') -Catalog 'mock'
 Add-Case '240' 'SELECT id, k_id FROM dbo.DemoT GROUP BY id HAVING co|' @('COUNT') 'HavingClause' -Catalog 'mock'
 Add-Case '241' 'SELECT id, k_id FROM dbo.DemoT GROUP BY id HAVING i|' @('id') 'HavingClause' @('k_id') -Catalog 'mock'
+# 下划线段匹配（2026-09-10 优化）：k_ / h_ 要命中 k_id / h_id，单字符 i 要命中 id 段
+Add-Case '336' 'SELECT * FROM dbo.DemoT WHERE k_|' @('k_id') 'WhereClause' -Catalog 'mock'
+Add-Case '337' 'SELECT * FROM dbo.DemoT WHERE i|' @('id','k_id','h_id') 'WhereClause' -Catalog 'mock'
 # PIVOT / TABLESAMPLE / GROUP BY ROLLUP keywords + PIVOT IN(...) skip
 Add-Case '242' 'SELECT * FROM t PI|' @('PIVOT') 'FromClause'
 Add-Case '243' 'SELECT * FROM t TA|' @('TABLESAMPLE') 'FromClause'

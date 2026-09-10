@@ -15,7 +15,7 @@ description: Use when changing the self-built SQL IntelliSense in AxialSqlTools 
 
 | 文件 | 职责 |
 |---|---|
-| `CompletionEngine.cs` + `Completion/` | partial 主入口 `GetCompletion`（GO 分批 / AST 切片缓存）；分册 `LocalSymbols`（CTE/别名/临时表）、`Context`（上下文判定、FROM/EXEC 名解析）、`Items`（候选生成、过滤排序）、`CompletionModels.cs`（`CompletionResult` / `CteInfo` / `LocalTableInfo` / `TableRef`） |
+| `CompletionEngine.cs` + `Completion/` | partial 主入口 `GetCompletion`（GO 分批 / AST 切片缓存）；分册 `LocalSymbols`（CTE/别名/临时表）、`Context`（上下文判定、FROM/EXEC 名解析）、`Items`（候选生成、过滤排序）、`CompletionMatcher.cs`（匹配打分/高亮下标，纯函数）、`CompletionModels.cs`（`CompletionResult` / `CteInfo` / `LocalTableInfo` / `TableRef`） |
 | `CompletionItem.cs` | 补全项 + `CompletionKind` / `CompletionContext` |
 | `MetadataModels.cs` | `IntelliSenseSettings` + 元数据模型（`MetadataCatalog` / `TableColumnInfo` / `RoutineInfo`） |
 | `MetadataCatalogService.cs` / `MetadataCacheStore.cs` / `MetadataCacheRefreshService.cs` | 按 `(Server, Database)` 目录；磁盘缓存 `%APPDATA%\AxialSqlTools\intellisense-cache\{server}\meta.json` + `{database}.json`；按服务器刷新 |
@@ -69,7 +69,8 @@ TriggerCompletion:
 
 | 改什么 | 去哪 |
 |---|---|
-| 补全候选 | `Completion/CompletionEngine.Items.cs`（`BuildItems` / `Add*` / `FilterAndSort` / `GetMatchScore`） |
+| 补全候选 | `Completion/CompletionEngine.Items.cs`（`BuildItems` / `Add*` / `FilterAndSort`） |
+| 匹配打分 / 高亮下标 | `Completion/CompletionMatcher.cs`（`GetMatchScore`；档位与段匹配规则见 `references/pitfalls.md`） |
 | 上下文判定 / FROM·EXEC 名解析 | `Completion/CompletionEngine.Context.cs`（`GetContext` / `ParseFromObjectName*` / `FromObjectNameContext`，§4 映射表） |
 | CTE / 别名 / 临时表收集 | `Completion/CompletionEngine.LocalSymbols.cs` |
 | 批次切分 / 解析缓存 | `CompletionEngine.cs`（`TryGetParseSlice` / `ParseSlice`） |
@@ -81,6 +82,7 @@ TriggerCompletion:
 ## 回归
 
 - `tools/intellisense-scenario-tests.ps1` — 100 条上下文用例（反射 `CompletionEngine.GetCompletion`，类型名不变）。
+- 改匹配打分 / 高亮 → 另跑 `tools/intellisense-matcher-tests/run-tests.ps1`（编译生产 `CompletionMatcher`，零外部依赖）。
 - 改弹框 / 鼠标 / 提交 → 另跑 `tools/intellisense-mouse-tests/run-tests.ps1`（真实 WPF，驱动生产 `CompletionListWindow`）。
 - 构建 / 安装见 `skills/axial-build-release/scripts/pack-release.ps1`；日志 `%APPDATA%\AxialSqlTools\logs\`。
 

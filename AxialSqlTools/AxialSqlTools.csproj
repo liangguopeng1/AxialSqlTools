@@ -171,6 +171,7 @@
     <Compile Include="IntelliSense\CompletionItem.cs" />
     <Compile Include="IntelliSense\WpfTreeWalk.cs" />
     <Compile Include="IntelliSense\Completion\CompletionModels.cs" />
+    <Compile Include="IntelliSense\Completion\CompletionMatcher.cs" />
     <Compile Include="IntelliSense\MetadataCatalogService.cs" />
     <Compile Include="IntelliSense\MetadataCacheStore.cs" />
     <Compile Include="IntelliSense\MetadataCacheRefreshService.cs" />

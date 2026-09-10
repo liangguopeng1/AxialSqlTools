@@ -103,6 +103,32 @@ ScriptDom 通用陷阱另见 `axial-scriptdom` skill。
 
 - `autoTriggerDelayMs`（设置名「补全列表弹出延迟」）在每次防抖启动时读取，保存后当前标签立即生效。
 
+## 匹配规则（CompletionMatcher 打分档位）
+
+`Completion/CompletionMatcher.cs`（纯函数，可独立测试）。`FilterAndSort` 按分值降序，同分再按 `CompletionKind`
+（`Column -3` < `Keyword 0` < `ScalarFunction 1` < …），最后按 `DisplayText` 字典序截断到 `maxCompletionItems`。
+
+| 分值 | 含义 |
+|---|---|
+| 130 / 120 | 表别名精确 / 前缀命中（`Description` 以「表别名」开头） |
+| 105 | 子句尾随关键字前缀（WHERE / HAVING / GROUP BY / ORDER BY / JOIN 系 / UNION 系 / DISTINCT / TOP） |
+| 100 | 精确命中、名称前缀命中；数字/IP 前缀；**列的 `_` 段命中**；AllColumns 前缀 |
+| 95 | 限定名（`sys.tables` 用整串计分）；多词关键字首词命中（非子句尾随） |
+| 90 | AllColumns 的列精确/前缀命中 |
+| 85 / 65 | 去 `_`/`.` 后前缀 / 包含（`CollapseForMatch`） |
+| 80 | 包含命中；片段包含 |
+| 60 | 对象名（表/视图/过程/库…）的 `_` 段命中 |
+| 50 / 40 | 按序子序列；段内包含 |
+
+### 下划线段匹配（2026-09-10 优化）
+- 前缀与名称都按 `_` 切段，逐段做**段首**比较：`CG_H_ID` ← `h` / `h_` / `h_id` / `cg_h`。
+- **列（Column）允许单字符**：列清单已限定在当前表范围内，不会跨库泛滥 → `h` 命中 `CG_H_ID`、`i` 命中 `k_id`。
+- **对象名（表/视图/过程/库…）仍要求前缀 ≥2**，避免单字符扫到过多段（`y` 不命中 `RT_YeWuKaoHe`）。
+- 前缀**含 `_`** 时该分隔符必须真实存在于名称里：`h_` 命中 `H_ID` / `CG_H_ID`，不命中 `HX_ID`；非末段要求整段相同。
+- 列段命中计 **100**（与普通前缀同档）→ 同档时 `Column` 排在 `Keyword` / `ScalarFunction` 之前。
+- 仍不做的事：单字符不参与包含 / 缩写 / 子序列（`a` 不命中 `CreateDate`）。
+- 遗留取舍：子句尾随关键字是 105，因此 `where h` 里 `HAVING` 仍排在列之前。
+
 ## 测试与工具链
 
 - `tools/intellisense-mouse-tests/run-tests.ps1` —— 真实 WPF 回归测试，编译并驱动生产
